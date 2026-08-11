@@ -1,6 +1,6 @@
 # Language Tutor: Product Vision
 
-*Last updated: 2026-08-06. This is the source of truth for what we're building and why. Phase-level plans live in `plans/phases/`. Read this before starting work in any new thread.*
+*Last updated: 2026-08-07. This is the source of truth for what we're building and why. Phase-level plans live in `plans/phases/`. Read this before starting work in any new thread.*
 
 ---
 
@@ -54,6 +54,17 @@ These were open questions; they're now settled and shouldn't be relitigated with
 6. **Visual baseline is settled.** shadcn "base-mira" style, neutral palette, indigo/blue primary, Geist, Base UI primitives, light/dark via next-themes. These are deliberate choices, not scaffold defaults — build on them, don't replace them. Blue is the identity color, chosen partly for how the Aura visualizer reads in it.
 7. **Candidate voice models: xAI Grok Voice and OpenAI GPT Realtime.** Both have official LiveKit plugins. Initial hands-on comparison favored Grok. A structured comparison (feel, latency, instruction-following, cost per short conversation) happens once the interaction exists to test with. The model must remain swappable.
 8. **LiveKit is the realtime layer.** Audio, sessions, connection state, interruptions, transcription delivery, observability. Agents UI components (including the Aura visualizer, which is shadcn-based and installs into our component tree) are implementation primitives to restyle freely — not the final design.
+
+---
+
+## Decisions Settled (2026-08-07)
+
+From reviewing the phase-1 layout explorations (aura-stage, split-columns, and the stage-split hybrid built from them):
+
+1. **Relevance-based history, not recency-based.** The live surface shows the current utterance (the hero) plus the one turn it is answering (pinned above, secondary) — and nothing else. No receding stack, no ambient scrollable transcript. Rationale: the target learner cannot multitask while producing Spanish; if they're reading history, the conversation isn't happening. Faded partially-readable history lines are the worst of both worlds — unreadable but space-consuming.
+2. **Pause is a first-class interaction state**, not just a button. Three entry points, modeled as a *set of holds* (overlapping sources can't clobber each other): an explicit pause/resume control; inspecting a correction soft-pauses and closing it resumes; scrolling/opening history auto-pauses (scrolling is a declaration of "I'm reading, not talking"). While held, the surface — Aura, text, caret — communicates "holding" without a text label, and resume continues exactly where speech froze. `session.paused` / `session.resumed` are events in the frontend event contract, so the LiveKit worker is built against this model.
+3. **History is an escape hatch, not a surface.** Full conversation review lives behind a deliberate action (scroll-up peek / history control) that holds the session while open.
+4. **Stage-split is the working layout direction.** Aura anchor + pinned context + hero, with translation as a per-line collapsible English column under one global toggle and English lagging the Spanish during live speech. The abstraction is settled; its visual grid and motion are still being refined, and the exploration variants remain as reference points.
 
 ---
 
@@ -174,6 +185,7 @@ If the conversation primitive works, expand around it:
 - **Adaptive conversation** — naturally create situations exercising weak concepts
 - **Pronunciation analysis** — evaluate audio, not just transcripts
 - **Memory** — prior conversations and personal context
+- **Branching conversations** — tap a correction and *talk about it* (a side conversation inside a pause), then pop back to the main thread exactly where it left off. A natural extension of the pause model; explicitly later-phase.
 - **Curriculum** — align with proficiency frameworks or courses
 
 E.g., a learner repeatedly struggling with past-tense narration gets future conversations that naturally invite telling stories about past events. A tutor adapting, not a lesson tree.
