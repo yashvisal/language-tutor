@@ -41,14 +41,11 @@ export function MockAura({
  * to its state animation.
  */
 function useFakeVolume(active: boolean): number | undefined {
-  const [volume, setVolume] = useState<number | undefined>(undefined)
+  const [volume, setVolume] = useState(0)
   const frame = useRef<number>(0)
 
   useEffect(() => {
-    if (!active) {
-      setVolume(undefined)
-      return
-    }
+    if (!active) return
     let raf: number
     const start = performance.now()
     const tick = (now: number) => {
@@ -65,7 +62,9 @@ function useFakeVolume(active: boolean): number | undefined {
     return () => cancelAnimationFrame(raf)
   }, [active])
 
-  return volume
+  // Derived rather than reset via setState: inactive means "no signal", and
+  // the stale last frame simply stops being read.
+  return active ? volume : undefined
 }
 
 /** All agent states worth exercising in design exploration, in cycle order. */
