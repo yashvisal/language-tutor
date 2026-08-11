@@ -37,6 +37,12 @@ export const DESIGN_TASKS: DesignTask[] = [
           "Spanish and English in parallel columns, aligned per turn; modest Aura above.",
       },
       {
+        slug: "stage-split",
+        title: "Stage split",
+        blurb:
+          "Hybrid: left-aligned stage, one pinned context turn, collapsible English column, pause as a first-class state.",
+      },
+      {
         slug: "focus-flow",
         title: "Focus flow",
         blurb:
