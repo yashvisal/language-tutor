@@ -29,9 +29,9 @@
  * centered in both states, and the text block re-centers beneath it when
  * translation toggles.
  *
- * The replay engine is written as a reducer over mock events, including
- * `session.paused` / `session.resumed`, since the mock is destined to become
- * the canonical frontend event contract.
+ * This file is UI only. Everything it renders comes from the session reducer
+ * (`lib/session/reducer.ts`) folding contract events, here produced by the
+ * scripted mock — the live LiveKit adapter is a drop-in replacement producer.
  */
 
 import {
@@ -71,26 +71,21 @@ import {
 } from "@/components/ui/tooltip"
 import {
   CATEGORY_LABELS,
-  CONVERSATION,
-  INTERIM,
   type Correction,
   type CorrectionCategory,
+  type PauseReason,
   type Turn,
-} from "@/lib/design/mock-conversation"
+} from "@/lib/session/contract"
+import {
+  MOCK_INTERIM_SEGMENT_ID,
+  useMockSession,
+} from "@/lib/session/mock-producer"
+import { historyTurns, pinnedTurn, wordsOf } from "@/lib/session/reducer"
 import { cn } from "@/lib/utils"
 
 /* -------------------------------------------------------------------------- */
-/*  Script + layout constants                                                 */
+/*  Layout constants                                                          */
 /* -------------------------------------------------------------------------- */
-
-const INTERIM_TURN: Turn = {
-  id: "interim",
-  speaker: INTERIM.speaker,
-  es: INTERIM.esWords.join(" "),
-  en: INTERIM.enPartial,
-}
-
-const SCRIPT: Turn[] = [...CONVERSATION, INTERIM_TURN]
 
 /**
  * ONE GRID. Every text row on the page — pinned context, hero, and the
@@ -111,108 +106,6 @@ const HERO_LEADING = "leading-[2.15rem]"
 
 /** Shared tween so the column collapse and the grid re-center in sync. */
 const COL_TRANSITION = { duration: 0.5, ease: [0.32, 0.72, 0, 1] as const }
-
-/** Translation trails transcription by this many words — the lag is the point. */
-const EN_LAG_WORDS = 2
-
-function wordsOf(es: string): string[] {
-  return es.split(/\s+/).filter(Boolean)
-}
-
-/* -------------------------------------------------------------------------- */
-/*  Mock event schema + replay engine                                         */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Why the session is being held. Multiple sources can hold it at once (the
- * control button is sticky; a correction popover and a history peek release
- * themselves), so holds are a set, not a boolean.
- */
-type PauseReason = "control" | "correction" | "history"
-
-type StagePhase = "live" | "analyzing" | "settled"
-
-/**
- * A sketch of the frontend event contract. Transcript/analysis events mirror
- * what LiveKit + the analyzer will emit; pause/resume are client-originated
- * events on the same bus — the engine has no other way to stop.
- */
-type StageEvent =
-  | { type: "transcript.delta" }
-  | { type: "transcript.final" }
-  | { type: "analysis.complete" }
-  | { type: "turn.advance" }
-  | { type: "session.paused"; reason: PauseReason }
-  | { type: "session.resumed"; reason: PauseReason }
-
-interface StageState {
-  turnIdx: number
-  /** Words of the current utterance revealed so far. Frozen while held. */
-  wordCount: number
-  phase: StagePhase
-  holds: PauseReason[]
-}
-
-const INITIAL_STATE: StageState = {
-  turnIdx: 0,
-  wordCount: 0,
-  phase: "live",
-  holds: [],
-}
-
-function stageReducer(state: StageState, event: StageEvent): StageState {
-  switch (event.type) {
-    case "transcript.delta":
-      return { ...state, wordCount: state.wordCount + 1 }
-    case "transcript.final": {
-      // Only learner turns go through the analyzer.
-      const turn = SCRIPT[state.turnIdx]!
-      const analyzes = turn.speaker === "learner" && turn.id !== INTERIM_TURN.id
-      return { ...state, phase: analyzes ? "analyzing" : "settled" }
-    }
-    case "analysis.complete":
-      return { ...state, phase: "settled" }
-    case "turn.advance":
-      return {
-        ...state,
-        turnIdx: (state.turnIdx + 1) % SCRIPT.length,
-        wordCount: 0,
-        phase: "live",
-      }
-    case "session.paused":
-      return state.holds.includes(event.reason)
-        ? state
-        : { ...state, holds: [...state.holds, event.reason] }
-    case "session.resumed":
-      return {
-        ...state,
-        holds: state.holds.filter((r) => r !== event.reason),
-      }
-  }
-}
-
-/** How long the engine waits before emitting the next event. */
-function nextBeat(state: StageState): { delay: number; event: StageEvent } {
-  const turn = SCRIPT[state.turnIdx]!
-  const total = wordsOf(turn.es).length
-  const isInterim = turn.id === INTERIM_TURN.id
-
-  if (state.phase === "live") {
-    return state.wordCount < total
-      ? {
-          delay: turn.speaker === "learner" ? 250 : 190,
-          event: { type: "transcript.delta" },
-        }
-      : { delay: 280, event: { type: "transcript.final" } }
-  }
-  if (state.phase === "analyzing") {
-    return { delay: 900, event: { type: "analysis.complete" } }
-  }
-  return {
-    delay: isInterim ? 4200 : turn.corrections?.length ? 2800 : 1500,
-    event: { type: "turn.advance" },
-  }
-}
 
 /* -------------------------------------------------------------------------- */
 /*  Correction category treatment                                             */
@@ -258,9 +151,9 @@ interface Segment {
   correction?: Correction
 }
 
-/** Split a turn's Spanish into plain / correction-marked segments. */
+/** Split a turn's target-language text into plain / marked segments. */
 function segmentTurn(turn: Turn): Segment[] {
-  const { es } = turn
+  const es = turn.target
   const found = (turn.corrections ?? [])
     .map((c) => ({ c, at: es.indexOf(c.original) }))
     .filter((x) => x.at >= 0)
@@ -473,18 +366,30 @@ function EnCell({
 /*  Hero utterance                                                            */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * The hero utterance. Its text is whatever the last cumulative transcript
+ * delta said, so "word by word" is a diff: a word that wasn't in the previous
+ * snapshot animates in, and everything already on screen stays put.
+ */
 function HeroWords({
   turn,
-  wordCount,
+  live,
   marksActive,
   onCorrectionOpenChange,
 }: {
   turn: Turn
-  wordCount: number
+  /** Still being transcribed — only then is the trailing word "new". */
+  live: boolean
   marksActive: boolean
   onCorrectionOpenChange: (open: boolean) => void
 }) {
   const segments = useMemo(() => segmentTurn(turn), [turn])
+  const wordCount = wordsOf(turn.target).length
+  // Only the word the latest delta added animates in. Everything else is
+  // already on screen — and must stay put when corrections land and re-split
+  // the line into new segments, which remounts the words inside them.
+  const arriving = live ? wordCount - 1 : -1
+
   let index = 0
   const nodes: ReactNode[] = []
 
@@ -492,10 +397,9 @@ function HeroWords({
     const words = wordsOf(seg.text)
     const start = index
     index += words.length
-    const visible = Math.max(0, Math.min(words.length, wordCount - start))
-    if (visible === 0) continue
+    if (words.length === 0) continue
 
-    const wordNodes = words.slice(0, visible).map((word, i) => (
+    const wordNodes = words.map((word, i) => (
       <motion.span
         key={`${turn.id}-${start + i}`}
         // Once marks are active the words sit inline so the parent's underline
@@ -503,7 +407,11 @@ function HeroWords({
         className={cn(
           seg.correction && marksActive ? "inline" : "inline-block"
         )}
-        initial={{ opacity: 0, y: 6, filter: "blur(5px)" }}
+        initial={
+          start + i === arriving
+            ? { opacity: 0, y: 6, filter: "blur(5px)" }
+            : false
+        }
         animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
         transition={{ duration: 0.35, ease: "easeOut" }}
       >
@@ -623,7 +531,7 @@ function HistoryPeek({
                 key={turn.id}
                 showEn={showEn}
                 speaker={turn.speaker}
-                en={turn.en}
+                en={turn.anchor}
               >
                 <p
                   className={cn(
@@ -694,8 +602,10 @@ function SpeakerLabel({
 /* -------------------------------------------------------------------------- */
 
 export default function StageSplitPage() {
-  const [state, dispatch] = useReducer(stageReducer, INITIAL_STATE)
-  const { turnIdx, wordCount, phase, holds } = state
+  // The mock producer drives the session; a live LiveKit adapter would take
+  // its place here and nothing below would change.
+  const { state, dispatch } = useMockSession()
+  const { phase, holds } = state
 
   const [showEn, toggleEn] = useReducer((v: boolean) => !v, true)
   const [muted, toggleMute] = useReducer((v: boolean) => !v, false)
@@ -705,28 +615,14 @@ export default function StageSplitPage() {
 
   const hold = useCallback(
     (reason: PauseReason) => dispatch({ type: "session.paused", reason }),
-    []
+    [dispatch]
   )
   const release = useCallback(
     (reason: PauseReason) => dispatch({ type: "session.resumed", reason }),
-    []
+    [dispatch]
   )
-  const setHold = useCallback(
-    (reason: PauseReason, on: boolean) => (on ? hold(reason) : release(reason)),
-    [hold, release]
-  )
-
-  // --- Replay engine ------------------------------------------------------
-  // Nothing is scheduled while held, so the word ticker freezes wherever it
-  // is and resumes from exactly that word.
-  useEffect(() => {
-    if (paused) return
-    const { delay, event } = nextBeat(state)
-    const id = setTimeout(() => dispatch(event), delay)
-    return () => clearTimeout(id)
-    // `state` is captured whole; the beat depends only on these fields.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [turnIdx, wordCount, phase, paused])
+  const setHold = (reason: PauseReason, on: boolean) =>
+    on ? hold(reason) : release(reason)
 
   // Space toggles the hold — a quiet keyboard affordance for resuming.
   useEffect(() => {
@@ -749,31 +645,17 @@ export default function StageSplitPage() {
   }, [holds, hold, release])
 
   // --- Derived view -------------------------------------------------------
-  const turn = SCRIPT[turnIdx]!
-  const context = turnIdx > 0 ? SCRIPT[turnIdx - 1] : undefined
-  const isInterim = turn.id === INTERIM_TURN.id
-  const total = wordsOf(turn.es).length
-  const marksActive = phase === "settled" && turn.speaker === "learner"
+  const turn = state.current
+  const context = pinnedTurn(state)
+  const isInterim = turn?.id === MOCK_INTERIM_SEGMENT_ID
+  const marksActive = phase === "settled" && turn?.speaker === "learner"
 
-  // English trails the Spanish, and only completes a beat after speech stops.
-  const enWords = useMemo(() => turn.en.split(" "), [turn.en])
-  const enCount =
-    phase === "live"
-      ? Math.round(
-          Math.min(1, Math.max(0, (wordCount - EN_LAG_WORDS) / total)) *
-            enWords.length
-        )
-      : enWords.length
+  // English arrives on its own stream, already trailing the Spanish — the lag
+  // is the producer's, not a render trick.
+  const enWords = turn ? wordsOf(turn.anchor) : []
 
-  const auraState: AgentState = paused
-    ? "idle"
-    : phase === "analyzing"
-      ? "thinking"
-      : phase === "live"
-        ? turn.speaker === "tutor"
-          ? "speaking"
-          : "listening"
-        : "listening"
+  // Holding overrides whatever the agent is doing: the surface settles.
+  const auraState: AgentState = paused ? "idle" : state.agentState
 
   return (
     <div
@@ -851,7 +733,7 @@ export default function StageSplitPage() {
                       speaker={context.speaker}
                       en={
                         <span className="text-muted-foreground/70">
-                          {context.en}
+                          {context.anchor}
                         </span>
                       }
                     >
@@ -872,54 +754,56 @@ export default function StageSplitPage() {
             {/* Hero — the current utterance. */}
             <div className="mt-6">
               <AnimatePresence mode="popLayout" initial={false}>
-                <motion.div
-                  key={turn.id}
-                  initial={{ opacity: 0, y: 14 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -10, filter: "blur(4px)" }}
-                  transition={{ duration: 0.4, ease: "easeOut" }}
-                >
-                  <StageRow
-                    showEn={showEn}
-                    speaker={turn.speaker}
-                    labelClassName="text-muted-foreground/70"
-                    enClassName={HERO_LEADING}
-                    en={enWords.slice(0, enCount).map((word, i) => (
-                      <motion.span
-                        key={i}
-                        initial={{ opacity: 0, filter: "blur(3px)" }}
-                        animate={{ opacity: 1, filter: "blur(0px)" }}
-                        transition={{ duration: 0.55, ease: "easeOut" }}
-                        className="inline-block whitespace-pre"
-                      >
-                        {word}{" "}
-                      </motion.span>
-                    ))}
+                {turn && (
+                  <motion.div
+                    key={turn.id}
+                    initial={{ opacity: 0, y: 14 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10, filter: "blur(4px)" }}
+                    transition={{ duration: 0.4, ease: "easeOut" }}
                   >
-                    <p
-                      className={cn(
-                        // Two hero lines reserved, on the hero line box.
-                        "min-h-[4.3rem] text-[1.6rem] tracking-[-0.018em] text-balance",
-                        HERO_LEADING
-                      )}
+                    <StageRow
+                      showEn={showEn}
+                      speaker={turn.speaker}
+                      labelClassName="text-muted-foreground/70"
+                      enClassName={HERO_LEADING}
+                      en={enWords.map((word, i) => (
+                        <motion.span
+                          key={i}
+                          initial={{ opacity: 0, filter: "blur(3px)" }}
+                          animate={{ opacity: 1, filter: "blur(0px)" }}
+                          transition={{ duration: 0.55, ease: "easeOut" }}
+                          className="inline-block whitespace-pre"
+                        >
+                          {word}{" "}
+                        </motion.span>
+                      ))}
                     >
-                      <HeroWords
-                        turn={turn}
-                        wordCount={wordCount}
-                        marksActive={marksActive}
-                        onCorrectionOpenChange={(open) =>
-                          setHold("correction", open)
-                        }
-                      />
-                      {phase === "live" && wordCount > 0 && (
-                        <Caret paused={paused} />
-                      )}
-                      {isInterim && phase !== "live" && (
-                        <span className="text-muted-foreground/50">…</span>
-                      )}
-                    </p>
-                  </StageRow>
-                </motion.div>
+                      <p
+                        className={cn(
+                          // Two hero lines reserved, on the hero line box.
+                          "min-h-[4.3rem] text-[1.6rem] tracking-[-0.018em] text-balance",
+                          HERO_LEADING
+                        )}
+                      >
+                        <HeroWords
+                          turn={turn}
+                          live={phase === "live"}
+                          marksActive={marksActive}
+                          onCorrectionOpenChange={(open) =>
+                            setHold("correction", open)
+                          }
+                        />
+                        {phase === "live" && turn.target.length > 0 && (
+                          <Caret paused={paused} />
+                        )}
+                        {isInterim && phase !== "live" && (
+                          <span className="text-muted-foreground/50">…</span>
+                        )}
+                      </p>
+                    </StageRow>
+                  </motion.div>
+                )}
               </AnimatePresence>
             </div>
           </StageGrid>
@@ -930,9 +814,7 @@ export default function StageSplitPage() {
       <AnimatePresence>
         {historyOpen && (
           <HistoryPeek
-            turns={SCRIPT.slice(0, turnIdx).filter(
-              (t) => t.id !== INTERIM_TURN.id
-            )}
+            turns={historyTurns(state)}
             showEn={showEn}
             onClose={() => release("history")}
           />

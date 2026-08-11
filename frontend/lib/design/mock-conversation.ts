@@ -1,52 +1,38 @@
 /**
- * Shared mock conversation data for design exploration.
+ * Shared mock conversation DATA for design exploration.
  *
  * Every design-inspo variant renders this same conversation so layouts are
- * directly comparable. The shapes here are a sketch of the eventual frontend
- * event contract (see plans/product-vision.md → Technical Direction).
+ * directly comparable. The event contract these shapes once sketched now lives
+ * in `lib/session/contract.ts` — correction types come from there, and
+ * `lib/session/mock-producer.ts` replays this script as contract events.
+ *
+ * The `es`/`en` naming is deliberate here and only here: this is Spanish test
+ * data, not the abstraction. The contract speaks target/anchor.
  *
  * Scenario: a regressed-intermediate learner (understands more than they can
  * produce, fumbles tenses and word order) chatting with the tutor about their
  * weekend. Spanish = target language, English = anchor language.
  */
 
-export type CorrectionCategory =
-  | "tense"
-  | "agreement"
-  | "word-order"
-  | "vocabulary"
-  | "naturalness"
+import type { Speaker } from "@/lib/session/contract"
 
-export type CorrectionSeverity = "error" | "unnatural" | "suggestion"
+export {
+  CATEGORY_LABELS,
+  type Correction,
+  type CorrectionCategory,
+  type CorrectionSeverity,
+} from "@/lib/session/contract"
 
-export interface Correction {
-  id: string
-  /** Exact substring of the turn's `es` text that the correction applies to. */
-  original: string
-  replacement: string
-  category: CorrectionCategory
-  severity: CorrectionSeverity
-  /** One-line explanation in English, precomputed for instant reveal. */
-  explanation: string
-}
+import type { Correction } from "@/lib/session/contract"
 
 export interface Turn {
   id: string
-  speaker: "learner" | "tutor"
+  speaker: Speaker
   /** Target-language text (what was actually said). */
   es: string
   /** Anchor-language translation. */
   en: string
   corrections?: Correction[]
-}
-
-/** Category → human label, for legends/tooltips. */
-export const CATEGORY_LABELS: Record<CorrectionCategory, string> = {
-  tense: "Tense",
-  agreement: "Agreement",
-  "word-order": "Word order",
-  vocabulary: "Vocabulary",
-  naturalness: "More natural",
 }
 
 export const CONVERSATION: Turn[] = [
@@ -158,6 +144,15 @@ export const CONVERSATION: Turn[] = [
  */
 export const INTERIM = {
   speaker: "learner" as const,
-  esWords: ["Nosotros", "vamos", "a", "visitar", "a", "nuestros", "abuelos", "y…"],
+  esWords: [
+    "Nosotros",
+    "vamos",
+    "a",
+    "visitar",
+    "a",
+    "nuestros",
+    "abuelos",
+    "y…",
+  ],
   enPartial: "We're going to visit our grandparents and…",
 }
