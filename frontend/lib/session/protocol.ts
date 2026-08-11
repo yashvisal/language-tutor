@@ -40,13 +40,22 @@ export const STREAM_ATTRIBUTES = {
   /** Present on transcription streams; identifies the transcribed track. */
   transcribedTrackId: "lk.transcribed_track_id",
   /** Ours: BCP-47-ish language tag on translation streams (e.g. `"en"`). */
-  language: "language",
+  language: "tutor.language",
+  /** Ours: source language of a translation stream. */
+  sourceLanguage: "tutor.source_language",
+  /** Ours: the translate model's item id — one text stream per item. */
+  translationItemId: "tutor.item_id",
+  /** Ours: the analyzer's own turn id. NOT an `lk.segment_id` — see the
+   * corrections join in `live-producer.ts`. */
+  turnId: "tutor.turn_id",
 } as const
 
-/** RPC methods the frontend invokes on the agent participant. */
+/** RPC methods the frontend invokes on the agent participant. These names are
+ * namespaced because RPC methods share one registry per participant; they must
+ * match `register_rpc_method(...)` in `backend/src/agent.py` exactly. */
 export const RPC_METHODS = {
-  pause: "pause",
-  resume: "resume",
+  pause: "tutor.pause",
+  resume: "tutor.resume",
 } as const
 
 /** Participant attribute keys. `paused` is mirrored by the agent so pause
