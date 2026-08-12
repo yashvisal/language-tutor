@@ -67,7 +67,44 @@ carries per-turn anchor text — the door stays open without the socket.
   client. Keep latency < ~1s; show a quiet shimmer while waiting.
 - Cache per span per session — re-selecting the same text is instant.
 
-### 4. Carried from phase 2 (unchanged scope)
+### 4. Conversational resume
+
+The known phase-2 gap: after a hold, resume is dead air. The design (settled
+in ideation, 2026-08-12) is conversational re-entry, not audio playback — a
+human tutor paused mid-thought re-enters ("como decía…"), they don't resume
+mid-word like a tape deck. The surface freezes exactly (already true); the
+voice re-enters with judgment.
+
+Three layers, deliberately separate:
+
+1. **Situation briefs** (dynamic facts, per moment): the resume RPC grows a
+   payload — hold duration, hold reasons, the inspected correction if any —
+   and the worker turns it into a short factual brief for a `generate_reply`
+   when (and only when) the tutor was interrupted or a committed turn's reply
+   was killed. If the learner was mid-utterance, resume stays silent and lets
+   them lead. Debounce: holds that open and close within ~400ms never ripple
+   to the agent at all — the surface freeze is client-side and instant, the
+   interruption machinery is reserved for real study pauses.
+2. **Behavioral policy** (system prompt v2): the language-mixing social
+   grammar, taught not scripted — post-pause comprehension check happens in
+   the anchor language ("ready to jump back in?") then returns to target;
+   "¿cómo se dice?" moments get a brief anchor-language answer, a modeled
+   form, and re-immersion; repeated struggle earns a check-in. Informed by
+   the phase-2 session transcripts.
+3. **Analyzer awareness** (the feedback loop): the corrections stream flows
+   back into the tutor's context as quiet session facts ("3 preterite errors
+   so far"), so the tutor can steer and check in the way a human would. This
+   is the vision doc's "agent with awareness of parallel analyzers" arriving
+   early — no new models, just routing existing information.
+
+Explicitly deferred to phase 4 — **learner-profile tuning**: level as a
+parameter selecting policy (English-tolerance, pacing, complexity), speech
+speed control (spike the realtime API for a native speed knob during this
+phase's build; prompt-level pacing approximates via shorter, simpler
+sentences either way). Layers 1–2 are written knowing level arrives as the
+third prompt parameter beside target/anchor language.
+
+### 5. Carried from phase 2 (unchanged scope)
 
 - **Afterthought turns** (product question): when a learner completes a thought
   after the turn committed, should it merge and revise? Explore feel first;
@@ -87,6 +124,7 @@ live-testing activity, not a build item.
 
 - Zero translation infrastructure running during normal conversation; the
   translate socket and its heuristics are deleted, not disabled.
+- Conversational resume: no dead air after a hold the tutor was talking into; short glances never interrupt the voice at all.
 - Select-to-translate works on both speakers' settled turns, holds the session
   while open, and feels like the correction popover's sibling.
 - The one-column stage renders tutor and learner turns at full width with the
