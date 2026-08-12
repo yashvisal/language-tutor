@@ -1,6 +1,6 @@
 # Phase 2: Live Pipeline
 
-*Status: draft, pending Yash's review. Read `plans/product-vision.md` first. Phase 1 (design exploration) settled the stage-split layout, the relevance-based history model, and first-class pause; this phase makes that surface real.*
+*Status: COMPLETE (2026-08-12). The loop works end-to-end live — see "Live evaluation findings" at the end for what the sessions taught us and what carries into phase 3. Read `plans/product-vision.md` first.*
 
 ## Goal
 
@@ -108,3 +108,72 @@ Persistence, auth, session history storage, post-conversation coaching, pronunci
 - Realtime model swap is env-level; Grok vs GPT Realtime comparison done and recorded.
 - Event contract is canonical: mock and live drive the identical UI.
 - A written shortlist of UX findings that feed Phase 3 (polish/iteration priorities).
+
+---
+
+## Live evaluation findings (2026-08-12, ~8 live sessions)
+
+The definition-of-success loop works: imperfect Spanish spoken, no verbal
+interruption, quiet corrections after each settled turn, lagging English beside
+the right sentences, and the tutor handling "¿cómo se dice helpful?" per the
+language-mixing policy (brief answer, modeled form, conversation kept moving).
+
+### Decisions settled by live testing
+
+1. **Grok Voice support removed.** Its plugin cannot hand turn detection to the
+   agent (`can_disable_turn_detection = False`), which forces a second,
+   disagreeing turn clock and degrades transcript segmentation, translation
+   binding, and the analyzer trigger. The planned A/B comparison is off until
+   xAI ships agent-side turn detection; the worker is single-model
+   (`gpt-realtime-2.1`, env-swappable to any OpenAI Realtime snapshot).
+2. **One turn clock is the load-bearing architecture decision.** LiveKit's
+   semantic turn detector owns endpointing for replies, transcripts, analyzer,
+   and translation alike. Every session that violated this (STT-fallback
+   endpointing, model-owned VAD) broke in a different way.
+3. **Segments are not turns.** STT emits a segment per VAD phrase; a hesitant
+   learner produces several per conversational turn. The reducer coalesces
+   consecutive same-speaker segments; display normalizes casing at joins and
+   strips filled pauses. Corrections merge per segment (replacement erased
+   them — see `frontend/scripts/repro-corrections.ts`).
+4. **Endpointing floors:** `min_delay` must outlast the STT flush (~0.5s) or
+   late transcripts double-commit the turn and interrupt the reply. Running
+   1.2s min / 6.0s max; learner-feel tuning stays env-level.
+5. **Reasoning models in the hot path get minimal effort** (both the realtime
+   model and the Luna analyzer). Higher effort surfaces as spoken stall
+   phrases ("déjame pensar…") — the model narrating its own latency.
+6. **Analyzer works and is fast enough:** gpt-5.6-luna at effort "none",
+   0.7–4.4s observed (first call cold), 0–4 corrections per turn, quality
+   subjectively good. The comparative eval (Haiku 4.5 / Gemini flash) remains
+   optional, not urgent.
+7. **Translate endpoint realities:** rejects unknown session fields (a
+   rejected update silently discards the whole payload including output
+   language); sends one endless stream (no item ids, no done events). The
+   frontend routes arriving text to the live learner turn by time, with a 2s
+   post-final grace window.
+
+### Known issues carried to phase 3
+
+- **Translation segmentation/attribution is the weakest link.** Sentence
+  boundaries drift, mishearings occur, and arrival-time routing occasionally
+  splits a turn's translation. The structural fix is worker-side attribution
+  (the worker owns both clocks); do this before polishing translation UX.
+- **Afterthought turns:** a learner completing a thought after the turn
+  committed ("…para ayudar" → "Las clases.") renders as a separate turn and
+  the tutor answers the fragment. Open product question: should afterthoughts
+  merge and revise?
+- **Tutor-side translation** still absent (learner-only v0, by decision).
+- **STT stray-script leakage** (Japanese/Thai chars for Spanish-sounding
+  syllables) reduced by prompt but not eliminated.
+- **UI polish debt:** tutor text renders slightly ahead of/behind voice at
+  times; history-peek a11y (dialog semantics); correction popover motion.
+- **Deployment:** worker runs via `python src/agent.py dev` locally; `lk agent`
+  CLI setup and cloud deploy are untouched.
+
+### Exit criteria status
+
+- Loop works end-to-end live: **yes**.
+- Model swap env-level: **yes** (within OpenAI Realtime snapshots); Grok
+  comparison: **cancelled with cause, documented above**.
+- Contract canonical, mock and live drive identical UI: **yes** (mock verified
+  after every refactor).
+- UX findings shortlist for phase 3: **this section**.
