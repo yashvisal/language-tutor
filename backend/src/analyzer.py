@@ -93,7 +93,6 @@ class CorrectionAnalyzer:
         self._instructions = analyzer_instructions(cfg)
         self._client = openai.AsyncOpenAI(api_key=cfg.openai_api_key or None, max_retries=0)
         self._tasks: set[asyncio.Task[None]] = set()
-        self._seen_turns: set[str] = set()
 
     def analyze_in_background(
         self,
@@ -102,17 +101,9 @@ class CorrectionAnalyzer:
         text: str,
         context: list[AnalysisContextTurn],
     ) -> None:
-        """Fire-and-forget. Never awaited by the voice pipeline.
-
-        Idempotent per turn id: the worker has two trigger paths (the
-        `on_user_turn_completed` node on the OpenAI path, `conversation_item_added`
-        on the Grok path) and must be safe if both ever fire for one turn.
-        """
+        """Fire-and-forget. Never awaited by the voice pipeline."""
         if not self._cfg.analyzer_enabled or not text.strip():
             return
-        if turn_id in self._seen_turns:
-            return
-        self._seen_turns.add(turn_id)
 
         task = asyncio.create_task(self._run(turn_id=turn_id, text=text, context=context))
         self._tasks.add(task)

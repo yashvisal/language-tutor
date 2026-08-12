@@ -11,7 +11,7 @@ changing behaviour here.
 
 ```text
 learner audio
-  ├─ realtime speech-to-speech model  → the tutor's voice          (swappable: xai | openai)
+  ├─ GPT Realtime (speech-to-speech)   → the tutor's voice          (model via TUTOR_REALTIME_MODEL)
   ├─ openai.STT("gpt-live-transcribe") → live transcripts           (lk.transcription)
   ├─ gpt-realtime-translate WebSocket  → lagging anchor-lang text   (tutor.translation)
   └─ on_user_turn_completed            → background analyzer        (tutor.corrections)
@@ -30,9 +30,11 @@ Design rules worth keeping:
   constants there and must byte-match `frontend/lib/session/protocol.ts`.
 - **One transcript stream.** The realtime model's own input transcription is
   disabled; the parallel `stt=` plugin owns every transcript the UI shows.
-- **Turn-taking is model-independent.** Both realtime models run with
-  `turn_detection=None` and LiveKit's audio turn detector does the endpointing,
-  so Grok and GPT Realtime feel the same and can be compared fairly.
+- **One turn clock.** The realtime model runs with `turn_detection=None`;
+  LiveKit's semantic turn detector owns endpointing for replies, transcripts,
+  the analyzer, and translation alike. (This is why Grok Voice support was
+  dropped: its plugin cannot hand over turn detection, forcing a second,
+  disagreeing turn clock. See config.py.)
 - **No hardcoded Spanish.** Target and anchor languages are parameters.
 
 ## Layout
@@ -40,7 +42,7 @@ Design rules worth keeping:
 | File                 | Role                                                        |
 | -------------------- | ----------------------------------------------------------- |
 | `src/agent.py`       | Entrypoint: `AgentServer`, session wiring, pause/resume RPC  |
-| `src/config.py`      | Env config + the swappable realtime-model factory            |
+| `src/config.py`      | Env config + the realtime-model factory                      |
 | `src/prompts.py`     | Tutor / STT / analyzer prompts, language-parameterised       |
 | `src/analyzer.py`    | Background structured-output corrections                     |
 | `src/translation.py` | `gpt-realtime-translate` WebSocket side-task                 |
@@ -61,17 +63,15 @@ Environment lives in `backend/.env.local` (gitignored, loaded by `agent.py`):
 LIVEKIT_URL=wss://<project>.livekit.cloud
 LIVEKIT_API_KEY=...
 LIVEKIT_API_SECRET=...
-OPENAI_API_KEY=...          # STT, translation, analyzer
-XAI_API_KEY=...             # only when TUTOR_REALTIME_MODEL=xai
+OPENAI_API_KEY=...          # realtime model, STT, translation, analyzer
 
 # optional — defaults shown
-TUTOR_REALTIME_MODEL=xai            # xai | openai  ← the model swap
 TUTOR_TARGET_LANG=es
 TUTOR_ANCHOR_LANG=en
-TUTOR_XAI_MODEL=grok-voice-fast-1.0
-TUTOR_XAI_VOICE=Ara
-TUTOR_OPENAI_REALTIME_MODEL=gpt-realtime
-TUTOR_OPENAI_REALTIME_VOICE=marin
+TUTOR_REALTIME_MODEL=gpt-realtime-2
+TUTOR_REALTIME_VOICE=marin
+TUTOR_MIN_ENDPOINT_S=1.2            # must outlast the STT flush lag (~0.5s)
+TUTOR_MAX_ENDPOINT_S=6.0            # patience for a learner mid-word-search
 TUTOR_STT_MODEL=gpt-live-transcribe
 TUTOR_ANALYZER_MODEL=gpt-5.6-luna
 TUTOR_ANALYZER_ENABLED=true
@@ -84,8 +84,8 @@ TUTOR_TRANSLATION_URL=wss://api.openai.com/v1/realtime/translations
 `tutor.analyzer` attribute, so the UI skips the analyzing phase rather than
 waiting for corrections that will never arrive.
 
-Swapping the realtime model is env-only: set `TUTOR_REALTIME_MODEL=openai` and
-restart. No code change.
+`TUTOR_REALTIME_MODEL` takes any OpenAI Realtime model id (e.g. a pinned
+snapshot); `gpt-realtime-2` gets `reasoning.effort="minimal"` automatically.
 
 ## Run
 

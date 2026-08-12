@@ -2,9 +2,9 @@
 
 Pipeline (see plans/phases/phase-2-live-pipeline.md):
 
-    realtime speech-to-speech model   <- swappable: xai | openai
+    GPT Realtime (speech-to-speech)    -> the tutor's voice
   + parallel STT (gpt-live-transcribe) -> live target-language transcripts
-  + LiveKit audio turn detector        -> identical turn-taking across models
+  + LiveKit semantic turn detector     -> the ONE turn clock for everything
   + translation side-task              -> lagging anchor-language text
   + on_user_turn_completed             -> background analyzer -> corrections
 
@@ -61,15 +61,9 @@ class TutorAgent(Agent):
         self._cfg = cfg
         self._analyzer = analyzer
 
-    # The analyzer has two trigger paths because turn ownership differs by
-    # provider, and each mode starves one of them (both found live 2026-08-12):
-    #  - OpenAI path (external turn detection): THIS node fires with the full
-    #    committed turn, but `conversation_item_added` never sees user items —
-    #    model-side input transcription is off, so no user text enters history.
-    #  - Grok path (model-owned turn detection): this node never fires at all;
-    #    user items DO appear via Grok's own final transcripts, so the session's
-    #    `conversation_item_added` handler (see `tutor()`) picks them up.
-    # The analyzer dedupes by turn id, so both firing is harmless.
+    # The analyzer trigger. Fires with the full committed turn because turn
+    # detection happens agent-side — with model-owned turn detection this node
+    # never runs (the reason Grok support was dropped; see config.py).
     async def on_user_turn_completed(
         self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage
     ) -> None:
@@ -123,39 +117,34 @@ async def tutor(ctx: JobContext) -> None:
     logger.info(
         "starting tutor session",
         extra={
-            "realtime_provider": cfg.realtime_provider,
+            "realtime_model": cfg.realtime_model,
             "target_lang": cfg.target_lang,
             "anchor_lang": cfg.anchor_lang,
         },
     )
 
-    session_kwargs: dict = {
-        # Swappable speech-to-speech core (TUTOR_REALTIME_MODEL).
-        "llm": cfg.build_realtime_model(),
+    session: AgentSession = AgentSession(
+        llm=cfg.build_realtime_model(),
         # Parallel STT owns every transcript the UI shows. Both languages are
         # listed because code-switching is expected in a tutoring session.
-        "stt": openai.STT(
+        stt=openai.STT(
             model=cfg.stt_model,
             language=[cfg.target_lang, cfg.anchor_lang],
             prompt=stt_prompt(cfg),
         ),
-    }
-    if cfg.realtime_provider == "openai":
-        # LiveKit's audio turn detector owns endpointing for OpenAI. Grok's
-        # plugin cannot disable server-side turn detection, so xAI runs on its
-        # native VAD — see TutorConfig.build_realtime_model for the full story.
-        session_kwargs["turn_handling"] = TurnHandlingOptions(
-            turn_detection=inference.TurnDetector()
-        )
-    else:
-        # Explicit, not default: with a parallel `stt=` present the session
-        # otherwise falls back to STT endpointing, which commits a micro-turn at
-        # every half-second pause — each one interrupting the reply Grok had in
-        # flight (found live, 2026-08-12: fragmented turns, discarded responses,
-        # and `on_user_turn_completed` never firing, so no analyzer either).
-        session_kwargs["turn_handling"] = TurnHandlingOptions(turn_detection="realtime_llm")
-
-    session: AgentSession = AgentSession(**session_kwargs)
+        # ONE turn clock: the semantic turn detector owns endpointing for the
+        # model's replies, the transcript segmentation, the analyzer trigger,
+        # and translation binding alike.
+        turn_handling=TurnHandlingOptions(
+            turn_detection=inference.TurnDetector(),
+            # min_delay must outlast the STT flush lag or late transcripts
+            # double-commit the turn and interrupt the reply (see TutorConfig).
+            endpointing={
+                "min_delay": cfg.min_endpointing_s,
+                "max_delay": cfg.max_endpointing_s,
+            },
+        ),
+    )
 
     analyzer = CorrectionAnalyzer(cfg, ctx.room) if cfg.analyzer_enabled else None
     translation = TranslationTask(cfg=cfg, room=ctx.room, state=state)
@@ -183,35 +172,6 @@ async def tutor(ctx: JobContext) -> None:
                 logger.warning("analyzer shutdown failed", exc_info=True)
 
     ctx.add_shutdown_callback(_shutdown)
-
-    # The analyzer trigger. `conversation_item_added` fires once per committed
-    # user turn with the full turn text, in every turn-detection mode —
-    # including realtime_llm, where `on_user_turn_completed` never runs.
-    def _on_item_added(ev: agents.ConversationItemAddedEvent) -> None:
-        # This runs inside the session's event emitter: an exception here can
-        # stop the framework's own listeners from seeing the event. Nothing in
-        # this handler is allowed to raise — items also aren't all messages
-        # (the first one is an AgentHandoff with no `role`, found live
-        # 2026-08-12), so the shape is checked, not assumed.
-        try:
-            item = ev.item
-            if analyzer is None or getattr(item, "type", None) != "message":
-                return
-            if item.role != "user":
-                return
-            text = (item.text_content or "").strip()
-            if not text:
-                return
-            # Fire and forget: never in the tutor's reply path.
-            analyzer.analyze_in_background(
-                turn_id=item.id,
-                text=text,
-                context=_recent_context(session.history, exclude_id=item.id),
-            )
-        except Exception:
-            logger.warning("analyzer trigger failed", exc_info=True)
-
-    session.on("conversation_item_added", _on_item_added)
 
     await session.start(
         agent=TutorAgent(cfg, analyzer),

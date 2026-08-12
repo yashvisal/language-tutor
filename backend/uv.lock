@@ -713,7 +713,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "aiohttp" },
-    { name = "livekit-agents", extra = ["openai", "xai"] },
+    { name = "livekit-agents", extra = ["openai"] },
     { name = "openai" },
     { name = "python-dotenv" },
 ]
@@ -726,7 +726,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.10" },
-    { name = "livekit-agents", extras = ["openai", "xai"], specifier = "~=1.6.9" },
+    { name = "livekit-agents", extras = ["openai"], specifier = "~=1.6.9" },
     { name = "openai", specifier = ">=2.0.0" },
     { name = "python-dotenv", specifier = ">=1.0.1" },
 ]
@@ -812,9 +812,6 @@ images = [
 openai = [
     { name = "livekit-plugins-openai" },
 ]
-xai = [
-    { name = "livekit-plugins-xai" },
-]
 
 [[package]]
 name = "livekit-api"
@@ -897,18 +894,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/46/6a/db1dd2b5e23de73b25ee0edf79e9888f6508fe66cf927582c381f5fd124f/livekit_plugins_openai-1.6.9.tar.gz", hash = "sha256:3d776e701bf1c5a9dd48ba2dc326b2224a9003384d68b497ddcba3dad1624904", size = 54069, upload-time = "2026-08-07T22:34:33.401Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/78/0d/7a15e95dc5a712426be37fec1acf528f325a0b74aae6af97d6cd5fd7a8ed/livekit_plugins_openai-1.6.9-py3-none-any.whl", hash = "sha256:2a0dc8466a83e8263e8bb5a2d365d2ce9ee4a7538e929646db04be18e169ed4f", size = 59836, upload-time = "2026-08-07T22:34:32.172Z" },
-]
-
-[[package]]
-name = "livekit-plugins-xai"
-version = "1.6.9"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "livekit-agents", extra = ["openai"] },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/80/5e/3189876feb75730049aec15d0e71b17874f949e91a32c4b2db827c298fbd/livekit_plugins_xai-1.6.9.tar.gz", hash = "sha256:f691b81c938073ca29e61e7636a58bfeb3289ff6b8d3f3ac6dbca9ba81bb9ea4", size = 15782, upload-time = "2026-08-07T22:35:37.206Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/c3/1e/a53be6b493679c859988020ca8eafad8719e2bb2445cf46661646d8968f9/livekit_plugins_xai-1.6.9-py3-none-any.whl", hash = "sha256:3d867ed1629be9625f1e9b25b555fdafc9ce8fbbef785305cef04e3648f84701", size = 19902, upload-time = "2026-08-07T22:35:36.105Z" },
 ]
 
 [[package]]

@@ -1,21 +1,25 @@
-"""Environment-driven configuration and the swappable realtime-model factory.
+"""Environment-driven configuration and the realtime-model factory.
 
 Nothing in this file (or anywhere else in the worker) may hardcode Spanish. The
 target/anchor language pair is a parameter, per the product vision.
+
+The realtime model is OpenAI GPT Realtime, full stop. Grok Voice support was
+removed 2026-08-12: its plugin cannot hand turn detection to the agent
+(`can_disable_turn_detection = False`), which forces a second, disagreeing
+turn clock and degrades everything downstream (transcript segmentation,
+translation binding, the analyzer trigger). If xAI ships agent-side turn
+detection, reintroduce it as a factory branch here — the rest of the worker is
+provider-agnostic.
 """
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Literal
 
 from livekit.agents import llm
-from livekit.plugins import openai, xai
+from livekit.plugins import openai
 from openai.types.realtime import RealtimeReasoning
-from openai.types.realtime.realtime_audio_input_turn_detection import ServerVad
-
-RealtimeProvider = Literal["xai", "openai"]
 
 # --- Wire protocol -------------------------------------------------------
 #
@@ -94,17 +98,16 @@ class TutorConfig:
     target_lang: str = "es"
     anchor_lang: str = "en"
 
-    realtime_provider: RealtimeProvider = "xai"
-    xai_model: str = "grok-voice-fast-1.0"
-    xai_voice: str = "Ara"
-    # How long the learner can go silent before Grok considers the turn over.
-    # The default (200ms upstream) is tuned for fluent speakers; our target
-    # learner stutters, restarts, and reaches for words — cutting them off
-    # mid-search is the worst thing a tutor can do. 900ms is the starting
-    # point, tuned by feel via TUTOR_XAI_SILENCE_MS.
-    xai_silence_ms: int = 900
-    openai_realtime_model: str = "gpt-realtime"
-    openai_realtime_voice: str = "marin"
+    # Endpointing. min must comfortably exceed the STT's interim flush lag
+    # (~0.5s for gpt-live-transcribe) — below that, turns commit before their
+    # transcript arrives and the late flush triggers a phantom second commit
+    # that interrupts the tutor's reply (the SDK warns about exactly this,
+    # found live 2026-08-12). max is how long an uncertain end-of-turn waits
+    # for a learner mid-word-search.
+    min_endpointing_s: float = 1.2
+    max_endpointing_s: float = 6.0
+    realtime_model: str = "gpt-realtime-2"
+    realtime_voice: str = "marin"
 
     stt_model: str = "gpt-live-transcribe"
 
@@ -119,19 +122,13 @@ class TutorConfig:
 
     @classmethod
     def from_env(cls) -> TutorConfig:
-        provider = _env("TUTOR_REALTIME_MODEL", "xai").strip().lower()
-        if provider not in ("xai", "openai"):
-            raise ValueError(f"TUTOR_REALTIME_MODEL must be 'xai' or 'openai', got {provider!r}")
-
         return cls(
             target_lang=_env("TUTOR_TARGET_LANG", "es"),
             anchor_lang=_env("TUTOR_ANCHOR_LANG", "en"),
-            realtime_provider=provider,  # type: ignore[arg-type]
-            xai_model=_env("TUTOR_XAI_MODEL", "grok-voice-fast-1.0"),
-            xai_voice=_env("TUTOR_XAI_VOICE", "Ara"),
-            xai_silence_ms=int(_env("TUTOR_XAI_SILENCE_MS", "900")),
-            openai_realtime_model=_env("TUTOR_OPENAI_REALTIME_MODEL", "gpt-realtime"),
-            openai_realtime_voice=_env("TUTOR_OPENAI_REALTIME_VOICE", "marin"),
+            min_endpointing_s=float(_env("TUTOR_MIN_ENDPOINT_S", "1.2")),
+            max_endpointing_s=float(_env("TUTOR_MAX_ENDPOINT_S", "6.0")),
+            realtime_model=_env("TUTOR_REALTIME_MODEL", "gpt-realtime-2"),
+            realtime_voice=_env("TUTOR_REALTIME_VOICE", "marin"),
             stt_model=_env("TUTOR_STT_MODEL", "gpt-live-transcribe"),
             analyzer_model=_env("TUTOR_ANALYZER_MODEL", "gpt-5.6-luna"),
             analyzer_enabled=_env_bool("TUTOR_ANALYZER_ENABLED", True),
@@ -152,41 +149,23 @@ class TutorConfig:
         return language_name(self.anchor_lang)
 
     def build_realtime_model(self) -> llm.RealtimeModel:
-        """Construct the speech-to-speech model for the configured provider.
+        """Construct the speech-to-speech model.
 
-        Turn-taking differs by provider, by necessity (found live, 2026-08-12):
-        the xAI plugin cannot disable Grok's server-side turn detection
-        (`can_disable_turn_detection = False` — passing `turn_detection=None`
-        silently breaks the response loop: turns commit but Grok never replies).
-        So OpenAI runs with server detection off and LiveKit's audio turn
-        detector owning endpointing, while Grok keeps its native server VAD.
-        The A/B comparison therefore includes turn-taking feel, not just voice.
-        The OpenAI model additionally gets its own input transcription disabled
-        — the parallel `stt=` plugin is the single source of transcripts.
+        Model-side turn detection and input transcription are both off: the
+        agent's turn detector owns endpointing (one turn clock for replies,
+        transcripts, analyzer, and translation alike), and the parallel `stt=`
+        plugin is the single source of transcripts.
         """
-        if self.realtime_provider == "openai":
-            kwargs: dict = {
-                "model": self.openai_realtime_model,
-                "voice": self.openai_realtime_voice,
-                "turn_detection": None,
-                "input_audio_transcription": None,
-            }
-            if self.openai_realtime_model.startswith("gpt-realtime-2"):
-                # gpt-realtime-2 is reasoning-capable; default effort adds
-                # latency a live conversation can't afford (same lesson as the
-                # Luna analyzer). Pin it low.
-                kwargs["reasoning"] = RealtimeReasoning(effort="low")
-            return openai.realtime.RealtimeModel(**kwargs)
-
-        # xAI's plugin has no input-transcription option; it emits none. Its
-        # server VAD stays in charge (see the docstring), but with a longer
-        # silence window than the fluent-speaker default — the learner needs
-        # room to stutter and reach for words without being cut off.
-        return xai.realtime.RealtimeModel(
-            model=self.xai_model,
-            voice=self.xai_voice,
-            turn_detection=ServerVad(
-                type="server_vad",
-                silence_duration_ms=self.xai_silence_ms,
-            ),
-        )
+        kwargs: dict = {
+            "model": self.realtime_model,
+            "voice": self.realtime_voice,
+            "turn_detection": None,
+            "input_audio_transcription": None,
+        }
+        if self.realtime_model.startswith("gpt-realtime-2"):
+            # Reasoning-capable model in a live conversation: keep thinking to
+            # a minimum. Anything higher adds reply latency the model then
+            # papers over with spoken stall phrases ("déjame pensar…") — the
+            # double-response feel observed live 2026-08-12.
+            kwargs["reasoning"] = RealtimeReasoning(effort="minimal")
+        return openai.realtime.RealtimeModel(**kwargs)
