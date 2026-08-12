@@ -91,11 +91,19 @@ Three layers, deliberately separate:
    "¿cómo se dice?" moments get a brief anchor-language answer, a modeled
    form, and re-immersion; repeated struggle earns a check-in. Informed by
    the phase-2 session transcripts.
-3. **Analyzer awareness** (the feedback loop): the corrections stream flows
-   back into the tutor's context as quiet session facts ("3 preterite errors
-   so far"), so the tutor can steer and check in the way a human would. This
-   is the vision doc's "agent with awareness of parallel analyzers" arriving
-   early — no new models, just routing existing information.
+3. **The learner feedback loop** (analyzer awareness is only its first
+   source): the worker composes a "tutor context brief" — quiet factual
+   observations injected into the tutor's context — and this session's
+   corrections stream is source #1 ("3 preterite errors so far"), letting the
+   tutor steer and check in the way a human would. Build the BRIEF as the
+   stable primitive, not the analyzer wiring: future sources plug into the
+   same seam without rearchitecting — prior-session performance summaries,
+   the reflection agent, long-term goal tracking (vision doc: learner model /
+   memory / planner). Distinguish this from the phase-4 learner PROFILE:
+   profile is configuration (level, preferences — things that are *set*);
+   the feedback loop is evidence (things that are *observed*). They meet in
+   the prompt but must stay separate primitives, or per-session tuning and
+   longitudinal learning will entangle.
 
 Explicitly deferred to phase 4 — **learner-profile tuning**: level as a
 parameter selecting policy (English-tolerance, pacing, complexity), speech
