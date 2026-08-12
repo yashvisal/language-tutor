@@ -117,8 +117,9 @@ third prompt parameter beside target/anchor language.
 ## Non-goals
 
 Tutor-side ambient translation, beginner-mode translation defaults, curriculum
-features, deployment hardening, mobile. Language-mixing policy tuning stays a
-live-testing activity, not a build item.
+features, deployment hardening, mobile, learner-level profiles and speed/
+complexity tuning (phase 4 — see workstream 4). The prompt-v2 policy IS a
+build item here; its refinement continues through live testing.
 
 ## Exit criteria
 
