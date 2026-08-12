@@ -82,6 +82,9 @@ import {
  */
 const ANALYSIS_TIMEOUT_MS = 8000
 
+/** How long after a learner turn finalizes its translation may still land on it. */
+const ANCHOR_GRACE_MS = 2000
+
 /**
  * Join translation fragments without fusing words: the translate stream omits
  * separators exactly at item boundaries ("now" + "I work" must not become
@@ -361,6 +364,8 @@ export function useLiveSession(): LiveSession {
   const anchorBySegment = useRef(new Map<string, string>())
   /** Translation that arrived between turns, waiting for the next segment. */
   const anchorPending = useRef("")
+  /** The last finalized learner segment and when it finalized. */
+  const lastFinalized = useRef<{ segmentId: string; at: number } | null>(null)
 
   useEffect(() => {
     if (connection !== "idle") return
@@ -447,6 +452,7 @@ export function useLiveSession(): LiveSession {
           if (liveLearnerSegment.current === segmentId) {
             liveLearnerSegment.current = null
           }
+          lastFinalized.current = { segmentId, at: Date.now() }
         }
       }
 
@@ -556,7 +562,16 @@ export function useLiveSession(): LiveSession {
     const pending = smartAppend(anchorPending.current, arrived)
     if (!pending) return
 
-    const segmentId = liveLearnerSegment.current
+    // The translate model trails speech, so a turn's last chunks routinely
+    // arrive just after its transcript finalized. For a short grace window
+    // they still belong to that turn; only once the window closes does text
+    // start waiting for the learner's next utterance.
+    const recent = lastFinalized.current
+    const segmentId =
+      liveLearnerSegment.current ??
+      (recent && Date.now() - recent.at < ANCHOR_GRACE_MS
+        ? recent.segmentId
+        : null)
     if (!segmentId) {
       anchorPending.current = pending
       return
