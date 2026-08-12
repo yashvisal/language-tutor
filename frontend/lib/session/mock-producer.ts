@@ -124,7 +124,6 @@ function transcript(entry: ScriptEntry, wordCount: number): SessionEvent[] {
       segmentId,
       speaker: entry.speaker,
       language: "target",
-      languageCode: "es",
       text: target,
     },
     {
@@ -132,7 +131,6 @@ function transcript(entry: ScriptEntry, wordCount: number): SessionEvent[] {
       segmentId,
       speaker: entry.speaker,
       language: "anchor",
-      languageCode: "en",
       text: anchorSoFar(entry, wordCount),
     },
   ]
@@ -166,7 +164,6 @@ export function nextMockBeat(state: SessionState): MockBeat {
           segmentId: entry.id,
           speaker: entry.speaker,
           language: "target",
-          languageCode: "es",
           text: entry.target,
           analysisPending: entry.analysisPending,
         },
@@ -175,7 +172,6 @@ export function nextMockBeat(state: SessionState): MockBeat {
           segmentId: entry.id,
           speaker: entry.speaker,
           language: "anchor",
-          languageCode: "en",
           text: entry.anchor,
         },
         {

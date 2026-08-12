@@ -64,6 +64,12 @@ export interface Turn {
   /** Anchor-language translation. Lags the target during live speech. */
   anchor: string
   corrections?: Correction[]
+  /**
+   * How the analyzer resolved for this turn. Absent means it never ran (a tutor
+   * turn, or an analyzer that is switched off); "timeout" means the corrections
+   * never arrived, so an empty `corrections` proves nothing.
+   */
+  analysisStatus?: AnalysisStatus
 }
 
 /** Category → human label, for legends and popovers. */
@@ -95,8 +101,6 @@ interface TranscriptEventBase {
   language: LanguageRole
   /** The full transcript of this segment so far — NOT a fragment. */
   text: string
-  /** BCP-47 tag when the producer knows it ("es", "en"); informational only. */
-  languageCode?: string
 }
 
 /** A cumulative transcript snapshot for a segment in one language. */
@@ -119,12 +123,21 @@ export interface TranscriptFinalEvent extends TranscriptEventBase {
   analysisPending?: boolean
 }
 
-/** Corrections for a settled segment, from the semantic analyzer. */
+/**
+ * The analyzer has stopped being pending for a segment: either it answered, or
+ * the producer gave up waiting. Both settle the turn, but they are NOT the same
+ * fact — `status: "timeout"` with no corrections must never be read as "no
+ * mistakes", so it is recorded on the turn for the UI to distinguish later.
+ */
 export interface AnalysisCompleteEvent {
   type: "analysis.complete"
   segmentId: string
   corrections: Correction[]
+  /** Defaults to "complete"; only the live producer's timeout sends "timeout". */
+  status?: AnalysisStatus
 }
+
+export type AnalysisStatus = "complete" | "timeout"
 
 /** Agent lifecycle, mirroring LiveKit's `useAgent()` state. */
 export interface AgentStateEvent {
@@ -158,6 +171,3 @@ export type SessionEvent =
   | SessionPausedEvent
   | SessionResumedEvent
   | SessionResetEvent
-
-/** Anything that can drive the reducer: producers hand events to one of these. */
-export type SessionEventSink = (event: SessionEvent) => void

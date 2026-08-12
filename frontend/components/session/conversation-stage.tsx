@@ -27,7 +27,7 @@
  * audio track live.
  */
 
-import { useCallback, useEffect, useReducer, type ReactNode } from "react"
+import { memo, useCallback, useEffect, useReducer, type ReactNode } from "react"
 import { AnimatePresence, motion } from "motion/react"
 
 import { HistoryPeek } from "@/components/session/history-peek"
@@ -46,12 +46,27 @@ import type {
   SessionEvent,
 } from "@/lib/session/contract"
 import {
+  heroTurn,
   historyTurns,
+  isHeld,
+  marksActive,
   pinnedTurn,
   wordsOf,
   type SessionState,
 } from "@/lib/session/reducer"
 import { cn } from "@/lib/utils"
+
+/** Elements whose own Space handling outranks the surface's hold shortcut. */
+const FOCUSED_TAKES_SPACE = [
+  "input",
+  "textarea",
+  "button",
+  "[contenteditable='true']",
+  "[role='button']",
+  "[role='switch']",
+  "[role='checkbox']",
+  "[data-slot='popover-content']",
+].join(",")
 
 export interface ConversationStageProps {
   state: SessionState
@@ -70,6 +85,33 @@ export interface ConversationStageProps {
   interimSegmentId?: string
 }
 
+/**
+ * The hero's anchor-language line, word by word. Memoized on the text alone:
+ * target-language interims arrive several times a second and almost never move
+ * the translation, so the spans (and their entry animations) must not be
+ * rebuilt on every one.
+ *
+ * The anchor arrives on its own stream, already trailing — the lag is the
+ * producer's, not a render trick.
+ */
+const AnchorWords = memo(function AnchorWords({ text }: { text: string }) {
+  return (
+    <>
+      {wordsOf(text).map((word, i) => (
+        <motion.span
+          key={i}
+          initial={{ opacity: 0, filter: "blur(3px)" }}
+          animate={{ opacity: 1, filter: "blur(0px)" }}
+          transition={{ duration: 0.55, ease: "easeOut" }}
+          className="inline-block whitespace-pre"
+        >
+          {word}{" "}
+        </motion.span>
+      ))}
+    </>
+  )
+})
+
 export function ConversationStage({
   state,
   dispatch,
@@ -83,7 +125,7 @@ export function ConversationStage({
 
   const [showEn, toggleEn] = useReducer((v: boolean) => !v, true)
 
-  const paused = holds.length > 0
+  const paused = isHeld(state)
   const historyOpen = holds.includes("history")
 
   const hold = useCallback(
@@ -101,14 +143,11 @@ export function ConversationStage({
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== " " || e.metaKey || e.ctrlKey || e.altKey) return
+      // Space is the activation key for whatever has focus. Stealing it would
+      // make Mute and End unusable from the keyboard, and the shortcut is a
+      // convenience — the focused control always wins.
       const target = e.target as HTMLElement | null
-      if (
-        target &&
-        (target.tagName === "INPUT" ||
-          target.tagName === "TEXTAREA" ||
-          target.isContentEditable)
-      )
-        return
+      if (target?.closest?.(FOCUSED_TAKES_SPACE)) return
       e.preventDefault()
       if (holds.length > 0) holds.forEach(release)
       else hold("control")
@@ -118,15 +157,11 @@ export function ConversationStage({
   }, [holds, hold, release])
 
   // --- Derived view -------------------------------------------------------
-  const turn = state.current
+  const turn = heroTurn(state)
   const context = pinnedTurn(state)
   const isInterim =
     interimSegmentId !== undefined && turn?.id === interimSegmentId
-  const marksActive = phase === "settled" && turn?.speaker === "learner"
-
-  // The anchor language arrives on its own stream, already trailing — the lag
-  // is the producer's, not a render trick.
-  const enWords = turn ? wordsOf(turn.anchor) : []
+  const showMarks = marksActive(state)
 
   // Holding overrides whatever the agent is doing: the surface settles.
   const auraState: AgentState = paused ? "idle" : state.agentState
@@ -232,17 +267,7 @@ export function ConversationStage({
                       speaker={turn.speaker}
                       labelClassName="text-muted-foreground/70"
                       enClassName={HERO_LEADING}
-                      en={enWords.map((word, i) => (
-                        <motion.span
-                          key={i}
-                          initial={{ opacity: 0, filter: "blur(3px)" }}
-                          animate={{ opacity: 1, filter: "blur(0px)" }}
-                          transition={{ duration: 0.55, ease: "easeOut" }}
-                          className="inline-block whitespace-pre"
-                        >
-                          {word}{" "}
-                        </motion.span>
-                      ))}
+                      en={<AnchorWords text={turn.anchor} />}
                     >
                       <p
                         className={cn(
@@ -254,7 +279,7 @@ export function ConversationStage({
                         <HeroWords
                           turn={turn}
                           live={phase === "live"}
-                          marksActive={marksActive}
+                          marksActive={showMarks}
                           onCorrectionOpenChange={(open) =>
                             setHold("correction", open)
                           }

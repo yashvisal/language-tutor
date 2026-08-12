@@ -19,7 +19,12 @@ from dataclasses import dataclass
 import openai
 from livekit import rtc
 
-from config import TOPIC_CORRECTIONS, TutorConfig
+from config import (
+    ATTR_CORRECTION_COUNT,
+    ATTR_TURN_ID,
+    TOPIC_CORRECTIONS,
+    TutorConfig,
+)
 from prompts import analyzer_instructions
 
 logger = logging.getLogger("tutor.analyzer")
@@ -61,7 +66,9 @@ CORRECTIONS_SCHEMA = {
     },
 }
 
-# How many prior turns of context to send with each utterance.
+# How many prior turns of context to send with each utterance. This is the
+# *only* knob: `agent._recent_context` reads it to decide how much of the chat
+# context to walk back, so the history is truncated exactly once.
 CONTEXT_TURNS = 6
 REQUEST_TIMEOUT = 12.0
 
@@ -139,7 +146,9 @@ class CorrectionAnalyzer:
     async def _request(
         self, *, text: str, context: list[AnalysisContextTurn]
     ) -> list[dict[str, str]]:
-        lines = [f"{turn.speaker}: {turn.text}" for turn in context[-CONTEXT_TURNS:]]
+        # Already truncated to CONTEXT_TURNS by the caller — see the comment on
+        # the constant. Truncating again here would hide a mismatch.
+        lines = [f"{turn.speaker}: {turn.text}" for turn in context]
         prompt = (
             "Conversation so far:\n"
             + ("\n".join(lines) if lines else "(this is the first turn)")
@@ -208,7 +217,7 @@ class CorrectionAnalyzer:
             json.dumps(payload, ensure_ascii=False),
             topic=TOPIC_CORRECTIONS,
             attributes={
-                "tutor.turn_id": turn_id,
-                "tutor.correction_count": str(len(corrections)),
+                ATTR_TURN_ID: turn_id,
+                ATTR_CORRECTION_COUNT: str(len(corrections)),
             },
         )

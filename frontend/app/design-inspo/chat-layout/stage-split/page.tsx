@@ -14,6 +14,7 @@ import { useReducer } from "react"
 
 import { ConversationStage } from "@/components/session/conversation-stage"
 import { MockAura } from "@/components/design/mock-aura"
+import { STAGE_AURA_CLASS } from "@/components/session/tutor-aura"
 import {
   MOCK_INTERIM_SEGMENT_ID,
   useMockSession,
@@ -34,11 +35,7 @@ export default function StageSplitPage() {
       // fidelity with the live surface.
       onEnd={() => {}}
       renderAura={(auraState) => (
-        <MockAura
-          state={auraState}
-          size="lg"
-          className="h-[clamp(7rem,22vh,12rem)]"
-        />
+        <MockAura state={auraState} size="lg" className={STAGE_AURA_CLASS} />
       )}
     />
   )

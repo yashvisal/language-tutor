@@ -8,7 +8,7 @@
  * pushes exactly the same `SessionEvent`s at `sessionReducer`, so the surface
  * cannot tell them apart.
  *
- * Three wire-level realities shape everything below, and each is handled once,
+ * Four wire-level realities shape everything below, and each is handled once,
  * in one place:
  *
  * 1. TRANSCRIPTION IS ALREADY CUMULATIVE AND ALREADY KEYED. The agent publishes
@@ -18,10 +18,12 @@
  *    `lk.transcription_final`. That is the contract's delta/final shape
  *    verbatim — no buffering needed here.
  *
- * 2. CORRECTIONS DO NOT CARRY A SEGMENT ID. The analyzer keys its payload by
- *    the agent-side chat message id, which has no relationship to the segment
- *    ids LiveKit mints for transcription. The payload does include the final
- *    utterance text, so we join on that (`matchCorrectionsToSegment`).
+ * 2. CORRECTIONS DO NOT CARRY A SEGMENT ID, AND ARE KEYED TO A WHOLE TURN. The
+ *    analyzer keys its payload by the agent-side chat message id, which has no
+ *    relationship to the segment ids LiveKit mints for transcription, and its
+ *    `text` is the joined text of a turn that STT may have split across several
+ *    segments. The join is therefore textual and, when the turn was split,
+ *    per-correction (`attributeCorrections`).
  *
  * 3. TRANSLATION DOES NOT CARRY A SEGMENT ID EITHER. The translate side-task
  *    opens one stream per translated item with no `lk.segment_id` at all, and
@@ -29,19 +31,20 @@
  *    first sight, to whichever learner segment is live at that moment, and its
  *    accumulated text becomes that segment's anchor language.
  *
- * The hold set stays client-side exactly as in the mock: several UI affordances
- * can hold at once, and only the transitions "first hold added" and "last hold
- * released" reach the agent, as one `tutor.pause` / `tutor.resume` RPC.
+ * 4. PAUSE IS TWO-SIDED. The hold set is client-side (several UI affordances can
+ *    hold at once) but the agent mirrors its real paused state as a participant
+ *    attribute. Rather than edge-trigger an RPC per transition, the two are
+ *    reconciled: while desired != reported the RPC is re-sent, so a dropped
+ *    call, a reconnect, or a fresh agent all converge instead of stranding the
+ *    surface and the tutor in opposite states.
+ *
+ * The surface's other invariant is that a HELD SESSION DOES NOT MOVE. In replay
+ * that is free (a held mock never schedules a beat); live, speech keeps
+ * arriving, so turn-advancing events are queued while any hold is up and
+ * flushed in order when the last one is released.
  */
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useReducer,
-  useRef,
-  useState,
-} from "react"
+import { useCallback, useEffect, useReducer, useRef, useState } from "react"
 import { ConnectionState, Track, type Room } from "livekit-client"
 import {
   useAgent,
@@ -54,27 +57,50 @@ import {
 
 import type { Correction, SessionEvent, Speaker } from "./contract"
 import {
+  ANALYZER_OFF,
   ATTRIBUTE_TRUE,
   PARTICIPANT_ATTRIBUTES,
   RPC_METHODS,
   STREAM_ATTRIBUTES,
   TEXT_STREAM_TOPICS,
-  tutorSessionOptions,
+  TUTOR_SESSION_OPTIONS,
   tutorTokenSource,
 } from "./livekit"
 import {
   INITIAL_SESSION_STATE,
+  isHeld,
   sessionReducer,
   type SessionState,
 } from "./reducer"
 
 /**
  * How long a learner turn may sit in `analyzing` before the surface gives up
- * waiting and settles it uncorrected. The analyzer is fire-and-forget on the
- * worker and every failure path there is a dropped correction, so without this
- * a single dropped call would freeze the hero's marks forever.
+ * waiting and settles it. The analyzer is fire-and-forget on the worker and
+ * every failure path there is a dropped correction, so without this a single
+ * dropped call would freeze the hero's marks forever. The turn is settled as
+ * `status: "timeout"` — never as a clean bill of health.
  */
 const ANALYSIS_TIMEOUT_MS = 8000
+
+/** How long to wait before re-sending an unacknowledged pause/resume RPC. */
+const PAUSE_RETRY_MS = 2000
+
+/** Attempts per desired pause state before giving up on this agent. */
+const MAX_PAUSE_ATTEMPTS = 5
+
+/**
+ * How many finalized learner utterances stay joinable. Corrections arrive
+ * within a turn or two of the speech that produced them, so anything older is
+ * dead weight — and every entry costs a `normalize()` pass per payload.
+ */
+const MAX_FINALIZED = 10
+
+/** Events that must not reach the reducer while the session is held. */
+const TURN_ADVANCING = new Set<SessionEvent["type"]>([
+  "transcript.delta",
+  "transcript.final",
+  "analysis.complete",
+])
 
 /* -------------------------------------------------------------------------- */
 /*  Corrections join                                                          */
@@ -96,7 +122,7 @@ export interface FinalizedUtterance {
   text: string
 }
 
-/** Case-, accent-of-punctuation- and whitespace-insensitive comparison key. */
+/** Case-, punctuation- and whitespace-insensitive comparison key. */
 function normalize(text: string): string {
   return text
     .toLowerCase()
@@ -106,7 +132,7 @@ function normalize(text: string): string {
 }
 
 /**
- * Resolve which on-screen segment a corrections payload belongs to.
+ * Resolve which on-screen segment a whole corrections payload belongs to.
  *
  * The worker keys corrections by its own turn id (the agent's `ChatMessage.id`)
  * while the UI keys turns by `lk.segment_id`, and the two are minted by
@@ -116,10 +142,11 @@ function normalize(text: string): string {
  *   1. exact match against a finalized learner utterance (the normal case: the
  *      analyzer sees the same STT output the UI rendered);
  *   2. else a normalized match, which absorbs punctuation and casing drift
- *      between the realtime model's transcript and the STT plugin's;
- *   3. else the most recently finalized learner utterance, because corrections
- *      arrive within a turn or two of the speech that produced them and a
- *      slightly misplaced mark beats a silently dropped one.
+ *      between the realtime model's transcript and the STT plugin's.
+ *
+ * Returns null when the payload spans no single segment — usually because STT
+ * split the turn into several segments while the analyzer saw them joined. That
+ * case is `attributeCorrections`' job, not a reason to guess.
  *
  * Searching newest-first matters: a learner who repeats themselves should see
  * the correction on the utterance they just said.
@@ -128,21 +155,70 @@ export function matchCorrectionsToSegment(
   payloadText: string,
   finalized: readonly FinalizedUtterance[]
 ): string | null {
-  if (finalized.length === 0) return null
-
   for (let i = finalized.length - 1; i >= 0; i--) {
     if (finalized[i]!.text === payloadText) return finalized[i]!.segmentId
   }
 
   const target = normalize(payloadText)
-  if (target) {
-    for (let i = finalized.length - 1; i >= 0; i--) {
-      if (normalize(finalized[i]!.text) === target)
-        return finalized[i]!.segmentId
-    }
+  if (!target) return null
+  for (let i = finalized.length - 1; i >= 0; i--) {
+    if (normalize(finalized[i]!.text) === target) return finalized[i]!.segmentId
   }
 
-  return finalized[finalized.length - 1]!.segmentId
+  return null
+}
+
+/** The newest finalized segment whose text contains `original`, or null. */
+function segmentContaining(
+  original: string,
+  finalized: readonly FinalizedUtterance[]
+): string | null {
+  for (let i = finalized.length - 1; i >= 0; i--) {
+    if (finalized[i]!.text.includes(original)) return finalized[i]!.segmentId
+  }
+  const needle = normalize(original)
+  if (!needle) return null
+  for (let i = finalized.length - 1; i >= 0; i--) {
+    if (normalize(finalized[i]!.text).includes(needle))
+      return finalized[i]!.segmentId
+  }
+  return null
+}
+
+/**
+ * Spread one corrections payload over the segments it actually describes.
+ *
+ * The analyzer's `text` is a whole learner turn; STT may have emitted that turn
+ * as several segments, each its own `Turn` on screen. When the payload matches
+ * one segment outright everything belongs to it. Otherwise each correction is
+ * placed on the newest segment containing its `original` — corrections whose
+ * text is nowhere to be found are dropped rather than misattributed, which is
+ * the only case where a mark would point at words the learner never said.
+ *
+ * Returns segment id → corrections, one entry per affected segment.
+ */
+export function attributeCorrections(
+  payloadText: string,
+  corrections: readonly Correction[],
+  finalized: readonly FinalizedUtterance[]
+): Map<string, Correction[]> {
+  const bySegment = new Map<string, Correction[]>()
+  if (finalized.length === 0) return bySegment
+
+  const whole = matchCorrectionsToSegment(payloadText, finalized)
+  if (whole) {
+    bySegment.set(whole, [...corrections])
+    return bySegment
+  }
+
+  for (const correction of corrections) {
+    const segmentId = segmentContaining(correction.original, finalized)
+    if (!segmentId) continue
+    const list = bySegment.get(segmentId) ?? []
+    list.push(correction)
+    bySegment.set(segmentId, list)
+  }
+  return bySegment
 }
 
 /* -------------------------------------------------------------------------- */
@@ -169,8 +245,7 @@ export interface LiveSession {
 }
 
 export function useLiveSession(): LiveSession {
-  const options = useMemo(() => tutorSessionOptions(), [])
-  const session = useSession(tutorTokenSource, options)
+  const session = useSession(tutorTokenSource, TUTOR_SESSION_OPTIONS)
   const agent = useAgent(session)
   const room = session.room
 
@@ -217,6 +292,39 @@ export function useLiveSession(): LiveSession {
     void (muted ? micPublication.mute() : micPublication.unmute())
   }, [muted, micPublication])
 
+  /* -- the hold gate ------------------------------------------------------ */
+
+  const held = isHeld(state)
+  const heldRef = useRef(false)
+  const buffered = useRef<SessionEvent[]>([])
+
+  /**
+   * Everything the wire produces goes through here rather than at the reducer
+   * directly. A held session must not advance — the mock gets that by never
+   * scheduling a beat, but real speech keeps arriving, so turn-advancing events
+   * queue up instead. Agent state and pause events pass through: the Aura
+   * should still settle while the surface is frozen.
+   */
+  const emit = useCallback((event: SessionEvent) => {
+    if (heldRef.current && TURN_ADVANCING.has(event.type)) {
+      buffered.current.push(event)
+      return
+    }
+    dispatch(event)
+  }, [])
+
+  // Declared before the producers so that within one commit the gate closes (or
+  // drains) before anything new is emitted.
+  useEffect(() => {
+    heldRef.current = held
+    if (held || buffered.current.length === 0) return
+    // FIFO: the queued deltas are cumulative snapshots, so replaying them in
+    // order reproduces exactly the ticker the learner would have watched.
+    const queued = buffered.current
+    buffered.current = []
+    for (const event of queued) dispatch(event)
+  }, [held])
+
   /* -- agent state -------------------------------------------------------- */
 
   useEffect(() => {
@@ -232,6 +340,7 @@ export function useLiveSession(): LiveSession {
   const liveLearnerSegment = useRef<string | null>(null)
   const correctionsSeen = useRef(new Set<string>())
   const translationBindings = useRef(new Map<string, string>())
+  const anchorSent = useRef(new Map<string, string>())
 
   useEffect(() => {
     if (connection !== "idle") return
@@ -240,6 +349,8 @@ export function useLiveSession(): LiveSession {
     liveLearnerSegment.current = null
     correctionsSeen.current.clear()
     translationBindings.current.clear()
+    anchorSent.current.clear()
+    buffered.current = []
     dispatch({ type: "session.reset" })
   }, [connection])
 
@@ -248,14 +359,30 @@ export function useLiveSession(): LiveSession {
   const transcriptions = useTranscriptions({ room })
   const localIdentity = room.localParticipant.identity
 
+  // The agent tells us whether corrections are coming at all. With the analyzer
+  // off, a learner final must settle immediately rather than hang in `analyzing`
+  // for the full timeout on every single turn.
+  const analyzerOff =
+    agent.attributes?.[PARTICIPANT_ATTRIBUTES.analyzer] === ANALYZER_OFF
+
   useEffect(() => {
-    // Iterating in arrival order matters: a delta for an unseen segment retires
+    // Only the tail can have changed: a segment we have already seen finalized
+    // is immutable, so scan back to the newest such entry and replay forward
+    // from there. Interims arrive ~2/second, and the history is unbounded.
+    let start = transcriptions.length
+    while (start > 0) {
+      const entry = transcriptions[start - 1]!
+      if (transcriptSeen.current.get(segmentIdOf(entry))?.final) break
+      start--
+    }
+
+    // Forward order matters from here: a delta for an unseen segment retires
     // whatever is on stage, and that is the only "turn advanced" signal the
     // live pipeline gives the reducer.
-    for (const entry of transcriptions) {
+    for (let i = start; i < transcriptions.length; i++) {
+      const entry = transcriptions[i]!
       const attributes = entry.streamInfo.attributes ?? {}
-      const segmentId =
-        attributes[STREAM_ATTRIBUTES.segmentId] ?? entry.streamInfo.id
+      const segmentId = segmentIdOf(entry)
       const speaker: Speaker =
         entry.participantInfo.identity === localIdentity ? "learner" : "tutor"
       const final =
@@ -265,7 +392,7 @@ export function useLiveSession(): LiveSession {
       if (!seen || seen.text !== entry.text) {
         // Always emit the delta first, even for a segment that arrives already
         // final: `transcript.final` only patches a segment the reducer knows.
-        dispatch({
+        emit({
           type: "transcript.delta",
           segmentId,
           speaker,
@@ -276,26 +403,26 @@ export function useLiveSession(): LiveSession {
       }
 
       if (final && !seen?.final) {
-        dispatch({
+        emit({
           type: "transcript.final",
           segmentId,
           speaker,
           language: "target",
           text: entry.text,
-          // Only learner turns reach the analyzer.
-          analysisPending: speaker === "learner",
+          // Only learner turns reach the analyzer — and only when it is running.
+          analysisPending: speaker === "learner" && !analyzerOff,
         })
         if (speaker === "learner") {
           finalizedLearner.current = [
             ...finalizedLearner.current,
             { segmentId, text: entry.text },
-          ]
+          ].slice(-MAX_FINALIZED)
         }
       }
 
       transcriptSeen.current.set(segmentId, { text: entry.text, final })
     }
-  }, [transcriptions, localIdentity])
+  }, [transcriptions, localIdentity, analyzerOff, emit])
 
   /* -- corrections -> analysis.complete ----------------------------------- */
 
@@ -313,19 +440,26 @@ export function useLiveSession(): LiveSession {
       if (!payload) continue
       correctionsSeen.current.add(stream.streamInfo.id)
 
-      const segmentId = matchCorrectionsToSegment(
-        payload.text ?? "",
-        finalizedLearner.current
-      )
-      if (!segmentId) continue
+      const finalized = finalizedLearner.current
+      const newest = finalized[finalized.length - 1]?.segmentId
+      if (!newest) continue
 
-      dispatch({
-        type: "analysis.complete",
-        segmentId,
-        corrections: payload.corrections ?? [],
-      })
+      const bySegment = attributeCorrections(
+        payload.text ?? "",
+        payload.corrections ?? [],
+        finalized
+      )
+      // The segment still waiting on the analyzer is the turn's last one, and
+      // the corrections may all have landed on earlier ones (or nowhere). It
+      // gets an answer regardless, or it would sit in `analyzing` until the
+      // timeout for a turn the analyzer did in fact reply to.
+      if (!bySegment.has(newest)) bySegment.set(newest, [])
+
+      for (const [segmentId, corrections] of bySegment) {
+        emit({ type: "analysis.complete", segmentId, corrections })
+      }
     }
-  }, [correctionStreams])
+  }, [correctionStreams, emit])
 
   /* -- analyzer timeout --------------------------------------------------- */
 
@@ -335,15 +469,17 @@ export function useLiveSession(): LiveSession {
     if (!analyzingSegment) return
     const timer = setTimeout(
       () =>
-        dispatch({
+        emit({
           type: "analysis.complete",
           segmentId: analyzingSegment,
           corrections: [],
+          // Not a clean bill: nothing was ever heard back.
+          status: "timeout",
         }),
       ANALYSIS_TIMEOUT_MS
     )
     return () => clearTimeout(timer)
-  }, [analyzingSegment])
+  }, [analyzingSegment, emit])
 
   /* -- translation -> anchor deltas --------------------------------------- */
 
@@ -375,51 +511,84 @@ export function useLiveSession(): LiveSession {
     }
 
     for (const [segmentId, texts] of bySegment) {
-      dispatch({
+      const text = texts.join(" ").replace(/\s+/g, " ").trim()
+      // One chunk on one stream re-renders every binding; only the segment that
+      // actually grew needs a delta.
+      if (anchorSent.current.get(segmentId) === text) continue
+      anchorSent.current.set(segmentId, text)
+      emit({
         type: "transcript.delta",
         segmentId,
         speaker: "learner",
         language: "anchor",
-        text: texts.join(" ").replace(/\s+/g, " ").trim(),
+        text,
       })
     }
-  }, [translationStreams])
+  }, [translationStreams, emit])
 
-  /* -- holds -> pause / resume RPC ---------------------------------------- */
+  /* -- holds <-> pause / resume RPC --------------------------------------- */
 
-  const held = state.holds.length > 0
-  const sentPause = useRef(false)
+  // Desired: what the hold set says. Reported: what the agent says it is doing
+  // (mirrored as an attribute so it survives reconnects). The two are
+  // reconciled rather than edge-triggered, so a dropped RPC, a stale attribute
+  // or a brand-new agent all converge instead of stranding the session.
+  const desiredPause = held
+  const reportedPause =
+    agent.attributes?.[PARTICIPANT_ATTRIBUTES.paused] === ATTRIBUTE_TRUE
+  const agentIdentity = agent.isConnected ? agent.identity : undefined
+
+  /** The last value we asked this agent for; null = nothing asked yet. */
+  const pauseAsked = useRef<boolean | null>(null)
+  const pauseAttempts = useRef(0)
+  const [pauseRetry, setPauseRetry] = useState(0)
 
   useEffect(() => {
-    if (!agent.isConnected || !agent.identity) return
-    if (sentPause.current === held) return
-    sentPause.current = held
-    const identity = agent.identity
+    // A different agent (or none) has negotiated nothing with us: start over, so
+    // a session that is still held re-pauses the agent it reconnects to.
+    pauseAsked.current = null
+    pauseAttempts.current = 0
+  }, [agentIdentity])
+
+  useEffect(() => {
+    if (!agentIdentity) return
+    if (desiredPause === reportedPause) {
+      pauseAttempts.current = 0
+      return
+    }
+
+    // The agent reports paused and we have never asked it for anything: it is
+    // the source of truth for whether audio is flowing, so adopt a hold rather
+    // than leave the learner looking at a live-looking dead session. Only here —
+    // once we have asked, a disagreeing attribute is merely stale, and adopting
+    // it would re-pause the session on every resume.
+    if (pauseAsked.current === null && reportedPause) {
+      pauseAsked.current = true
+      dispatch({ type: "session.paused", reason: "control" })
+      return
+    }
+
+    if (pauseAsked.current !== desiredPause) pauseAttempts.current = 0
+    if (pauseAttempts.current >= MAX_PAUSE_ATTEMPTS) return
+    pauseAsked.current = desiredPause
+    pauseAttempts.current += 1
+
     void room.localParticipant
       .performRpc({
-        destinationIdentity: identity,
-        method: held ? RPC_METHODS.pause : RPC_METHODS.resume,
+        destinationIdentity: agentIdentity,
+        method: desiredPause ? RPC_METHODS.pause : RPC_METHODS.resume,
         payload: "",
       })
       .catch((err: unknown) => {
-        // A failed pause is worth knowing about but not worth breaking the
-        // session over; the next transition will try again.
+        // Worth knowing about, not worth breaking the session over: the retry
+        // below re-fires until the agent's attribute agrees with us.
         console.warn("tutor pause/resume RPC failed", err)
-        sentPause.current = !held
       })
-  }, [held, agent.isConnected, agent.identity, room])
 
-  // The agent mirrors its real paused state as an attribute so it survives
-  // reconnects. It is the source of truth for whether audio is actually
-  // flowing, so if it says "paused" while the UI holds nothing, adopt a hold
-  // rather than leave the learner looking at a live-looking dead session.
-  const agentPaused = agent.attributes?.[PARTICIPANT_ATTRIBUTES.paused]
-  useEffect(() => {
-    if (agentPaused !== ATTRIBUTE_TRUE) return
-    if (held) return
-    sentPause.current = true
-    dispatch({ type: "session.paused", reason: "control" })
-  }, [agentPaused, held])
+    // Success is the attribute flipping, not the promise resolving — that
+    // re-runs this effect and clears the timer. Anything else retries.
+    const timer = setTimeout(() => setPauseRetry((n) => n + 1), PAUSE_RETRY_MS)
+    return () => clearTimeout(timer)
+  }, [agentIdentity, desiredPause, reportedPause, pauseRetry, room])
 
   return {
     state,
@@ -433,6 +602,14 @@ export function useLiveSession(): LiveSession {
     agentAudioTrack: agent.microphoneTrack,
     room,
   }
+}
+
+/** LiveKit's segment id, falling back to the stream's own id. */
+function segmentIdOf(entry: TextStreamData): string {
+  return (
+    entry.streamInfo.attributes?.[STREAM_ATTRIBUTES.segmentId] ??
+    entry.streamInfo.id
+  )
 }
 
 /** Parse a corrections stream, tolerating a payload that is still arriving. */

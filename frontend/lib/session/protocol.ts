@@ -58,15 +58,22 @@ export const RPC_METHODS = {
   resume: "tutor.resume",
 } as const
 
-/** Participant attribute keys. `paused` is mirrored by the agent so pause
- * state survives reconnects. */
+/** Participant attribute keys, all published by the agent. `paused` is mirrored
+ * so pause state survives reconnects; `analyzer` tells the surface whether
+ * corrections are coming at all, so a learner turn need not wait on an analyzer
+ * that isn't running. */
 export const PARTICIPANT_ATTRIBUTES = {
   paused: "tutor.paused",
+  analyzer: "tutor.analyzer",
 } as const
 
 /** Value convention for boolean participant attributes. */
 export const ATTRIBUTE_TRUE = "true"
 export const ATTRIBUTE_FALSE = "false"
+
+/** Values of the `analyzer` attribute. Absent means "assume on". */
+export const ANALYZER_ON = "on"
+export const ANALYZER_OFF = "off"
 
 /** Room names are `lesson-<slug>-<timestamp>-<nonce>`; one room per session. */
 export const ROOM_NAME_PREFIX = "lesson"

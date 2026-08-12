@@ -126,9 +126,13 @@ export function sessionReducer(
     }
 
     case "analysis.complete": {
+      // A timeout settles the turn exactly like an answer does, but records
+      // itself: "no corrections because none were found" and "no corrections
+      // because none arrived" must stay distinguishable downstream.
       const next = patchSegment(state, event.segmentId, (t) => ({
         ...t,
         corrections: event.corrections,
+        analysisStatus: event.status ?? "complete",
       }))
       return next.current?.id === event.segmentId && next.phase === "analyzing"
         ? { ...next, phase: "settled" }

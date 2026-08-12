@@ -15,13 +15,41 @@ from livekit.plugins import openai, xai
 
 RealtimeProvider = Literal["xai", "openai"]
 
+# --- Wire protocol -------------------------------------------------------
+#
+# Every string that has to match on both sides of the wire lives here and
+# nowhere else. These must byte-match `frontend/lib/session/protocol.ts`.
+
 # Text stream topics the frontend subscribes to. `lk.transcription` is published
 # by the SDK itself; these two are ours.
 TOPIC_CORRECTIONS = "tutor.corrections"
 TOPIC_TRANSLATION = "tutor.translation"
 
-# Participant attribute mirroring pause state, so it survives reconnects.
+# Participant attributes.
+# `tutor.paused` mirrors pause state, so it survives reconnects.
 ATTR_PAUSED = "tutor.paused"
+# `tutor.analyzer` tells the frontend whether corrections are coming at all, so
+# it can skip the "analyzing" phase entirely when the analyzer is off.
+ATTR_ANALYZER = "tutor.analyzer"
+
+# Value convention for boolean participant attributes.
+ATTR_TRUE = "true"
+ATTR_FALSE = "false"
+ANALYZER_ON = "on"
+ANALYZER_OFF = "off"
+
+# RPC methods the frontend invokes on the agent participant.
+RPC_PAUSE = "tutor.pause"
+RPC_RESUME = "tutor.resume"
+
+# Text stream attributes on `tutor.corrections`.
+ATTR_TURN_ID = "tutor.turn_id"
+ATTR_CORRECTION_COUNT = "tutor.correction_count"
+
+# Text stream attributes on `tutor.translation`.
+ATTR_LANGUAGE = "tutor.language"
+ATTR_SOURCE_LANGUAGE = "tutor.source_language"
+ATTR_ITEM_ID = "tutor.item_id"
 
 AGENT_NAME = "tutor"
 

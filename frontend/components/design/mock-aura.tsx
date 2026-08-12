@@ -1,38 +1,26 @@
 "use client"
 
 import { useEffect, useRef, useState, type ComponentProps } from "react"
-import { useTheme } from "next-themes"
 import type { AgentState } from "@livekit/components-react"
 
-import { AgentAudioVisualizerAura } from "@/components/agent-audio-visualizer-aura"
+import { TutorAura } from "@/components/session/tutor-aura"
 
 /**
- * Theme-aware Aura for design exploration, drivable without any LiveKit
- * session. Pass a `state`; when `state` is "speaking" a fake volume signal is
- * synthesized so the aura moves like it's talking.
- *
- * Color defaults to the theme's blue (Tailwind blue-500). The theme primary
- * (blue-700, #1d4ed8) reads darker/moodier — try both.
+ * The session Aura, drivable without any LiveKit session: when `state` is
+ * "speaking" a fake volume signal is synthesized so the aura moves like it's
+ * talking. Everything else (color, theme) is `TutorAura`'s — this is the real
+ * component with a synthetic signal, not a lookalike.
  */
 export function MockAura({
   state = "listening",
   ...props
 }: { state?: AgentState } & Omit<
-  ComponentProps<typeof AgentAudioVisualizerAura>,
-  "audioTrack" | "volume" | "themeMode" | "state"
+  ComponentProps<typeof TutorAura>,
+  "audioTrack" | "volume" | "state"
 >) {
-  const { resolvedTheme } = useTheme()
   const volume = useFakeVolume(state === "speaking")
 
-  return (
-    <AgentAudioVisualizerAura
-      color="#3b82f6"
-      state={state}
-      volume={volume}
-      themeMode={resolvedTheme === "light" ? "light" : "dark"}
-      {...props}
-    />
-  )
+  return <TutorAura state={state} volume={volume} {...props} />
 }
 
 /**
@@ -41,7 +29,12 @@ export function MockAura({
  * to its state animation.
  */
 function useFakeVolume(active: boolean): number | undefined {
-  const [volume, setVolume] = useState(0)
+  // Adjusted during render rather than reset in an effect: reactivating must
+  // start from silence on the very first painted frame, not replay the last
+  // frame of the previous phrase.
+  const [snapshot, setSnapshot] = useState({ active, volume: 0 })
+  if (snapshot.active !== active) setSnapshot({ active, volume: 0 })
+
   const frame = useRef<number>(0)
 
   useEffect(() => {
@@ -55,16 +48,14 @@ function useFakeVolume(active: boolean): number | undefined {
       const syllable = 0.5 + 0.5 * Math.sin(t * 9 + Math.sin(t * 3.7) * 2)
       const jitter = 0.9 + 0.1 * Math.sin(t * 27.3)
       frame.current = Math.min(1, phrase * (0.35 + 0.65 * syllable) * jitter)
-      setVolume(frame.current)
+      setSnapshot({ active: true, volume: frame.current })
       raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
   }, [active])
 
-  // Derived rather than reset via setState: inactive means "no signal", and
-  // the stale last frame simply stops being read.
-  return active ? volume : undefined
+  return active ? snapshot.volume : undefined
 }
 
 /** All agent states worth exercising in design exploration, in cycle order. */

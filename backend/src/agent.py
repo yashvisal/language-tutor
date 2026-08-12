@@ -13,6 +13,7 @@ Run with `lk agent dev` (or `uv run python src/agent.py dev`).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -30,8 +31,19 @@ from livekit.agents import (
 )
 from livekit.plugins import openai
 
-from analyzer import AnalysisContextTurn, CorrectionAnalyzer
-from config import AGENT_NAME, ATTR_PAUSED, TutorConfig
+from analyzer import CONTEXT_TURNS, AnalysisContextTurn, CorrectionAnalyzer
+from config import (
+    AGENT_NAME,
+    ANALYZER_OFF,
+    ANALYZER_ON,
+    ATTR_ANALYZER,
+    ATTR_FALSE,
+    ATTR_PAUSED,
+    ATTR_TRUE,
+    RPC_PAUSE,
+    RPC_RESUME,
+    TutorConfig,
+)
 from prompts import greeting_instructions, stt_prompt, tutor_instructions
 from state import SessionState
 from translation import TranslationTask, wait_for_audio_track
@@ -69,11 +81,19 @@ class TutorAgent(Agent):
 
 
 def _recent_context(
-    turn_ctx: llm.ChatContext, *, exclude_id: str, limit: int = 10
+    turn_ctx: llm.ChatContext, *, exclude_id: str, limit: int = CONTEXT_TURNS
 ) -> list[AnalysisContextTurn]:
-    """Flatten the chat context into speaker-tagged lines for the analyzer."""
+    """The last `limit` messages of the chat context, as speaker-tagged lines.
+
+    `limit` defaults to the analyzer's own `CONTEXT_TURNS`, which is the single
+    knob for how much history the analyzer sees: the truncation happens here,
+    once, and the analyzer sends what it is given. Walking backwards means a
+    long lesson's full history is never flattened just to throw most of it away.
+    """
     turns: list[AnalysisContextTurn] = []
-    for item in turn_ctx.items:
+    for item in reversed(turn_ctx.items):
+        if len(turns) >= limit:
+            break
         if getattr(item, "type", None) != "message":
             continue
         if item.id == exclude_id:
@@ -83,7 +103,8 @@ def _recent_context(
             continue
         speaker = "learner" if item.role == "user" else "tutor"
         turns.append(AnalysisContextTurn(speaker=speaker, text=text))
-    return turns[-limit:]
+    turns.reverse()
+    return turns
 
 
 server = AgentServer()
@@ -120,8 +141,11 @@ async def tutor(ctx: JobContext) -> None:
 
     analyzer = CorrectionAnalyzer(cfg, ctx.room) if cfg.analyzer_enabled else None
     translation = TranslationTask(cfg=cfg, room=ctx.room, state=state)
+    wiring_task: asyncio.Task[None] | None = None
 
     async def _shutdown() -> None:
+        if wiring_task is not None:
+            wiring_task.cancel()
         await translation.aclose()
         if analyzer is not None:
             await analyzer.aclose()
@@ -139,10 +163,25 @@ async def tutor(ctx: JobContext) -> None:
 
     await _register_pause_rpc(ctx, session, state)
 
-    participant = await ctx.wait_for_participant()
-    track = await wait_for_audio_track(ctx.room, participant.identity)
-    if track is not None:
-        translation.start(track)
+    # Tell the frontend whether corrections are coming at all, so it can skip
+    # the analyzing phase entirely when the analyzer is off.
+    await ctx.room.local_participant.set_attributes(
+        {ATTR_ANALYZER: ANALYZER_ON if cfg.analyzer_enabled else ANALYZER_OFF}
+    )
+
+    # Greet first, wire translation second. Resolving the participant and their
+    # microphone track can take seconds (or the full 30s timeout if the mic is
+    # slow or denied), and none of that should stand between the learner
+    # arriving and the tutor saying hello. Translation lagging the greeting by a
+    # few seconds is invisible; a silent session is not.
+    async def _start_translation() -> None:
+        participant = await ctx.wait_for_participant()
+        track = await wait_for_audio_track(ctx.room, participant.identity)
+        if track is not None:
+            translation.start(track)
+
+    # Held on a local so the shutdown callback can cancel it cleanly.
+    wiring_task = asyncio.create_task(_start_translation())
 
     await session.generate_reply(instructions=greeting_instructions(cfg))
 
@@ -158,9 +197,22 @@ async def _register_pause_rpc(ctx: JobContext, session: AgentSession, state: Ses
     async def _apply(paused: bool) -> None:
         state.paused = paused
         if paused:
-            # Stop mid-sentence, drop whatever was buffered, go deaf and mute.
+            # Stop the tutor mid-sentence, then go deaf and mute.
+            #
+            # Deliberately *not* `clear_user_turn()`: a hold is often opened
+            # mid-utterance (the learner taps a correction, or scrolls back,
+            # while still speaking), and discarding the buffered turn would
+            # throw away what they had just said. Disabling the audio input
+            # already stops new audio from arriving; what was already said stays
+            # in the turn and settles normally on resume.
+            #
+            # Known gap: a realtime model cannot resume a truncated reply
+            # mid-utterance, so resuming after we interrupt the tutor can leave
+            # a beat of dead air until the learner speaks again. Interrupting is
+            # still the right call — a tutor that keeps talking through a pause
+            # is worse — but the resume behaviour is a product decision to
+            # revisit with live testing.
             await session.interrupt()
-            session.clear_user_turn()
             session.input.set_audio_enabled(False)
             session.output.set_audio_enabled(False)
         else:
@@ -168,7 +220,7 @@ async def _register_pause_rpc(ctx: JobContext, session: AgentSession, state: Ses
             session.output.set_audio_enabled(True)
 
         await ctx.room.local_participant.set_attributes(
-            {ATTR_PAUSED: "true" if paused else "false"}
+            {ATTR_PAUSED: ATTR_TRUE if paused else ATTR_FALSE}
         )
         logger.info("session %s", "paused" if paused else "resumed")
 
@@ -180,12 +232,12 @@ async def _register_pause_rpc(ctx: JobContext, session: AgentSession, state: Ses
         await _apply(False)
         return json.dumps({"paused": False})
 
-    ctx.room.local_participant.register_rpc_method("tutor.pause", _pause)
-    ctx.room.local_participant.register_rpc_method("tutor.resume", _resume)
+    ctx.room.local_participant.register_rpc_method(RPC_PAUSE, _pause)
+    ctx.room.local_participant.register_rpc_method(RPC_RESUME, _resume)
 
     # Publish the initial state so a client that joins (or rejoins) mid-session
     # renders the right thing without asking.
-    await ctx.room.local_participant.set_attributes({ATTR_PAUSED: "false"})
+    await ctx.room.local_participant.set_attributes({ATTR_PAUSED: ATTR_FALSE})
 
 
 if __name__ == "__main__":

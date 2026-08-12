@@ -21,11 +21,18 @@ import base64
 import contextlib
 import json
 import logging
+import time
 
 import aiohttp
 from livekit import rtc
 
-from config import TOPIC_TRANSLATION, TutorConfig
+from config import (
+    ATTR_ITEM_ID,
+    ATTR_LANGUAGE,
+    ATTR_SOURCE_LANGUAGE,
+    TOPIC_TRANSLATION,
+    TutorConfig,
+)
 from state import SessionState
 
 logger = logging.getLogger("tutor.translation")
@@ -35,8 +42,35 @@ NUM_CHANNELS = 1
 # 50ms frames, matching what the OpenAI STT plugin sends.
 FRAME_MS = 50
 
+# Reconnect policy. A translate session ends for boring reasons all the time —
+# server-side idle timeout, session length cap — and those closes are *clean*,
+# so they must be retried like any other, or translation quietly dies for the
+# rest of a long lesson.
 _RECONNECT_DELAY = 2.0
-_MAX_ATTEMPTS = 3
+_MAX_BACKOFF = 30.0
+# Consecutive failures before the reconnect chatter is promoted to warning.
+_NOISY_AFTER_FAILURES = 3
+# A connection that stayed up this long counts as healthy: the failure budget
+# resets, so three transient blips spread over an hour don't add up to a
+# permanent give-up.
+_HEALTHY_AFTER = 60.0
+
+# Event types from the translations session we act on. Anything else is
+# unknown and logged once — API evolution should be loud, not silent.
+_EVENT_TRANSCRIPT_DELTA = "session.output_transcript.delta"
+_EVENT_TRANSCRIPT_DONE = "session.output_transcript.done"
+_EVENT_ERROR = "error"
+# The translate session also speaks the translation. We only want text, so the
+# audio events are dropped on purpose (both the `session.*` and `response.*`
+# spellings, since the endpoint is still in flux).
+_AUDIO_EVENTS = frozenset(
+    {
+        "session.output_audio.delta",
+        "session.output_audio.done",
+        "response.output_audio.delta",
+        "response.output_audio.done",
+    }
+)
 
 
 class TranslationTask:
@@ -59,6 +93,10 @@ class TranslationTask:
         self._output_lang = output_lang or cfg.anchor_lang
         self._task: asyncio.Task[None] | None = None
         self._http: aiohttp.ClientSession | None = None
+        self._stopped = False
+        # Unknown event types we have already complained about, so a chatty
+        # new event doesn't flood the log.
+        self._logged_unknown: set[str] = set()
 
     def start(self, track: rtc.Track) -> None:
         if not self._cfg.translation_enabled:
@@ -72,6 +110,7 @@ class TranslationTask:
         self._task = asyncio.create_task(self._run_forever(track))
 
     async def aclose(self) -> None:
+        self._stopped = True
         if self._task is not None:
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -83,24 +122,62 @@ class TranslationTask:
 
     # -- internals ---------------------------------------------------------
 
+    def _track_alive(self, track: rtc.Track) -> bool:
+        """True while the source track is still published and subscribed.
+
+        Once the learner's mic goes away there is nothing left to translate, so
+        the supervisor stops rather than reconnecting into an empty socket.
+        """
+        for participant in self._room.remote_participants.values():
+            for publication in participant.track_publications.values():
+                if publication.track is not None and publication.track.sid == track.sid:
+                    return True
+        return False
+
     async def _run_forever(self, track: rtc.Track) -> None:
-        for attempt in range(1, _MAX_ATTEMPTS + 1):
+        """Supervise the translate socket for the life of the lesson.
+
+        A clean close is not success: the server ends idle or over-long sessions
+        by design, and each one is just a reconnect. We only stop for good when
+        the task is closed or the source track disappears.
+        """
+        failures = 0
+        while not self._stopped and self._track_alive(track):
+            started = time.monotonic()
             try:
                 await self._run_once(track)
-                return
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.warning(
-                    "translation session failed (attempt %d/%d)",
-                    attempt,
-                    _MAX_ATTEMPTS,
+                connected_for = time.monotonic() - started
+                if connected_for >= _HEALTHY_AFTER:
+                    # The connection was healthy for a good while; this is a new
+                    # problem, not an escalating one.
+                    failures = 0
+                failures += 1
+                delay = min(_RECONNECT_DELAY * 2 ** (failures - 1), _MAX_BACKOFF)
+                log = logger.warning if failures >= _NOISY_AFTER_FAILURES else logger.info
+                log(
+                    "translation session failed (%d in a row); reconnecting in %.0fs",
+                    failures,
+                    delay,
                     exc_info=True,
                 )
-                if attempt == _MAX_ATTEMPTS:
-                    logger.error("translation giving up; session continues without it")
-                    return
-                await asyncio.sleep(_RECONNECT_DELAY)
+            else:
+                # Clean close (idle timeout, session cap). Reconnect promptly.
+                if time.monotonic() - started >= _HEALTHY_AFTER:
+                    failures = 0
+                logger.info("translation session closed cleanly; reconnecting")
+                delay = _RECONNECT_DELAY
+
+            if self._stopped or not self._track_alive(track):
+                break
+            await asyncio.sleep(delay)
+
+        if self._stopped:
+            logger.info("translation supervisor stopped")
+        else:
+            logger.warning("translation source track gone; session continues without translation")
 
     async def _run_once(self, track: rtc.Track) -> None:
         if self._http is None:
@@ -180,15 +257,7 @@ class TranslationTask:
     async def _handle_event(self, event: dict, writers: dict[str, rtc.TextStreamWriter]) -> None:
         event_type = event.get("type", "")
 
-        if event_type == "error":
-            logger.warning("translate error: %s", event.get("error"))
-            return
-
-        # Audio output is explicitly discarded.
-        if "audio" in event_type and "transcript" not in event_type:
-            return
-
-        if event_type == "session.output_transcript.delta":
+        if event_type == _EVENT_TRANSCRIPT_DELTA:
             delta = event.get("delta") or ""
             if not delta or self._state.paused:
                 return
@@ -198,20 +267,37 @@ class TranslationTask:
                 writer = await self._room.local_participant.stream_text(
                     topic=TOPIC_TRANSLATION,
                     attributes={
-                        "tutor.language": self._output_lang,
-                        "tutor.source_language": self._source_lang,
-                        "tutor.item_id": item_id,
+                        ATTR_LANGUAGE: self._output_lang,
+                        ATTR_SOURCE_LANGUAGE: self._source_lang,
+                        ATTR_ITEM_ID: item_id,
                     },
                 )
                 writers[item_id] = writer
             await writer.write(delta)
             return
 
-        if event_type == "session.output_transcript.done":
+        if event_type == _EVENT_TRANSCRIPT_DONE:
             item_id = event.get("item_id") or "translation"
             writer = writers.pop(item_id, None)
             if writer is not None:
                 await writer.aclose()
+            return
+
+        if event_type == _EVENT_ERROR:
+            logger.warning("translate error: %s", event.get("error"))
+            return
+
+        if event_type in _AUDIO_EVENTS:
+            # Spoken translation, deliberately dropped: nobody wants English
+            # over the tutor's voice.
+            return
+
+        # Anything else is an event this code was not written against. Matching
+        # on substrings here used to swallow those silently; now the first one
+        # of each type says so.
+        if event_type not in self._logged_unknown:
+            self._logged_unknown.add(event_type)
+            logger.info("unhandled translate event type %r", event_type)
 
 
 async def wait_for_audio_track(

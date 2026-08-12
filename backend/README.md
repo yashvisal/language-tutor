@@ -23,8 +23,11 @@ Design rules worth keeping:
 
 - **The analyzer never blocks the tutor.** `on_user_turn_completed` fires a
   background task and returns immediately.
-- **Translation fails soft.** If the translate socket dies, the session keeps
-  going without it.
+- **Translation fails soft.** The translate socket is supervised: clean closes
+  (idle timeout, session cap) and errors both reconnect with backoff, and if it
+  cannot come back the session keeps going without it.
+- **Wire strings live in `config.py`.** Topics, attributes and RPC names are
+  constants there and must byte-match `frontend/lib/session/protocol.ts`.
 - **One transcript stream.** The realtime model's own input transcription is
   disabled; the parallel `stt=` plugin owns every transcript the UI shows.
 - **Turn-taking is model-independent.** Both realtime models run with
@@ -73,7 +76,13 @@ TUTOR_STT_MODEL=gpt-live-transcribe
 TUTOR_ANALYZER_MODEL=gpt-5.6-luna
 TUTOR_ANALYZER_ENABLED=true
 TUTOR_TRANSLATION_ENABLED=true
+TUTOR_TRANSLATION_MODEL=gpt-realtime-translate
+TUTOR_TRANSLATION_URL=wss://api.openai.com/v1/realtime/translations
 ```
+
+`TUTOR_ANALYZER_ENABLED=false` is published to the frontend as the
+`tutor.analyzer` attribute, so the UI skips the analyzing phase rather than
+waiting for corrections that will never arrive.
 
 Swapping the realtime model is env-only: set `TUTOR_REALTIME_MODEL=openai` and
 restart. No code change.
@@ -107,6 +116,7 @@ agent will never join.
 | `tutor.translation` (text stream)        | Streaming anchor-language translation of learner speech         |
 | `tutor.corrections` (text stream)        | One JSON `analysis.complete` payload per settled learner turn   |
 | `tutor.paused` (participant attribute)   | `"true"` / `"false"`                                            |
+| `tutor.analyzer` (participant attribute) | `"on"` / `"off"` — whether corrections are enabled at all       |
 | `lk.agent.state` (participant attribute) | Agent state, published by the SDK                               |
 | RPC `tutor.pause` / `tutor.resume`       | Frontend → worker, one call per state change                    |
 

@@ -11,17 +11,15 @@
  * screen, a connecting state, and the hang-up path.
  */
 
-import { useTheme } from "next-themes"
 import { RoomAudioRenderer } from "@livekit/components-react"
 
-import { AgentAudioVisualizerAura } from "@/components/agent-audio-visualizer-aura"
 import { ConversationStage } from "@/components/session/conversation-stage"
+import { STAGE_AURA_CLASS, TutorAura } from "@/components/session/tutor-aura"
 import { Button } from "@/components/ui/button"
 import { useLiveSession } from "@/lib/session/live-producer"
 
 export default function SessionPage() {
   const live = useLiveSession()
-  const { resolvedTheme } = useTheme()
 
   if (live.connection !== "live") {
     return (
@@ -45,13 +43,11 @@ export default function SessionPage() {
         onToggleMute={live.toggleMute}
         onEnd={live.disconnect}
         renderAura={(auraState) => (
-          <AgentAudioVisualizerAura
+          <TutorAura
             state={auraState}
             audioTrack={live.agentAudioTrack}
-            color="#3b82f6"
-            themeMode={resolvedTheme === "light" ? "light" : "dark"}
             size="lg"
-            className="h-[clamp(7rem,22vh,12rem)]"
+            className={STAGE_AURA_CLASS}
           />
         )}
       />
