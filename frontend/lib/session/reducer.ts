@@ -264,15 +264,27 @@ export function sessionReducer(
     }
 
     case "analysis.complete": {
-      // Corrections apply to the whole turn owning the segment (the analyzer
-      // sees full turns, not STT fragments). A timeout settles exactly like an
-      // answer, but records itself — "no corrections found" and "no answer
-      // arrived" must stay distinguishable downstream.
-      const next = patchOwning(state, event.segmentId, (t) => ({
-        ...t,
-        corrections: event.corrections,
-        analysisStatus: event.status ?? "complete",
-      }))
+      // MERGE, never replace: a coalesced turn receives one event per segment
+      // its corrections were attributed to, and the last of those can be the
+      // empty settle-the-newest-segment event — replacing would erase every
+      // correction the earlier events delivered. A timeout settles exactly
+      // like an answer, but records itself — "no corrections found" and "no
+      // answer arrived" must stay distinguishable downstream (and a timeout
+      // never downgrades a turn that already has a real answer).
+      const next = patchOwning(state, event.segmentId, (t) => {
+        const merged = [...(t.corrections ?? [])]
+        for (const c of event.corrections) {
+          if (!merged.some((m) => m.id === c.id)) merged.push(c)
+        }
+        return {
+          ...t,
+          corrections: merged,
+          analysisStatus:
+            t.analysisStatus === "complete"
+              ? "complete"
+              : (event.status ?? "complete"),
+        }
+      })
       return next.current &&
         ownsSegment(next.current, event.segmentId) &&
         next.phase === "analyzing"
