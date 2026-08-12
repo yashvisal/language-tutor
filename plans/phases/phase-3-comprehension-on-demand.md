@@ -103,7 +103,11 @@ Three layers, deliberately separate:
    profile is configuration (level, preferences — things that are *set*);
    the feedback loop is evidence (things that are *observed*). They meet in
    the prompt but must stay separate primitives, or per-session tuning and
-   longitudinal learning will entangle.
+   longitudinal learning will entangle. Direction (recorded 2026-08-12,
+   mechanics deferred): the loop may eventually PROPOSE profile changes
+   (evidence -> inferred level), but never silently writes them — profile
+   updates are deliberate and visible to the learner. When profile fields
+   exist, they are typed declared-vs-inferred from day one.
 
 Explicitly deferred to phase 4 — **learner-profile tuning**: level as a
 parameter selecting policy (English-tolerance, pacing, complexity), speech
