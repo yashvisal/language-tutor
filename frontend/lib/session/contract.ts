@@ -53,16 +53,30 @@ export interface Correction {
 }
 
 /**
- * A settled or in-flight utterance. `id` is the segment id, so a turn can be
- * joined against late-arriving corrections or translation lines.
+ * One STT segment inside a turn. Live STT emits a segment per VAD-bounded
+ * phrase, so a hesitant speaker produces several per conversational turn; the
+ * reducer coalesces them (see reducer.ts) and renders the joined text.
+ */
+export interface TurnSegment {
+  id: string
+  target: string
+  anchor: string
+}
+
+/**
+ * A settled or in-flight conversational turn. `id` is the FIRST segment's id;
+ * late-arriving corrections or translation lines join against any segment the
+ * turn owns.
  */
 export interface Turn {
   id: string
   speaker: Speaker
-  /** Target-language text (what was actually said). Cumulative while live. */
+  /** Joined target-language text (what was actually said). Cumulative while live. */
   target: string
-  /** Anchor-language translation. Lags the target during live speech. */
+  /** Joined anchor-language translation. Lags the target during live speech. */
   anchor: string
+  /** The STT segments this turn coalesces. Absent for mock/single-segment turns. */
+  segments?: TurnSegment[]
   corrections?: Correction[]
   /**
    * How the analyzer resolved for this turn. Absent means it never ran (a tutor

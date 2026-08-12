@@ -44,7 +44,8 @@ STT_PROMPT = """\
 A one-on-one language tutoring conversation. The learner is practising {target} \
 and is an early-intermediate speaker: expect hesitation, false starts, \
 self-correction, imperfect grammar, and occasional switches into {anchor}. \
-Transcribe exactly what was said, including mistakes — do not fix grammar.\
+Transcribe exactly what was said, including mistakes — do not fix grammar. Do \
+not transcribe filled pauses such as "um", "uh", or "mm".\
 """
 
 ANALYZER_INSTRUCTIONS = """\

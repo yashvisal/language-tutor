@@ -61,18 +61,23 @@ class TutorAgent(Agent):
         self._cfg = cfg
         self._analyzer = analyzer
 
+    # The analyzer has two trigger paths because turn ownership differs by
+    # provider, and each mode starves one of them (both found live 2026-08-12):
+    #  - OpenAI path (external turn detection): THIS node fires with the full
+    #    committed turn, but `conversation_item_added` never sees user items —
+    #    model-side input transcription is off, so no user text enters history.
+    #  - Grok path (model-owned turn detection): this node never fires at all;
+    #    user items DO appear via Grok's own final transcripts, so the session's
+    #    `conversation_item_added` handler (see `tutor()`) picks them up.
+    # The analyzer dedupes by turn id, so both firing is harmless.
     async def on_user_turn_completed(
         self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage
     ) -> None:
         if self._analyzer is None:
             return
-
         text = (new_message.text_content or "").strip()
         if not text:
             return
-
-        # Fire and forget: the tutor's reply is generated the moment this
-        # returns, and must not wait on the analyzer.
         self._analyzer.analyze_in_background(
             turn_id=new_message.id,
             text=text,
@@ -124,20 +129,33 @@ async def tutor(ctx: JobContext) -> None:
         },
     )
 
-    session: AgentSession = AgentSession(
+    session_kwargs: dict = {
         # Swappable speech-to-speech core (TUTOR_REALTIME_MODEL).
-        llm=cfg.build_realtime_model(),
+        "llm": cfg.build_realtime_model(),
         # Parallel STT owns every transcript the UI shows. Both languages are
         # listed because code-switching is expected in a tutoring session.
-        stt=openai.STT(
+        "stt": openai.STT(
             model=cfg.stt_model,
             language=[cfg.target_lang, cfg.anchor_lang],
             prompt=stt_prompt(cfg),
         ),
-        # LiveKit's audio turn detector rather than either model's server-side
-        # VAD, so turn-taking feels identical whichever realtime model is on.
-        turn_handling=TurnHandlingOptions(turn_detection=inference.TurnDetector()),
-    )
+    }
+    if cfg.realtime_provider == "openai":
+        # LiveKit's audio turn detector owns endpointing for OpenAI. Grok's
+        # plugin cannot disable server-side turn detection, so xAI runs on its
+        # native VAD — see TutorConfig.build_realtime_model for the full story.
+        session_kwargs["turn_handling"] = TurnHandlingOptions(
+            turn_detection=inference.TurnDetector()
+        )
+    else:
+        # Explicit, not default: with a parallel `stt=` present the session
+        # otherwise falls back to STT endpointing, which commits a micro-turn at
+        # every half-second pause — each one interrupting the reply Grok had in
+        # flight (found live, 2026-08-12: fragmented turns, discarded responses,
+        # and `on_user_turn_completed` never firing, so no analyzer either).
+        session_kwargs["turn_handling"] = TurnHandlingOptions(turn_detection="realtime_llm")
+
+    session: AgentSession = AgentSession(**session_kwargs)
 
     analyzer = CorrectionAnalyzer(cfg, ctx.room) if cfg.analyzer_enabled else None
     translation = TranslationTask(cfg=cfg, room=ctx.room, state=state)
@@ -165,6 +183,35 @@ async def tutor(ctx: JobContext) -> None:
                 logger.warning("analyzer shutdown failed", exc_info=True)
 
     ctx.add_shutdown_callback(_shutdown)
+
+    # The analyzer trigger. `conversation_item_added` fires once per committed
+    # user turn with the full turn text, in every turn-detection mode —
+    # including realtime_llm, where `on_user_turn_completed` never runs.
+    def _on_item_added(ev: agents.ConversationItemAddedEvent) -> None:
+        # This runs inside the session's event emitter: an exception here can
+        # stop the framework's own listeners from seeing the event. Nothing in
+        # this handler is allowed to raise — items also aren't all messages
+        # (the first one is an AgentHandoff with no `role`, found live
+        # 2026-08-12), so the shape is checked, not assumed.
+        try:
+            item = ev.item
+            if analyzer is None or getattr(item, "type", None) != "message":
+                return
+            if item.role != "user":
+                return
+            text = (item.text_content or "").strip()
+            if not text:
+                return
+            # Fire and forget: never in the tutor's reply path.
+            analyzer.analyze_in_background(
+                turn_id=item.id,
+                text=text,
+                context=_recent_context(session.history, exclude_id=item.id),
+            )
+        except Exception:
+            logger.warning("analyzer trigger failed", exc_info=True)
+
+    session.on("conversation_item_added", _on_item_added)
 
     await session.start(
         agent=TutorAgent(cfg, analyzer),

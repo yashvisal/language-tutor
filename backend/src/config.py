@@ -12,6 +12,8 @@ from typing import Literal
 
 from livekit.agents import llm
 from livekit.plugins import openai, xai
+from openai.types.realtime import RealtimeReasoning
+from openai.types.realtime.realtime_audio_input_turn_detection import ServerVad
 
 RealtimeProvider = Literal["xai", "openai"]
 
@@ -95,6 +97,12 @@ class TutorConfig:
     realtime_provider: RealtimeProvider = "xai"
     xai_model: str = "grok-voice-fast-1.0"
     xai_voice: str = "Ara"
+    # How long the learner can go silent before Grok considers the turn over.
+    # The default (200ms upstream) is tuned for fluent speakers; our target
+    # learner stutters, restarts, and reaches for words — cutting them off
+    # mid-search is the worst thing a tutor can do. 900ms is the starting
+    # point, tuned by feel via TUTOR_XAI_SILENCE_MS.
+    xai_silence_ms: int = 900
     openai_realtime_model: str = "gpt-realtime"
     openai_realtime_voice: str = "marin"
 
@@ -121,6 +129,7 @@ class TutorConfig:
             realtime_provider=provider,  # type: ignore[arg-type]
             xai_model=_env("TUTOR_XAI_MODEL", "grok-voice-fast-1.0"),
             xai_voice=_env("TUTOR_XAI_VOICE", "Ara"),
+            xai_silence_ms=int(_env("TUTOR_XAI_SILENCE_MS", "900")),
             openai_realtime_model=_env("TUTOR_OPENAI_REALTIME_MODEL", "gpt-realtime"),
             openai_realtime_voice=_env("TUTOR_OPENAI_REALTIME_VOICE", "marin"),
             stt_model=_env("TUTOR_STT_MODEL", "gpt-live-transcribe"),
@@ -145,23 +154,39 @@ class TutorConfig:
     def build_realtime_model(self) -> llm.RealtimeModel:
         """Construct the speech-to-speech model for the configured provider.
 
-        Both providers get identical turn-taking: server-side turn detection is
-        switched off (`turn_detection=None`) so LiveKit's audio turn detector
-        owns endpointing and the two models behave the same way. The OpenAI
-        model additionally gets its own input transcription disabled — the
-        parallel `stt=` plugin is the single source of transcripts.
+        Turn-taking differs by provider, by necessity (found live, 2026-08-12):
+        the xAI plugin cannot disable Grok's server-side turn detection
+        (`can_disable_turn_detection = False` — passing `turn_detection=None`
+        silently breaks the response loop: turns commit but Grok never replies).
+        So OpenAI runs with server detection off and LiveKit's audio turn
+        detector owning endpointing, while Grok keeps its native server VAD.
+        The A/B comparison therefore includes turn-taking feel, not just voice.
+        The OpenAI model additionally gets its own input transcription disabled
+        — the parallel `stt=` plugin is the single source of transcripts.
         """
         if self.realtime_provider == "openai":
-            return openai.realtime.RealtimeModel(
-                model=self.openai_realtime_model,
-                voice=self.openai_realtime_voice,
-                turn_detection=None,
-                input_audio_transcription=None,
-            )
+            kwargs: dict = {
+                "model": self.openai_realtime_model,
+                "voice": self.openai_realtime_voice,
+                "turn_detection": None,
+                "input_audio_transcription": None,
+            }
+            if self.openai_realtime_model.startswith("gpt-realtime-2"):
+                # gpt-realtime-2 is reasoning-capable; default effort adds
+                # latency a live conversation can't afford (same lesson as the
+                # Luna analyzer). Pin it low.
+                kwargs["reasoning"] = RealtimeReasoning(effort="low")
+            return openai.realtime.RealtimeModel(**kwargs)
 
-        # xAI's plugin has no input-transcription option; it emits none.
+        # xAI's plugin has no input-transcription option; it emits none. Its
+        # server VAD stays in charge (see the docstring), but with a longer
+        # silence window than the fluent-speaker default — the learner needs
+        # room to stutter and reach for words without being cut off.
         return xai.realtime.RealtimeModel(
             model=self.xai_model,
             voice=self.xai_voice,
-            turn_detection=None,
+            turn_detection=ServerVad(
+                type="server_vad",
+                silence_duration_ms=self.xai_silence_ms,
+            ),
         )

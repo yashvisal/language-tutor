@@ -58,29 +58,154 @@ export function wordsOf(text: string): string[] {
 }
 
 /**
+ * SEGMENTS ARE NOT TURNS. The STT emits a segment per VAD-bounded phrase, so a
+ * hesitant learner produces several segments per conversational turn ("Ahora," /
+ * "Um," / "Yo trabajo en crear…"). Rendering each as its own turn shreds the
+ * stage. A turn therefore OWNS a list of segments: consecutive same-speaker
+ * segments coalesce into the current turn, and the joined text is what renders.
+ * The turn's id is its first segment's id.
+ */
+function ownsSegment(turn: Turn, segmentId: string): boolean {
+  return (
+    turn.id === segmentId ||
+    (turn.segments?.some((s) => s.id === segmentId) ?? false)
+  )
+}
+
+/**
+ * Filled pauses the STT transcribes verbatim. Stripped from display only —
+ * they are speech, not content. Deliberately English-ish hesitations only:
+ * Spanish "este"/"eh" are real words and stay.
+ */
+const FILLER = /(?:^|\s)(?:u+m+|u+h+|m+h?m+|h+m+)[,.]?(?=\s|$)/gi
+
+function stripFillers(text: string): string {
+  return text.replace(FILLER, " ").replace(/\s+/g, " ").trim()
+}
+
+/**
+ * Each STT segment is transcribed as its own sentence, so a coalesced turn
+ * reads "…es bien Ahora trabajo Para crear…" — every fragment restarts the
+ * sentence case. When the text so far hasn't ended a sentence, a continuation
+ * fragment loses its leading capital (unless it looks like an acronym or
+ * proper noun can't be told apart — a capital followed by another capital is
+ * left alone).
+ */
+function joinTargetFragments(fragments: string[]): string {
+  let out = ""
+  for (const fragment of fragments) {
+    if (!out) {
+      out = fragment
+      continue
+    }
+    let next = fragment
+    if (!/[.?!…]$/.test(out) && /^[A-ZÁÉÍÓÚÑÜ][a-záéíóúñü]/.test(next)) {
+      next = next[0]!.toLowerCase() + next.slice(1)
+    }
+    out = `${out} ${next}`
+  }
+  return out
+}
+
+/** Rebuild the rendered texts from the segment list. */
+function joined(turn: Turn): Turn {
+  const segments = turn.segments ?? []
+  const targets = segments
+    .map((s) => stripFillers(s.target))
+    .filter(Boolean)
+  const anchors = segments
+    .map((s) => s.anchor.trim())
+    .filter(Boolean)
+  return {
+    ...turn,
+    target: joinTargetFragments(targets),
+    anchor: anchors.join(" "),
+  }
+}
+
+/**
  * Apply a patch to whichever turn owns `segmentId` — the hero, or a turn that
  * has already retired. Late arrivals are normal: a translation line or a
  * correction can land after the next utterance has begun.
  */
-function patchSegment(
+function patchOwning(
   state: SessionState,
   segmentId: string,
   patch: (turn: Turn) => Turn
 ): SessionState {
-  if (state.current?.id === segmentId) {
+  if (state.current && ownsSegment(state.current, segmentId)) {
     return { ...state, current: patch(state.current) }
   }
-  const index = state.turns.findIndex((t) => t.id === segmentId)
+  const index = state.turns.findIndex((t) => ownsSegment(t, segmentId))
   if (index < 0) return state
   const turns = [...state.turns]
   turns[index] = patch(turns[index]!)
   return { ...state, turns }
 }
 
-function withText(turn: Turn, language: LanguageRole, text: string): Turn {
-  return language === "target"
-    ? { ...turn, target: text }
-    : { ...turn, anchor: text }
+/** Set one segment's text in one language, and re-join the turn. */
+function withSegmentText(
+  turn: Turn,
+  segmentId: string,
+  language: LanguageRole,
+  text: string
+): Turn {
+  const segments = (
+    turn.segments ?? [{ id: turn.id, target: turn.target, anchor: turn.anchor }]
+  ).map((s) =>
+    s.id === segmentId
+      ? language === "target"
+        ? { ...s, target: text }
+        : { ...s, anchor: text }
+      : s
+  )
+  return joined({ ...turn, segments })
+}
+
+/** Coalesce a new segment into the current turn, or open a new turn with it. */
+function openSegment(
+  state: SessionState,
+  segmentId: string,
+  speaker: Turn["speaker"],
+  targetText: string
+): SessionState {
+  const segment = { id: segmentId, target: targetText, anchor: "" }
+  // Same speaker, still unsettled: this is the same conversational turn
+  // continuing after a pause — append, don't retire. A settled turn (the
+  // analyzer already answered it) is finished; new speech starts fresh.
+  if (
+    state.current &&
+    state.current.speaker === speaker &&
+    state.phase !== "settled"
+  ) {
+    const current = joined({
+      ...state.current,
+      segments: [
+        ...(state.current.segments ?? [
+          {
+            id: state.current.id,
+            target: state.current.target,
+            anchor: state.current.anchor,
+          },
+        ]),
+        segment,
+      ],
+    })
+    return { ...state, current, phase: "live" }
+  }
+  const opened: Turn = joined({
+    id: segmentId,
+    speaker,
+    target: "",
+    anchor: "",
+    segments: [segment],
+  })
+  return {
+    ...state,
+    turns: state.current ? [...state.turns, state.current] : state.turns,
+    current: opened,
+    phase: "live",
+  }
 }
 
 export function sessionReducer(
@@ -90,77 +215,67 @@ export function sessionReducer(
   switch (event.type) {
     case "transcript.delta": {
       const known =
-        state.current?.id === event.segmentId ||
-        state.turns.some((t) => t.id === event.segmentId)
+        (state.current && ownsSegment(state.current, event.segmentId)) ||
+        state.turns.some((t) => ownsSegment(t, event.segmentId))
       if (known) {
-        return patchSegment(state, event.segmentId, (t) =>
-          withText(t, event.language, event.text)
+        return patchOwning(state, event.segmentId, (t) =>
+          withSegmentText(t, event.segmentId, event.language, event.text)
         )
       }
-      // A delta for an unknown segment opens it, and whatever is on stage
-      // retires into history — this is the only "turn advanced" signal the
-      // live pipeline gives us.
-      const opened: Turn = withText(
-        { id: event.segmentId, speaker: event.speaker, target: "", anchor: "" },
-        event.language,
-        event.text
+      // Only the target stream opens/advances turns; an anchor delta for a
+      // segment the reducer doesn't know is routing noise, not a turn.
+      if (event.language !== "target") return state
+      // A delta for an unknown segment either coalesces into the current
+      // same-speaker turn or retires it and opens the next — the only "turn
+      // advanced" signal the live pipeline gives us.
+      const next = openSegment(state, event.segmentId, event.speaker, "")
+      return patchOwning(next, event.segmentId, (t) =>
+        withSegmentText(t, event.segmentId, event.language, event.text)
       )
-      return {
-        ...state,
-        turns: state.current ? [...state.turns, state.current] : state.turns,
-        current: opened,
-        phase: "live",
-      }
     }
 
     case "transcript.final": {
       const known =
-        state.current?.id === event.segmentId ||
-        state.turns.some((t) => t.id === event.segmentId)
+        (state.current && ownsSegment(state.current, event.segmentId)) ||
+        state.turns.some((t) => ownsSegment(t, event.segmentId))
       // A final for a segment we never saw a delta for is a whole utterance
       // arriving at once (every interim missed, or a segment published only
-      // once finalized). Open it exactly as a delta would — otherwise the
-      // patch below finds nothing and the utterance never reaches the stage or
-      // history. Only the target stream may open a turn; a stray anchor final
-      // would open a turn with no words in it.
+      // once finalized). Open it exactly as a delta would. Only the target
+      // stream may open a turn — a stray anchor final has no words for one.
       const base: SessionState =
         known || event.language !== "target"
           ? state
-          : {
-              ...state,
-              turns: state.current
-                ? [...state.turns, state.current]
-                : state.turns,
-              current: {
-                id: event.segmentId,
-                speaker: event.speaker,
-                target: "",
-                anchor: "",
-              },
-              phase: "live",
-            }
+          : openSegment(state, event.segmentId, event.speaker, "")
 
-      const next = patchSegment(base, event.segmentId, (t) =>
-        withText(t, event.language, event.text)
+      const next = patchOwning(base, event.segmentId, (t) =>
+        withSegmentText(t, event.segmentId, event.language, event.text)
       )
-      // Only the target-language stream closes a turn; the anchor translation
-      // finishing later is just more text.
-      if (event.language !== "target" || next.current?.id !== event.segmentId) {
+      // Only a target final on the CURRENT turn moves the phase. Mid-turn this
+      // fires per segment — the next fragment's delta flips it back to "live",
+      // so only the last fragment's analyzing/settled state sticks.
+      if (
+        event.language !== "target" ||
+        !next.current ||
+        !ownsSegment(next.current, event.segmentId)
+      ) {
         return next
       }
       return { ...next, phase: event.analysisPending ? "analyzing" : "settled" }
     }
 
     case "analysis.complete": {
-      // A timeout settles the turn exactly like an answer does, but records
-      // itself: "no corrections because none were found" and "no corrections
-      // because none arrived" must stay distinguishable downstream.
-      const next = patchSegment(state, event.segmentId, (t) => ({
+      // Corrections apply to the whole turn owning the segment (the analyzer
+      // sees full turns, not STT fragments). A timeout settles exactly like an
+      // answer, but records itself — "no corrections found" and "no answer
+      // arrived" must stay distinguishable downstream.
+      const next = patchOwning(state, event.segmentId, (t) => ({
         ...t,
         corrections: event.corrections,
         analysisStatus: event.status ?? "complete",
       }))
-      return next.current?.id === event.segmentId && next.phase === "analyzing"
+      return next.current &&
+        ownsSegment(next.current, event.segmentId) &&
+        next.phase === "analyzing"
         ? { ...next, phase: "settled" }
         : next
     }

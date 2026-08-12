@@ -99,6 +99,9 @@ class TranslationTask:
         # Unknown event types we have already complained about, so a chatty
         # new event doesn't flood the log.
         self._logged_unknown: set[str] = set()
+        # Item separation when the endpoint omits `item_id` (see _handle_event).
+        self._item_seq = 0
+        self._item_id_seen: bool | None = None
 
     def start(self, track: rtc.Track) -> None:
         if not self._cfg.translation_enabled:
@@ -207,21 +210,20 @@ class TranslationTask:
                 await asyncio.gather(send, recv, return_exceptions=True)
 
     def _session_update(self) -> dict:
-        # TODO(wiring): the exact translations-session payload is not covered by
-        # public docs yet; verify against a live session and adjust. Failures
-        # here surface as an `error` event and are logged, not fatal.
+        # Minimal by hard-won necessity (live sessions, 2026-08-12): the
+        # endpoint rejected `session.type`, then `audio.input.format`, then
+        # `audio.input.transcription.language` — and a rejected update discards
+        # the WHOLE payload, silently leaving the output language at its
+        # default. The output language is the only field this task actually
+        # needs, so that is the only field sent. Input format is assumed
+        # (PCM16 @24kHz); input transcription config is skipped — we never
+        # consume the input transcript. Every client event is namespaced under
+        # `session.*` (`session.update`, `session.input_audio_buffer.append`,
+        # `session.close`).
         return {
             "type": "session.update",
             "session": {
-                "type": "translation",
                 "audio": {
-                    "input": {
-                        "format": {"type": "audio/pcm", "rate": SAMPLE_RATE},
-                        "transcription": {
-                            "model": "gpt-live-transcribe",
-                            "language": self._source_lang,
-                        },
-                    },
                     "output": {"language": self._output_lang},
                 },
             },
@@ -241,7 +243,7 @@ class TranslationTask:
                     # audio at all, not just the transcript.
                     continue
                 audio = base64.b64encode(event.frame.data.tobytes()).decode("utf-8")
-                await ws.send_json({"type": "input_audio_buffer.append", "audio": audio})
+                await ws.send_json({"type": "session.input_audio_buffer.append", "audio": audio})
         finally:
             await stream.aclose()
 
@@ -283,24 +285,33 @@ class TranslationTask:
             delta = event.get("delta") or ""
             if not delta or self._state.paused:
                 return
-            item_id = event.get("item_id") or "translation"
-            writer = writers.get(item_id)
+            # One frontend text stream per translated item: stream boundaries
+            # are how the frontend knows where to put spaces between items.
+            # When the endpoint omits `item_id`, items are separated by the
+            # `done` counter instead — without this, every item concatenates
+            # into one stream and words fuse across boundaries ("nowI work").
+            key = event.get("item_id") or f"item-{self._item_seq}"
+            if self._item_id_seen is None:
+                self._item_id_seen = "item_id" in event
+                logger.info("translate deltas carry item_id: %s", self._item_id_seen)
+            writer = writers.get(key)
             if writer is None:
                 writer = await self._room.local_participant.stream_text(
                     topic=TOPIC_TRANSLATION,
                     attributes={
                         ATTR_LANGUAGE: self._output_lang,
                         ATTR_SOURCE_LANGUAGE: self._source_lang,
-                        ATTR_ITEM_ID: item_id,
+                        ATTR_ITEM_ID: key,
                     },
                 )
-                writers[item_id] = writer
+                writers[key] = writer
             await writer.write(delta)
             return
 
         if event_type == _EVENT_TRANSCRIPT_DONE:
-            item_id = event.get("item_id") or "translation"
-            writer = writers.pop(item_id, None)
+            key = event.get("item_id") or f"item-{self._item_seq}"
+            self._item_seq += 1
+            writer = writers.pop(key, None)
             if writer is not None:
                 await writer.aclose()
             return
@@ -312,6 +323,10 @@ class TranslationTask:
         if event_type in _AUDIO_EVENTS:
             # Spoken translation, deliberately dropped: nobody wants English
             # over the tutor's voice.
+            return
+
+        if event_type in ("session.created", "session.updated"):
+            # Session lifecycle acks; nothing to act on.
             return
 
         # Anything else is an event this code was not written against. Matching

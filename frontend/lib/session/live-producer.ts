@@ -82,6 +82,20 @@ import {
  */
 const ANALYSIS_TIMEOUT_MS = 8000
 
+/**
+ * Join translation fragments without fusing words: the translate stream omits
+ * separators exactly at item boundaries ("now" + "I work" must not become
+ * "nowI work"), but fragments that already carry their own spacing keep it.
+ */
+function smartAppend(a: string, b: string): string {
+  // A fresh line never opens with orphaned punctuation — a chunk boundary can
+  // land right before a sentence's closing period.
+  if (!a) return b.replace(/^[\s.,;:!?]+/, "").trimEnd()
+  if (!b.trim()) return a
+  const needsSpace = !/\s$/.test(a) && !/^[\s.,;:!?)]/.test(b)
+  return a + (needsSpace ? " " : "") + b.trimEnd()
+}
+
 /** How long to wait before re-sending an unacknowledged pause/resume RPC. */
 const PAUSE_RETRY_MS = 2000
 
@@ -341,8 +355,12 @@ export function useLiveSession(): LiveSession {
   const finalizedLearner = useRef<FinalizedUtterance[]>([])
   const liveLearnerSegment = useRef<string | null>(null)
   const correctionsSeen = useRef(new Set<string>())
-  const translationBindings = useRef(new Map<string, string>())
-  const anchorSent = useRef(new Map<string, string>())
+  /** How much of each translation stream has already been routed. */
+  const anchorConsumed = useRef(new Map<string, number>())
+  /** Cumulative anchor text per segment, for cumulative deltas. */
+  const anchorBySegment = useRef(new Map<string, string>())
+  /** Translation that arrived between turns, waiting for the next segment. */
+  const anchorPending = useRef("")
 
   useEffect(() => {
     if (connection !== "idle") return
@@ -351,8 +369,9 @@ export function useLiveSession(): LiveSession {
     finalizedLearner.current = []
     liveLearnerSegment.current = null
     correctionsSeen.current.clear()
-    translationBindings.current.clear()
-    anchorSent.current.clear()
+    anchorConsumed.current.clear()
+    anchorBySegment.current.clear()
+    anchorPending.current = ""
     buffered.current = []
     dispatch({ type: "session.reset" })
   }, [connection])
@@ -418,6 +437,16 @@ export function useLiveSession(): LiveSession {
             ...finalizedLearner.current,
             { segmentId, text: entry.text },
           ].slice(-MAX_FINALIZED)
+          // A finalized segment stops being a translation target. Translate
+          // items open on *speech*, and the STT interim for a new utterance
+          // trails the audio by up to ~500ms — so an item opening after this
+          // final belongs to the learner's NEXT utterance. Clearing here parks
+          // those streams unbound until that segment's first interim arrives
+          // (the translation effect retries them every run), instead of
+          // upending the next turn's English onto this settled one.
+          if (liveLearnerSegment.current === segmentId) {
+            liveLearnerSegment.current = null
+          }
         }
       }
 
@@ -507,42 +536,45 @@ export function useLiveSession(): LiveSession {
   )
 
   useEffect(() => {
-    // Bind each stream to the segment that was live when it opened, then
-    // recompute each bound segment's anchor text from every stream on it — the
-    // translate model can split one utterance across several items.
-    const bySegment = new Map<string, string[]>()
-
+    // ARRIVAL-TIME ROUTING, not stream binding. The translate endpoint sends
+    // one endless stream (no item ids, no done events — verified live
+    // 2026-08-12), so "which stream" carries no turn information at all. What
+    // does carry information is WHEN text arrives: the translate model speaks
+    // close behind the learner, so each newly-arrived suffix belongs to the
+    // learner segment that is live right now. Suffixes arriving between turns
+    // wait in `anchorPending` and flush to the next segment that opens.
+    const parts: string[] = []
     for (const stream of translationStreams) {
       const streamId = stream.streamInfo.id
-      let segmentId = translationBindings.current.get(streamId)
-      if (segmentId === undefined) {
-        // v0 translates learner speech only, so "the current utterance" is
-        // unambiguous. A stream arriving before any transcript has nowhere to
-        // go and is dropped rather than opening a phantom turn.
-        if (!liveLearnerSegment.current) continue
-        segmentId = liveLearnerSegment.current
-        translationBindings.current.set(streamId, segmentId)
+      const consumed = anchorConsumed.current.get(streamId) ?? 0
+      if (stream.text.length > consumed) {
+        parts.push(stream.text.slice(consumed))
+        anchorConsumed.current.set(streamId, stream.text.length)
       }
-      const texts = bySegment.get(segmentId) ?? []
-      texts.push(stream.text)
-      bySegment.set(segmentId, texts)
     }
+    const arrived = parts.reduce(smartAppend, "")
+    const pending = smartAppend(anchorPending.current, arrived)
+    if (!pending) return
 
-    for (const [segmentId, texts] of bySegment) {
-      const text = texts.join(" ").replace(/\s+/g, " ").trim()
-      // One chunk on one stream re-renders every binding; only the segment that
-      // actually grew needs a delta.
-      if (anchorSent.current.get(segmentId) === text) continue
-      anchorSent.current.set(segmentId, text)
-      emit({
-        type: "transcript.delta",
-        segmentId,
-        speaker: "learner",
-        language: "anchor",
-        text,
-      })
+    const segmentId = liveLearnerSegment.current
+    if (!segmentId) {
+      anchorPending.current = pending
+      return
     }
-  }, [translationStreams, emit])
+    anchorPending.current = ""
+    const text = smartAppend(anchorBySegment.current.get(segmentId) ?? "", pending)
+    anchorBySegment.current.set(segmentId, text)
+    emit({
+      type: "transcript.delta",
+      segmentId,
+      speaker: "learner",
+      language: "anchor",
+      text,
+    })
+    // `transcriptions` is a dependency so pending anchor text flushes the
+    // moment the next learner segment's first interim arrives, without waiting
+    // for another translation chunk.
+  }, [translationStreams, transcriptions, emit])
 
   /* -- holds <-> pause / resume RPC --------------------------------------- */
 

@@ -66,8 +66,13 @@ export interface Segment {
  */
 export function segmentTurn(turn: Turn): Segment[] {
   const text = turn.target
+  // Case-insensitive: the analyzer sees the raw transcript, but the display
+  // text re-cases fragment boundaries when coalescing ("Ahora" -> "ahora"), so
+  // an exact match would silently drop those marks. The mark renders the
+  // display text at the found position, not the analyzer's copy.
+  const lower = text.toLowerCase()
   const found = (turn.corrections ?? [])
-    .map((c) => ({ c, at: text.indexOf(c.original) }))
+    .map((c) => ({ c, at: lower.indexOf(c.original.toLowerCase()) }))
     .filter((x) => x.at >= 0)
     .sort((a, b) => a.at - b.at)
 
@@ -79,7 +84,12 @@ export function segmentTurn(turn: Turn): Segment[] {
     if (at > cursor) {
       segments.push({ key: `plain-${cursor}`, text: text.slice(cursor, at) })
     }
-    segments.push({ key: c.id, text: c.original, correction: c })
+    // The DISPLAY slice, not the analyzer's copy — casing can differ.
+    segments.push({
+      key: c.id,
+      text: text.slice(at, at + c.original.length),
+      correction: c,
+    })
     cursor = at + c.original.length
   }
   if (cursor < text.length) {
