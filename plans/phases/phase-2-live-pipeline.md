@@ -155,8 +155,10 @@ language-mixing policy (brief answer, modeled form, conversation kept moving).
 
 - **Translation segmentation/attribution is the weakest link.** Sentence
   boundaries drift, mishearings occur, and arrival-time routing occasionally
-  splits a turn's translation. The structural fix is worker-side attribution
-  (the worker owns both clocks); do this before polishing translation UX.
+  splits a turn's translation. ~~The structural fix is worker-side
+  attribution~~ **Superseded (same day): phase 3 removes live translation
+  entirely in favor of select-to-translate — see
+  `phase-3-comprehension-on-demand.md`.**
 - **Afterthought turns:** a learner completing a thought after the turn
   committed ("…para ayudar" → "Las clases.") renders as a separate turn and
   the tutor answers the fragment. Open product question: should afterthoughts
