@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 import openai
 from livekit import rtc
+from livekit.agents import llm
 
 from config import (
     ATTR_CORRECTION_COUNT,
@@ -26,6 +27,7 @@ from config import (
     TutorConfig,
 )
 from prompts import analyzer_instructions
+from state import SessionFacts
 
 logger = logging.getLogger("tutor.analyzer")
 
@@ -67,16 +69,56 @@ CORRECTIONS_SCHEMA = {
 }
 
 # How many prior turns of context to send with each utterance. This is the
-# *only* knob: `agent._recent_context` reads it to decide how much of the chat
-# context to walk back, so the history is truncated exactly once.
+# *only* knob: `recent_context` reads it to decide how much of the chat context
+# to walk back, so the history is truncated exactly once.
 CONTEXT_TURNS = 6
 REQUEST_TIMEOUT = 12.0
 
 
 @dataclass
-class AnalysisContextTurn:
+class ContextTurn:
+    """One speaker-tagged line of conversation history.
+
+    Shared by the analyzer and select-to-translate: both are out-of-band text
+    calls that need a little surrounding conversation to judge an utterance.
+    """
+
     speaker: str  # "learner" | "tutor"
     text: str
+
+
+def recent_context(
+    chat_ctx: llm.ChatContext,
+    *,
+    exclude_id: str | None = None,
+    limit: int = CONTEXT_TURNS,
+) -> list[ContextTurn]:
+    """The last `limit` messages of a chat context, as speaker-tagged lines.
+
+    `limit` defaults to `CONTEXT_TURNS`, the single knob for how much history the
+    analyzer sees: the truncation happens here, once, and callers send what they
+    are given. Walking backwards means a long lesson's full history is never
+    flattened just to throw most of it away.
+    """
+    turns: list[ContextTurn] = []
+    for item in reversed(chat_ctx.items):
+        if len(turns) >= limit:
+            break
+        if getattr(item, "type", None) != "message":
+            continue
+        if exclude_id is not None and item.id == exclude_id:
+            continue
+        text = (item.text_content or "").strip()
+        if not text:
+            continue
+        speaker = "learner" if item.role == "user" else "tutor"
+        turns.append(ContextTurn(speaker=speaker, text=text))
+    turns.reverse()
+    return turns
+
+
+def context_lines(context: list[ContextTurn]) -> str:
+    return "\n".join(f"{turn.speaker}: {turn.text}" for turn in context)
 
 
 class CorrectionAnalyzer:
@@ -87,9 +129,10 @@ class CorrectionAnalyzer:
     path this sits in.
     """
 
-    def __init__(self, cfg: TutorConfig, room: rtc.Room) -> None:
+    def __init__(self, cfg: TutorConfig, room: rtc.Room, facts: SessionFacts | None = None) -> None:
         self._cfg = cfg
         self._room = room
+        self._facts = facts
         self._instructions = analyzer_instructions(cfg)
         self._client = openai.AsyncOpenAI(api_key=cfg.openai_api_key or None, max_retries=0)
         self._tasks: set[asyncio.Task[None]] = set()
@@ -99,7 +142,7 @@ class CorrectionAnalyzer:
         *,
         turn_id: str,
         text: str,
-        context: list[AnalysisContextTurn],
+        context: list[ContextTurn],
     ) -> None:
         """Fire-and-forget. Never awaited by the voice pipeline."""
         if not self._cfg.analyzer_enabled or not text.strip():
@@ -116,7 +159,7 @@ class CorrectionAnalyzer:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         await self._client.close()
 
-    async def _run(self, *, turn_id: str, text: str, context: list[AnalysisContextTurn]) -> None:
+    async def _run(self, *, turn_id: str, text: str, context: list[ContextTurn]) -> None:
         started = time.monotonic()
         try:
             corrections = await asyncio.wait_for(
@@ -142,16 +185,19 @@ class CorrectionAnalyzer:
             await self._publish(turn_id=turn_id, text=text, corrections=corrections)
         except Exception:
             logger.exception("failed to publish corrections", extra={"turn_id": turn_id})
+            return
 
-    async def _request(
-        self, *, text: str, context: list[AnalysisContextTurn]
-    ) -> list[dict[str, str]]:
+        # Source #1 of the learner feedback loop. Reported only after a
+        # successful publish: what the learner never saw is not evidence.
+        if self._facts is not None:
+            self._facts.record_corrections(corrections)
+
+    async def _request(self, *, text: str, context: list[ContextTurn]) -> list[dict[str, str]]:
         # Already truncated to CONTEXT_TURNS by the caller — see the comment on
         # the constant. Truncating again here would hide a mismatch.
-        lines = [f"{turn.speaker}: {turn.text}" for turn in context]
         prompt = (
             "Conversation so far:\n"
-            + ("\n".join(lines) if lines else "(this is the first turn)")
+            + (context_lines(context) or "(this is the first turn)")
             + "\n\nUtterance to review (learner):\n"
             + text
         )

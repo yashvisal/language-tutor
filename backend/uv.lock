@@ -712,7 +712,6 @@ name = "language-tutor-agent"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "aiohttp" },
     { name = "livekit-agents", extra = ["openai"] },
     { name = "openai" },
     { name = "python-dotenv" },
@@ -725,7 +724,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiohttp", specifier = ">=3.10" },
     { name = "livekit-agents", extras = ["openai"], specifier = "~=1.6.9" },
     { name = "openai", specifier = ">=2.0.0" },
     { name = "python-dotenv", specifier = ">=1.0.1" },

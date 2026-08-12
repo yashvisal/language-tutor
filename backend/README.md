@@ -4,8 +4,8 @@ The Python [LiveKit Agents](https://docs.livekit.io/agents/) worker behind the
 conversation surface. It runs as its own process — not inside Next.js — and
 talks to the frontend over a LiveKit room.
 
-Read `plans/product-vision.md` and `plans/phases/phase-2-live-pipeline.md` before
-changing behaviour here.
+Read `plans/product-vision.md` and `plans/phases/phase-3-comprehension-on-demand.md`
+before changing behaviour here.
 
 ## What it does
 
@@ -13,40 +13,50 @@ changing behaviour here.
 learner audio
   ├─ GPT Realtime (speech-to-speech)   → the tutor's voice          (model via TUTOR_REALTIME_MODEL)
   ├─ openai.STT("gpt-live-transcribe") → live transcripts           (lk.transcription)
-  ├─ gpt-realtime-translate WebSocket  → lagging anchor-lang text   (tutor.translation)
   └─ on_user_turn_completed            → background analyzer        (tutor.corrections)
-```
 
-Plus pause/resume over RPC, mirrored onto a participant attribute.
+on demand
+  ├─ RPC tutor.translate               → one selected span, translated
+  └─ RPC tutor.pause / tutor.resume    → hold, then conversational re-entry
+```
 
 Design rules worth keeping:
 
 - **The analyzer never blocks the tutor.** `on_user_turn_completed` fires a
   background task and returns immediately.
-- **Translation fails soft.** The translate socket is supervised: clean closes
-  (idle timeout, session cap) and errors both reconnect with backoff, and if it
-  cannot come back the session keeps going without it.
+- **Translation is on demand only.** There is no translation stream. The learner
+  selects settled text, the frontend calls `tutor.translate`, and one
+  request/response call to the analyzer's text model answers it. (The ambient
+  translation socket was deleted in phase 3: the learner cannot read the anchor
+  language while producing the target one, and it was the flakiest, costliest
+  subsystem in every live session.)
 - **Wire strings live in `config.py`.** Topics, attributes and RPC names are
   constants there and must byte-match `frontend/lib/session/protocol.ts`.
 - **One transcript stream.** The realtime model's own input transcription is
   disabled; the parallel `stt=` plugin owns every transcript the UI shows.
 - **One turn clock.** The realtime model runs with `turn_detection=None`;
   LiveKit's semantic turn detector owns endpointing for replies, transcripts,
-  the analyzer, and translation alike. (This is why Grok Voice support was
-  dropped: its plugin cannot hand over turn detection, forcing a second,
-  disagreeing turn clock. See config.py.)
+  and the analyzer alike. (This is why Grok Voice support was dropped: its
+  plugin cannot hand over turn detection, forcing a second, disagreeing turn
+  clock. See config.py.)
+- **Resume is conversational, not a tape deck.** A realtime model cannot resume
+  a truncated reply mid-word, so it doesn't try: the worker hands it a short
+  factual brief and lets it re-enter with judgment. See "Pause semantics".
+- **Facts are stated, never scripted.** Resume briefs say what happened and
+  remind the model of its standing instructions. They never contain the line to
+  say — that lives in `TUTOR_INSTRUCTIONS` as policy.
 - **No hardcoded Spanish.** Target and anchor languages are parameters.
 
 ## Layout
 
-| File                 | Role                                                        |
-| -------------------- | ----------------------------------------------------------- |
-| `src/agent.py`       | Entrypoint: `AgentServer`, session wiring, pause/resume RPC  |
-| `src/config.py`      | Env config + the realtime-model factory                      |
-| `src/prompts.py`     | Tutor / STT / analyzer prompts, language-parameterised       |
-| `src/analyzer.py`    | Background structured-output corrections                     |
-| `src/translation.py` | `gpt-realtime-translate` WebSocket side-task                 |
-| `src/state.py`       | Shared pause state                                           |
+| File               | Role                                                          |
+| ------------------ | ------------------------------------------------------------- |
+| `src/agent.py`     | Entrypoint: `AgentServer`, session wiring, pause/resume RPC    |
+| `src/config.py`    | Env config + the realtime-model factory                        |
+| `src/prompts.py`   | Tutor / STT / analyzer / translate / resume prompts            |
+| `src/analyzer.py`  | Background structured-output corrections + shared turn context |
+| `src/translate.py` | `tutor.translate` RPC: one selected span → one translation     |
+| `src/state.py`     | Pause state (+ what it interrupted) and rolling session facts  |
 
 ## Setup
 
@@ -63,7 +73,7 @@ Environment lives in `backend/.env.local` (gitignored, loaded by `agent.py`):
 LIVEKIT_URL=wss://<project>.livekit.cloud
 LIVEKIT_API_KEY=...
 LIVEKIT_API_SECRET=...
-OPENAI_API_KEY=...          # realtime model, STT, translation, analyzer
+OPENAI_API_KEY=...          # realtime model, STT, analyzer, translate
 
 # optional — defaults shown
 TUTOR_TARGET_LANG=es
@@ -73,16 +83,14 @@ TUTOR_REALTIME_VOICE=marin
 TUTOR_MIN_ENDPOINT_S=1.2            # must outlast the STT flush lag (~0.5s)
 TUTOR_MAX_ENDPOINT_S=6.0            # patience for a learner mid-word-search
 TUTOR_STT_MODEL=gpt-live-transcribe
-TUTOR_ANALYZER_MODEL=gpt-5.6-luna
+TUTOR_ANALYZER_MODEL=gpt-5.6-luna   # also serves tutor.translate
 TUTOR_ANALYZER_ENABLED=true
-TUTOR_TRANSLATION_ENABLED=true
-TUTOR_TRANSLATION_MODEL=gpt-realtime-translate
-TUTOR_TRANSLATION_URL=wss://api.openai.com/v1/realtime/translations
 ```
 
 `TUTOR_ANALYZER_ENABLED=false` is published to the frontend as the
 `tutor.analyzer` attribute, so the UI skips the analyzing phase rather than
-waiting for corrections that will never arrive.
+waiting for corrections that will never arrive. It does **not** disable
+`tutor.translate`, which owns its own client for exactly that reason.
 
 `TUTOR_REALTIME_MODEL` takes any OpenAI Realtime model id (e.g. a pinned
 snapshot); `gpt-realtime-2` gets `reasoning.effort="minimal"` automatically.
@@ -113,12 +121,12 @@ agent will never join.
 | Channel                                  | Carries                                                        |
 | ---------------------------------------- | -------------------------------------------------------------- |
 | `lk.transcription` (text stream, SDK)    | Interim + final transcripts, both speakers                      |
-| `tutor.translation` (text stream)        | Streaming anchor-language translation of learner speech         |
 | `tutor.corrections` (text stream)        | One JSON `analysis.complete` payload per settled learner turn   |
 | `tutor.paused` (participant attribute)   | `"true"` / `"false"`                                            |
 | `tutor.analyzer` (participant attribute) | `"on"` / `"off"` — whether corrections are enabled at all       |
 | `lk.agent.state` (participant attribute) | Agent state, published by the SDK                               |
 | RPC `tutor.pause` / `tutor.resume`       | Frontend → worker, one call per state change                    |
+| RPC `tutor.translate`                    | Frontend → worker, one selected span → its anchor translation   |
 
 Corrections payload:
 
@@ -146,10 +154,69 @@ Corrections payload:
 `original` is not an exact substring of the utterance are dropped worker-side,
 so the frontend can highlight by plain substring match.
 
-Pause semantics: the *set of holds* (explicit control, correction inspection,
+`tutor.translate` payloads:
+
+```json
+// request
+{ "text": "no me acuerdo", "speaker": "learner", "turn_id": "item_..." }
+// response — one or the other, never both
+{ "translation": "I don't remember" }
+{ "error": "translation timed out" }
+```
+
+`speaker` is `"learner"` or `"tutor"`; `turn_id` is optional and used only for
+logging. The span is target-language text and the translation comes back in the
+anchor language. The worker budgets 4s (the frontend times out at 5s) and every
+failure is an `error` field, never a raised RPC error.
+
+## Pause semantics
+
+The *set of holds* (explicit control, correction inspection, select-to-translate,
 history scroll) is client-side state. The frontend collapses it and calls
 `tutor.pause` once when the set becomes non-empty and `tutor.resume` once when it
-empties.
+empties. Holds that open and close within ~400ms are debounced client-side and
+never reach the worker at all.
+
+Pause is non-destructive: the worker interrupts the tutor and disables audio in
+and out, but deliberately does not `clear_user_turn()` — a hold opened
+mid-utterance must not discard what the learner already said.
+
+`tutor.resume` carries an optional brief:
+
+```json
+{
+  "held_ms": 12400,
+  "reasons": ["correction"],
+  "correction": { "original": "yo fue", "replacement": "yo fui", "category": "tense" }
+}
+```
+
+Every field is optional and the whole payload is parsed defensively; an empty,
+absent, or unparseable payload simply resumes with no brief. With a brief, the
+worker composes a short factual situation brief and calls `generate_reply` —
+but **only** if the hold actually interrupted the tutor. That decision is read
+off the session at pause time:
+
+| Session state at pause                   | On resume                                     |
+| ---------------------------------------- | --------------------------------------------- |
+| `user_state == "speaking"`               | Silent — the learner keeps the floor           |
+| `agent_state == "speaking"` (or a live `current_speech`) | Re-enters: the tutor was mid-sentence |
+| `agent_state == "thinking"`              | Re-enters: a committed turn's reply was killed |
+| anything else                            | Silent                                         |
+
+The brief states facts only — hold duration, hold reasons, the inspected
+correction, whether the tutor was mid-reply, and one line of rolling session
+facts ("corrections shown to them so far this session: 3 tense, 1 word-order").
+It never scripts a line; how to re-enter is `TUTOR_INSTRUCTIONS`' job.
+
+`SessionFacts` (`src/state.py`) is the seam for that last line: the analyzer
+reports its *published* corrections into it and it renders one summary. Future
+sources (prior-session summaries, a reflection agent, goal tracking) plug into
+the same object. It is evidence that is *observed*, deliberately separate from
+the phase-4 learner profile, which is configuration that is *set*.
+
+The resume response is `{"paused": false, "resumed": <bool>}`, where `resumed`
+reports whether a re-entry reply was generated.
 
 ## Checks
 
