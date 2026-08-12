@@ -1,0 +1,160 @@
+# Tutor agent worker
+
+The Python [LiveKit Agents](https://docs.livekit.io/agents/) worker behind the
+conversation surface. It runs as its own process — not inside Next.js — and
+talks to the frontend over a LiveKit room.
+
+Read `plans/product-vision.md` and `plans/phases/phase-2-live-pipeline.md` before
+changing behaviour here.
+
+## What it does
+
+```text
+learner audio
+  ├─ GPT Realtime (speech-to-speech)   → the tutor's voice          (model via TUTOR_REALTIME_MODEL)
+  ├─ openai.STT("gpt-live-transcribe") → live transcripts           (lk.transcription)
+  ├─ gpt-realtime-translate WebSocket  → lagging anchor-lang text   (tutor.translation)
+  └─ on_user_turn_completed            → background analyzer        (tutor.corrections)
+```
+
+Plus pause/resume over RPC, mirrored onto a participant attribute.
+
+Design rules worth keeping:
+
+- **The analyzer never blocks the tutor.** `on_user_turn_completed` fires a
+  background task and returns immediately.
+- **Translation fails soft.** The translate socket is supervised: clean closes
+  (idle timeout, session cap) and errors both reconnect with backoff, and if it
+  cannot come back the session keeps going without it.
+- **Wire strings live in `config.py`.** Topics, attributes and RPC names are
+  constants there and must byte-match `frontend/lib/session/protocol.ts`.
+- **One transcript stream.** The realtime model's own input transcription is
+  disabled; the parallel `stt=` plugin owns every transcript the UI shows.
+- **One turn clock.** The realtime model runs with `turn_detection=None`;
+  LiveKit's semantic turn detector owns endpointing for replies, transcripts,
+  the analyzer, and translation alike. (This is why Grok Voice support was
+  dropped: its plugin cannot hand over turn detection, forcing a second,
+  disagreeing turn clock. See config.py.)
+- **No hardcoded Spanish.** Target and anchor languages are parameters.
+
+## Layout
+
+| File                 | Role                                                        |
+| -------------------- | ----------------------------------------------------------- |
+| `src/agent.py`       | Entrypoint: `AgentServer`, session wiring, pause/resume RPC  |
+| `src/config.py`      | Env config + the realtime-model factory                      |
+| `src/prompts.py`     | Tutor / STT / analyzer prompts, language-parameterised       |
+| `src/analyzer.py`    | Background structured-output corrections                     |
+| `src/translation.py` | `gpt-realtime-translate` WebSocket side-task                 |
+| `src/state.py`       | Shared pause state                                           |
+
+## Setup
+
+Requires Python 3.10–3.13 and [uv](https://docs.astral.sh/uv/).
+
+```shell
+uv sync
+```
+
+Environment lives in `backend/.env.local` (gitignored, loaded by `agent.py`):
+
+```shell
+# required
+LIVEKIT_URL=wss://<project>.livekit.cloud
+LIVEKIT_API_KEY=...
+LIVEKIT_API_SECRET=...
+OPENAI_API_KEY=...          # realtime model, STT, translation, analyzer
+
+# optional — defaults shown
+TUTOR_TARGET_LANG=es
+TUTOR_ANCHOR_LANG=en
+TUTOR_REALTIME_MODEL=gpt-realtime-2
+TUTOR_REALTIME_VOICE=marin
+TUTOR_MIN_ENDPOINT_S=1.2            # must outlast the STT flush lag (~0.5s)
+TUTOR_MAX_ENDPOINT_S=6.0            # patience for a learner mid-word-search
+TUTOR_STT_MODEL=gpt-live-transcribe
+TUTOR_ANALYZER_MODEL=gpt-5.6-luna
+TUTOR_ANALYZER_ENABLED=true
+TUTOR_TRANSLATION_ENABLED=true
+TUTOR_TRANSLATION_MODEL=gpt-realtime-translate
+TUTOR_TRANSLATION_URL=wss://api.openai.com/v1/realtime/translations
+```
+
+`TUTOR_ANALYZER_ENABLED=false` is published to the frontend as the
+`tutor.analyzer` attribute, so the UI skips the analyzing phase rather than
+waiting for corrections that will never arrive.
+
+`TUTOR_REALTIME_MODEL` takes any OpenAI Realtime model id (e.g. a pinned
+snapshot); `gpt-realtime-2` gets `reasoning.effort="minimal"` automatically.
+
+## Run
+
+```shell
+lk agent dev          # dev mode against the LiveKit Cloud project
+```
+
+`lk` is the [LiveKit CLI](https://docs.livekit.io/agents/start/voice-ai/#livekit-cli)
+(`winget install LiveKit.LiveKitCLI`), authenticated once with `lk cloud auth`.
+Equivalent without the CLI:
+
+```shell
+uv run python src/agent.py dev       # dev
+uv run python src/agent.py console   # terminal-only, no frontend needed
+uv run python src/agent.py start     # production mode
+```
+
+The agent registers under the dispatch name **`tutor`** and is *explicitly
+dispatched* — it only joins rooms whose token carries a matching
+`RoomAgentDispatch`. The frontend's `/api/token` route must set this, or the
+agent will never join.
+
+## Frontend contract
+
+| Channel                                  | Carries                                                        |
+| ---------------------------------------- | -------------------------------------------------------------- |
+| `lk.transcription` (text stream, SDK)    | Interim + final transcripts, both speakers                      |
+| `tutor.translation` (text stream)        | Streaming anchor-language translation of learner speech         |
+| `tutor.corrections` (text stream)        | One JSON `analysis.complete` payload per settled learner turn   |
+| `tutor.paused` (participant attribute)   | `"true"` / `"false"`                                            |
+| `tutor.analyzer` (participant attribute) | `"on"` / `"off"` — whether corrections are enabled at all       |
+| `lk.agent.state` (participant attribute) | Agent state, published by the SDK                               |
+| RPC `tutor.pause` / `tutor.resume`       | Frontend → worker, one call per state change                    |
+
+Corrections payload:
+
+```json
+{
+  "type": "analysis.complete",
+  "turnId": "item_...",
+  "text": "Ayer yo fue al supermercado",
+  "language": "es",
+  "corrections": [
+    {
+      "id": "c_1a2b3c",
+      "original": "yo fue",
+      "replacement": "yo fui",
+      "category": "tense",
+      "severity": "error",
+      "explanation": "\"Ir\" in the first-person preterite is \"fui\"."
+    }
+  ]
+}
+```
+
+`category` and `severity` mirror `CorrectionCategory` / `CorrectionSeverity` in
+`frontend/lib/design/mock-conversation.ts`. Keep them in sync. Corrections whose
+`original` is not an exact substring of the utterance are dropped worker-side,
+so the frontend can highlight by plain substring match.
+
+Pause semantics: the *set of holds* (explicit control, correction inspection,
+history scroll) is client-side state. The frontend collapses it and calls
+`tutor.pause` once when the set becomes non-empty and `tutor.resume` once when it
+empties.
+
+## Checks
+
+```shell
+uv run python -m compileall -q src
+uv run ruff check src
+uv run ruff format src
+```

@@ -1,0 +1,27 @@
+[project]
+name = "language-tutor-agent"
+version = "0.1.0"
+description = "LiveKit Agents worker for the language tutor: realtime tutor voice, parallel STT, live translation, semantic analyzer."
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "livekit-agents[openai]~=1.6.9",
+    "openai>=2.0.0",
+    "python-dotenv>=1.0.1",
+    "aiohttp>=3.10",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.uv]
+package = false
