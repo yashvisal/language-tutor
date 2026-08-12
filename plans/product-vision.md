@@ -1,6 +1,6 @@
 # Language Tutor: Product Vision
 
-*Last updated: 2026-08-07. This is the source of truth for what we're building and why. Phase-level plans live in `plans/phases/`. Read this before starting work in any new thread.*
+*Last updated: 2026-08-12. This is the source of truth for what we're building and why. Phase-level plans live in `plans/phases/`. Read this before starting work in any new thread.*
 
 ---
 
@@ -65,6 +65,30 @@ From reviewing the phase-1 layout explorations (aura-stage, split-columns, and t
 2. **Pause is a first-class interaction state**, not just a button. Three entry points, modeled as a *set of holds* (overlapping sources can't clobber each other): an explicit pause/resume control; inspecting a correction soft-pauses and closing it resumes; scrolling/opening history auto-pauses (scrolling is a declaration of "I'm reading, not talking"). While held, the surface — Aura, text, caret — communicates "holding" without a text label, and resume continues exactly where speech froze. `session.paused` / `session.resumed` are events in the frontend event contract, so the LiveKit worker is built against this model.
 3. **History is an escape hatch, not a surface.** Full conversation review lives behind a deliberate action (scroll-up peek / history control) that holds the session while open.
 4. **Stage-split is the working layout direction.** Aura anchor + pinned context + hero, with translation as a per-line collapsible English column under one global toggle and English lagging the Spanish during live speech. The abstraction is settled; its visual grid and motion are still being refined, and the exploration variants remain as reference points.
+
+---
+
+## Decisions Settled (2026-08-12, from phase-2 live testing)
+
+1. **One realtime model: OpenAI GPT Realtime.** Grok Voice support was removed —
+   its plugin cannot hand turn detection to the agent, which forces a second,
+   disagreeing turn clock and degrades everything downstream. The planned A/B
+   comparison is off until that changes. Decision #7 above (candidate models)
+   is superseded.
+2. **One turn clock.** LiveKit's semantic turn detector owns endpointing for
+   the tutor's replies, transcript segmentation, the analyzer trigger — all of
+   it. Every configuration that violated this broke in live testing.
+3. **Live translation is dead; translation is select-to-translate.** The
+   learner cannot read English while producing Spanish (the same fact that
+   killed the scrolling transcript), and the ambient-translation column was
+   the flakiest, costliest subsystem in every session. Translation now appears
+   only on demand: select any settled text, an overlay translates that span,
+   selection holds the session. "Live side-by-side translation of in-progress
+   speech" (see Translation Philosophy) was explicitly flagged as unvalidated;
+   it is now invalidated for V0. A future beginner mode may revisit ambient
+   translation without the realtime socket.
+4. **Pause is non-destructive.** Holding never discards the learner's
+   in-flight utterance; input goes deaf but what was said stays in the turn.
 
 ---
 

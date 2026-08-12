@@ -2,6 +2,8 @@
 
 *Status: COMPLETE (2026-08-12). The loop works end-to-end live — see "Live evaluation findings" at the end for what the sessions taught us and what carries into phase 3. Read `plans/product-vision.md` first.*
 
+*Reading note: the sections below are the plan as written before the build. Where live testing diverged — Grok removed (the diagram and "Model choices" still show it as swappable), pause made non-destructive (workstream 2 still lists `clear_user_turn()`), endpointing floors added — the findings section at the end is authoritative and supersedes on conflict.*
+
 ## Goal
 
 **Real voice on the stage-split surface.** A learner opens the app, talks to the tutor over LiveKit, sees live Spanish transcription with lagging English translation, and gets structured corrections on settled turns — the full loop from the vision doc's definition of success, running on real infrastructure instead of the mock replay engine.

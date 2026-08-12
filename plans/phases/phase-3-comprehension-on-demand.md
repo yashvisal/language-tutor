@@ -59,8 +59,9 @@ carries per-turn anchor text — the door stays open without the socket.
   turn opens a floating overlay anchored to the selection: the English
   translation, styled like the correction popover (same progressive-disclosure
   family: conversation → reveal).
-- Opening holds the session (`reason: "translation"` joins the hold set);
-  closing releases.
+- Opening holds the session (`"translation"` becomes a new `PauseReason` in the
+  contract, joining the hold set); closing releases. Overlay results live in
+  overlay state, not on `Turn.anchor`.
 - Worker RPC or HTTP? Simplest: a new RPC `tutor.translate` on the agent
   (span + turn context in, translation out) reusing the analyzer's OpenAI
   client. Keep latency < ~1s; show a quiet shimmer while waiting.
