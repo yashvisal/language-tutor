@@ -3,9 +3,10 @@
 /**
  * STAGE SPLIT — the conversation surface.
  *
- * The hybrid settled in phase 1: aura-stage's stage presence and utterance
- * lifecycle, plus split-columns' collapsible anchor-language column — governed
- * by two ideas the other variants don't have.
+ * The hybrid settled in phase 1 (aura-stage's stage presence and utterance
+ * lifecycle) reduced in phase 3 to a single full-width text column — live
+ * translation is gone, so the anchor column went with it. Two ideas the other
+ * variants don't have still govern it.
  *
  * 1. RELEVANCE, NOT RECENCY. Exactly two lines live on the stage: the current
  *    utterance (the hero) and the one turn it is answering (pinned above,
@@ -27,7 +28,7 @@
  * audio track live.
  */
 
-import { memo, useCallback, useEffect, useReducer, type ReactNode } from "react"
+import { useCallback, useEffect, type ReactNode } from "react"
 import { AnimatePresence, motion } from "motion/react"
 
 import { HistoryPeek } from "@/components/session/history-peek"
@@ -42,6 +43,7 @@ import {
 } from "@/components/session/stage-grid"
 import type {
   AgentState,
+  Correction,
   PauseReason,
   SessionEvent,
 } from "@/lib/session/contract"
@@ -51,7 +53,6 @@ import {
   isHeld,
   marksActive,
   pinnedTurn,
-  wordsOf,
   type SessionState,
 } from "@/lib/session/reducer"
 import { cn } from "@/lib/utils"
@@ -85,33 +86,6 @@ export interface ConversationStageProps {
   interimSegmentId?: string
 }
 
-/**
- * The hero's anchor-language line, word by word. Memoized on the text alone:
- * target-language interims arrive several times a second and almost never move
- * the translation, so the spans (and their entry animations) must not be
- * rebuilt on every one.
- *
- * The anchor arrives on its own stream, already trailing — the lag is the
- * producer's, not a render trick.
- */
-const AnchorWords = memo(function AnchorWords({ text }: { text: string }) {
-  return (
-    <>
-      {wordsOf(text).map((word, i) => (
-        <motion.span
-          key={i}
-          initial={{ opacity: 0, filter: "blur(3px)" }}
-          animate={{ opacity: 1, filter: "blur(0px)" }}
-          transition={{ duration: 0.55, ease: "easeOut" }}
-          className="inline-block whitespace-pre"
-        >
-          {word}{" "}
-        </motion.span>
-      ))}
-    </>
-  )
-})
-
 export function ConversationStage({
   state,
   dispatch,
@@ -123,21 +97,20 @@ export function ConversationStage({
 }: ConversationStageProps) {
   const { phase, holds } = state
 
-  const [showEn, toggleEn] = useReducer((v: boolean) => !v, true)
-
   const paused = isHeld(state)
   const historyOpen = holds.includes("history")
 
+  // `correction` rides along on the hold so the producer can tell the tutor
+  // what the learner stopped to study. Nothing on this side reads it.
   const hold = useCallback(
-    (reason: PauseReason) => dispatch({ type: "session.paused", reason }),
+    (reason: PauseReason, correction?: Correction) =>
+      dispatch({ type: "session.paused", reason, correction }),
     [dispatch]
   )
   const release = useCallback(
     (reason: PauseReason) => dispatch({ type: "session.resumed", reason }),
     [dispatch]
   )
-  const setHold = (reason: PauseReason, on: boolean) =>
-    on ? hold(reason) : release(reason)
 
   // Space toggles the hold — a quiet keyboard affordance for resuming.
   useEffect(() => {
@@ -215,7 +188,7 @@ export function ConversationStage({
           transition={{ duration: 0.5, ease: "easeOut" }}
           className="mt-[clamp(1.5rem,5vh,3rem)] w-full"
         >
-          <StageGrid showEn={showEn}>
+          <StageGrid>
             {/* Pinned context — the turn the hero is answering. Readable,
                 deliberately secondary. */}
             <div className="min-h-[4.5rem]">
@@ -228,15 +201,7 @@ export function ConversationStage({
                     exit={{ opacity: 0, y: -8 }}
                     transition={{ duration: 0.4, ease: "easeOut" }}
                   >
-                    <StageRow
-                      showEn={showEn}
-                      speaker={context.speaker}
-                      en={
-                        <span className="text-muted-foreground/70">
-                          {context.anchor}
-                        </span>
-                      }
-                    >
+                    <StageRow speaker={context.speaker}>
                       <p
                         className={cn(
                           "text-base tracking-[-0.011em] text-foreground/55",
@@ -263,11 +228,8 @@ export function ConversationStage({
                     transition={{ duration: 0.4, ease: "easeOut" }}
                   >
                     <StageRow
-                      showEn={showEn}
                       speaker={turn.speaker}
                       labelClassName="text-muted-foreground/70"
-                      enClassName={HERO_LEADING}
-                      en={<AnchorWords text={turn.anchor} />}
                     >
                       <p
                         className={cn(
@@ -280,8 +242,10 @@ export function ConversationStage({
                           turn={turn}
                           live={phase === "live"}
                           marksActive={showMarks}
-                          onCorrectionOpenChange={(open) =>
-                            setHold("correction", open)
+                          onCorrectionOpenChange={(open, correction) =>
+                            open
+                              ? hold("correction", correction)
+                              : release("correction")
                           }
                         />
                         {phase === "live" && turn.target.length > 0 && (
@@ -305,7 +269,6 @@ export function ConversationStage({
         {historyOpen && (
           <HistoryPeek
             turns={historyTurns(state)}
-            showEn={showEn}
             onClose={() => release("history")}
           />
         )}
@@ -314,10 +277,8 @@ export function ConversationStage({
       <SessionControls
         paused={paused}
         muted={muted}
-        showEn={showEn}
         onReview={() => hold("history")}
         onToggleMute={onToggleMute}
-        onToggleEn={toggleEn}
         onTogglePause={() =>
           paused ? holds.forEach(release) : hold("control")
         }

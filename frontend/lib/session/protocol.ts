@@ -23,8 +23,6 @@ export const TEXT_STREAM_TOPICS = {
   chat: "lk.chat",
   /** Ours: structured `Correction[]` JSON for a settled turn. */
   corrections: "tutor.corrections",
-  /** Ours: lagging translation of the learner's speech into the anchor language. */
-  translation: "tutor.translation",
 } as const
 
 export type TextStreamTopic =
@@ -33,18 +31,12 @@ export type TextStreamTopic =
 /** Text stream attributes. The `lk.*` keys are set by LiveKit on the
  * `lk.transcription` topic; the rest are set by our worker. */
 export const STREAM_ATTRIBUTES = {
-  /** Join key across transcription, translation and correction payloads. */
+  /** Join key across transcription and correction payloads. */
   segmentId: "lk.segment_id",
   /** `"true"` on the final stream for a segment, `"false"` on interims. */
   transcriptionFinal: "lk.transcription_final",
   /** Present on transcription streams; identifies the transcribed track. */
   transcribedTrackId: "lk.transcribed_track_id",
-  /** Ours: BCP-47-ish language tag on translation streams (e.g. `"en"`). */
-  language: "tutor.language",
-  /** Ours: source language of a translation stream. */
-  sourceLanguage: "tutor.source_language",
-  /** Ours: the translate model's item id — one text stream per item. */
-  translationItemId: "tutor.item_id",
   /** Ours: the analyzer's own turn id. NOT an `lk.segment_id` — see the
    * corrections join in `live-producer.ts`. */
   turnId: "tutor.turn_id",
@@ -57,6 +49,32 @@ export const RPC_METHODS = {
   pause: "tutor.pause",
   resume: "tutor.resume",
 } as const
+
+/**
+ * The correction the learner inspected during a hold, as it travels on the
+ * wire. Deliberately snake_cased and stringly-typed: this is the JSON the
+ * Python worker parses, not the frontend's `Correction`.
+ */
+export interface ResumeCorrectionPayload {
+  original: string
+  replacement: string
+  category: string
+}
+
+/**
+ * The `tutor.resume` payload — the facts the worker needs to decide whether,
+ * and how, the tutor re-enters the conversation. A hold that never reached the
+ * agent (see the debounce in `live-producer.ts`) sends nothing at all, so every
+ * payload here describes a real study pause.
+ */
+export interface ResumePayload {
+  /** Measured from when the pause RPC was sent, not when the hold opened. */
+  held_ms: number
+  /** Every reason that was active at some point during the hold. */
+  reasons: string[]
+  /** The most recently inspected correction, if the hold included one. */
+  correction: ResumeCorrectionPayload | null
+}
 
 /** Participant attribute keys, all published by the agent. `paused` is mirrored
  * so pause state survives reconnects; `analyzer` tells the surface whether

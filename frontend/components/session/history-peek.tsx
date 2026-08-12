@@ -27,11 +27,9 @@ import { cn } from "@/lib/utils"
 
 export function HistoryPeek({
   turns,
-  showEn,
   onClose,
 }: {
   turns: Turn[]
-  showEn: boolean
   onClose: () => void
 }) {
   useEffect(() => {
@@ -70,19 +68,14 @@ export function HistoryPeek({
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-16">
           {/* Same grid as the stage, so history reads as the same document. */}
-          <StageGrid showEn={showEn} className="space-y-7 pt-2">
+          <StageGrid className="space-y-7 pt-2">
             {turns.length === 0 && (
               <p className="pt-16 text-sm text-muted-foreground/60">
                 Nothing to review yet.
               </p>
             )}
             {turns.map((turn) => (
-              <StageRow
-                key={turn.id}
-                showEn={showEn}
-                speaker={turn.speaker}
-                en={turn.anchor}
-              >
+              <StageRow key={turn.id} speaker={turn.speaker}>
                 <p
                   className={cn(
                     "text-base tracking-[-0.011em]",

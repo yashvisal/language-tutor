@@ -17,7 +17,7 @@ import {
   CorrectionMark,
   segmentTurn,
 } from "@/components/session/correction-mark"
-import type { Turn } from "@/lib/session/contract"
+import type { Correction, Turn } from "@/lib/session/contract"
 import { wordsOf } from "@/lib/session/reducer"
 import { cn } from "@/lib/utils"
 
@@ -31,7 +31,8 @@ export function HeroWords({
   /** Still being transcribed — only then is the trailing word "new". */
   live: boolean
   marksActive: boolean
-  onCorrectionOpenChange: (open: boolean) => void
+  /** The correction is passed through so a hold can name what is being read. */
+  onCorrectionOpenChange: (open: boolean, correction: Correction) => void
 }) {
   const segments = useMemo(() => segmentTurn(turn), [turn])
   const wordCount = wordsOf(turn.target).length

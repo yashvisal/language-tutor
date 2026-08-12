@@ -6,19 +6,10 @@
  * held.
  */
 
-import {
-  History,
-  Languages,
-  Mic,
-  MicOff,
-  Pause,
-  PhoneOff,
-  Play,
-} from "lucide-react"
+import { History, Mic, MicOff, Pause, PhoneOff, Play } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
-import { Switch } from "@/components/ui/switch"
 import {
   Tooltip,
   TooltipContent,
@@ -29,19 +20,15 @@ import { cn } from "@/lib/utils"
 export function SessionControls({
   paused,
   muted,
-  showEn,
   onReview,
   onToggleMute,
-  onToggleEn,
   onTogglePause,
   onEnd,
 }: {
   paused: boolean
   muted: boolean
-  showEn: boolean
   onReview: () => void
   onToggleMute: () => void
-  onToggleEn: () => void
   onTogglePause: () => void
   /** Absent in replay mode: there is nothing to hang up on. */
   onEnd?: () => void
@@ -87,16 +74,6 @@ export function SessionControls({
           />
           <TooltipContent>{muted ? "Unmute" : "Mute"}</TooltipContent>
         </Tooltip>
-
-        <label className="flex cursor-pointer items-center gap-2 px-2 select-none">
-          <Languages className="size-3.5 text-muted-foreground" />
-          <Switch
-            size="sm"
-            aria-label="Show translation"
-            checked={showEn}
-            onCheckedChange={onToggleEn}
-          />
-        </label>
 
         <Tooltip>
           <TooltipTrigger

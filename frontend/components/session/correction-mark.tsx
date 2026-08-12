@@ -107,12 +107,13 @@ export function CorrectionMark({
   correction: Correction
   /** Marks only surface once the turn has settled. */
   active: boolean
-  onOpenChange: (open: boolean) => void
+  /** The correction is echoed back so the caller's hold can name it. */
+  onOpenChange: (open: boolean, correction: Correction) => void
   children: ReactNode
 }) {
   const style = CATEGORY_STYLES[correction.category]
   return (
-    <Popover onOpenChange={onOpenChange}>
+    <Popover onOpenChange={(open) => onOpenChange(open, correction)}>
       <PopoverTrigger
         nativeButton={false}
         render={

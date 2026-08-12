@@ -71,8 +71,7 @@ function Idle({
   return (
     <div className="flex h-svh flex-col items-center justify-center gap-6 bg-background px-8">
       <p className="max-w-sm text-center text-sm leading-relaxed text-muted-foreground">
-        A Spanish conversation, with the English underneath and corrections when
-        you finish a thought.
+        A Spanish conversation, with corrections when you finish a thought.
       </p>
       <Button size="lg" onClick={onConnect} disabled={connecting}>
         {connecting ? "Connecting…" : "Start talking"}

@@ -13,9 +13,10 @@
  *   interims arrive as ~500ms snapshots rather than word events, so the
  *   contract carries snapshots and the UI diffs them; the mock chunks by word
  *   to drive the ticker at a speech-like cadence.
- * - The anchor translation is its own cumulative stream on the same segment,
- *   trailing the target by a couple of words — the lag is the point, and in
- *   the live pipeline it comes free from a separate translation stream.
+ * - No anchor-language stream. Live translation is gone (translation is
+ *   select-to-translate), so replaying a lagging English column would be
+ *   replaying a surface that no longer exists. The script's English text stays
+ *   in `mock-conversation.ts` for whatever wants it next.
  * - Nothing is scheduled while the session is held, so the ticker freezes on
  *   whatever word it reached and resumes from exactly there.
  *
@@ -79,8 +80,6 @@ const WORD_MS: Record<Turn["speaker"], number> = { learner: 250, tutor: 190 }
 const FINAL_MS = 280
 /** How long the analyzer "thinks" before corrections land. */
 const ANALYSIS_MS = 900
-/** Translation trails transcription by this many target words. */
-const ANCHOR_LAG_WORDS = 2
 
 /* -------------------------------------------------------------------------- */
 /*  Replay engine                                                             */
@@ -99,39 +98,14 @@ function agentStateFor(entry: ScriptEntry): SessionEvent {
   }
 }
 
-/**
- * How much of the anchor translation exists once `wordCount` target words have
- * been heard: proportional to the target's progress, shifted back by the lag.
- */
-function anchorSoFar(entry: ScriptEntry, wordCount: number): string {
-  const total = wordsOf(entry.target).length
-  const anchorWords = entry.anchor.split(" ")
-  const progress = Math.min(
-    1,
-    Math.max(0, (wordCount - ANCHOR_LAG_WORDS) / total)
-  )
-  return anchorWords
-    .slice(0, Math.round(progress * anchorWords.length))
-    .join(" ")
-}
-
 function transcript(entry: ScriptEntry, wordCount: number): SessionEvent[] {
-  const segmentId = entry.id
-  const target = wordsOf(entry.target).slice(0, wordCount).join(" ")
   return [
     {
       type: "transcript.delta",
-      segmentId,
+      segmentId: entry.id,
       speaker: entry.speaker,
       language: "target",
-      text: target,
-    },
-    {
-      type: "transcript.delta",
-      segmentId,
-      speaker: entry.speaker,
-      language: "anchor",
-      text: anchorSoFar(entry, wordCount),
+      text: wordsOf(entry.target).slice(0, wordCount).join(" "),
     },
   ]
 }
@@ -166,13 +140,6 @@ export function nextMockBeat(state: SessionState): MockBeat {
           language: "target",
           text: entry.target,
           analysisPending: entry.analysisPending,
-        },
-        {
-          type: "transcript.final",
-          segmentId: entry.id,
-          speaker: entry.speaker,
-          language: "anchor",
-          text: entry.anchor,
         },
         {
           type: "agent.state",
