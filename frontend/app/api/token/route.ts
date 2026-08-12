@@ -21,6 +21,8 @@ import { ROOM_NAME_PREFIX, TUTOR_AGENT_NAME } from "@/lib/session/protocol"
  *   explicitly asks to rejoin a named room
  * - explicit agent dispatch for the `tutor` worker embedded in the token's
  *   room config, so exactly one agent joins the room
+ * - `room_config` from the request is ignored: it is signed into the token, so
+ *   accepting it would let a caller set egress, participant limits or timeouts
  *
  * TODO(auth): there is no auth on this endpoint yet. Add a bearer/session check
  * here before this is exposed anywhere public.
@@ -36,7 +38,6 @@ type TokenRequestBody = {
   participant_name?: string
   participant_metadata?: string
   participant_attributes?: Record<string, string>
-  room_config?: unknown
 }
 
 function slugify(value: string) {
@@ -57,36 +58,18 @@ function generateRoomName(identity: string) {
 }
 
 /**
- * Builds the room config carrying explicit agent dispatch. Any client-supplied
- * room config is honored for metadata, but the agent name is always forced to
- * ours — clients don't get to pick which worker they dispatch.
+ * Builds the room config carrying explicit agent dispatch.
+ *
+ * Constructed entirely server-side: the room config is signed into the token,
+ * so anything read off the request body here would let a caller dictate
+ * egress, participant limits or room timeouts. The client's `room_config` is
+ * therefore ignored outright, and dispatch metadata is empty because the
+ * worker does not consume it.
  */
-function buildRoomConfig(input: unknown) {
-  let config: RoomConfiguration
-  if (input && typeof input === "object") {
-    try {
-      config = RoomConfiguration.fromJson(
-        input as Parameters<typeof RoomConfiguration.fromJson>[0],
-        {
-          ignoreUnknownFields: true,
-        }
-      )
-    } catch {
-      return null
-    }
-  } else {
-    config = new RoomConfiguration()
-  }
-
-  const requested = config.agents[0]
-  config.agents = [
-    new RoomAgentDispatch({
-      agentName: TUTOR_AGENT_NAME,
-      metadata: requested?.metadata ?? "",
-    }),
-  ]
-
-  return config
+function buildRoomConfig() {
+  return new RoomConfiguration({
+    agents: [new RoomAgentDispatch({ agentName: TUTOR_AGENT_NAME })],
+  })
 }
 
 export async function POST(request: NextRequest) {
@@ -124,11 +107,6 @@ export async function POST(request: NextRequest) {
   const roomName =
     body.room_name?.trim() || generateRoomName(participantIdentity)
 
-  const roomConfig = buildRoomConfig(body.room_config)
-  if (!roomConfig) {
-    return NextResponse.json({ error: "Invalid room_config" }, { status: 400 })
-  }
-
   try {
     const at = new AccessToken(apiKey, apiSecret, {
       identity: participantIdentity,
@@ -146,7 +124,7 @@ export async function POST(request: NextRequest) {
       canSubscribe: true,
     })
 
-    at.roomConfig = roomConfig
+    at.roomConfig = buildRoomConfig()
 
     const participantToken = await at.toJwt()
 

@@ -144,11 +144,25 @@ async def tutor(ctx: JobContext) -> None:
     wiring_task: asyncio.Task[None] | None = None
 
     async def _shutdown() -> None:
+        # Every step is guarded and independent: one failing teardown must not
+        # strand the ones behind it (a leaked socket outlives the job).
         if wiring_task is not None:
             wiring_task.cancel()
-        await translation.aclose()
+            try:
+                await wiring_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.warning("translation wiring failed during shutdown", exc_info=True)
+        try:
+            await translation.aclose()
+        except Exception:
+            logger.warning("translation shutdown failed", exc_info=True)
         if analyzer is not None:
-            await analyzer.aclose()
+            try:
+                await analyzer.aclose()
+            except Exception:
+                logger.warning("analyzer shutdown failed", exc_info=True)
 
     ctx.add_shutdown_callback(_shutdown)
 
@@ -180,8 +194,18 @@ async def tutor(ctx: JobContext) -> None:
         if track is not None:
             translation.start(track)
 
+    def _on_wiring_done(task: asyncio.Task[None]) -> None:
+        # Translation is fail-soft, but it must fail *loudly*: without this the
+        # exception is only surfaced as asyncio's "never retrieved" noise at GC.
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.warning("translation wiring failed", exc_info=exc)
+
     # Held on a local so the shutdown callback can cancel it cleanly.
     wiring_task = asyncio.create_task(_start_translation())
+    wiring_task.add_done_callback(_on_wiring_done)
 
     await session.generate_reply(instructions=greeting_instructions(cfg))
 

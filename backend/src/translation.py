@@ -54,6 +54,8 @@ _NOISY_AFTER_FAILURES = 3
 # resets, so three transient blips spread over an hour don't add up to a
 # permanent give-up.
 _HEALTHY_AFTER = 60.0
+# WebSocket ping interval; a missing PONG closes the socket instead of hanging.
+_HEARTBEAT = 20.0
 
 # Event types from the translations session we act on. Anything else is
 # unknown and logged once — API evolution should be loud, not silent.
@@ -186,7 +188,10 @@ class TranslationTask:
         url = f"{self._cfg.translation_url}?model={self._cfg.translation_model}"
         headers = {"Authorization": f"Bearer {self._cfg.openai_api_key}"}
 
-        async with self._http.ws_connect(url, headers=headers) as ws:
+        # `heartbeat` is what makes a *dead* connection fail: without a PING the
+        # socket can hang open forever with no traffic, and `_recv` would just
+        # wait instead of letting the supervisor reconnect.
+        async with self._http.ws_connect(url, headers=headers, heartbeat=_HEARTBEAT) as ws:
             await ws.send_json(self._session_update())
             logger.info("translation session open (%s -> %s)", self._source_lang, self._output_lang)
 
@@ -244,7 +249,24 @@ class TranslationTask:
         # One text-stream writer per translated item, closed when the item is done.
         writers: dict[str, rtc.TextStreamWriter] = {}
         try:
-            async for msg in ws:
+            # Deliberately not `async for msg in ws`: that iterator ends on a
+            # close frame *and* silently on an error, so a broken endpoint would
+            # look like a clean close and retry at the fixed 2s delay forever.
+            while True:
+                msg = await ws.receive()
+                if msg.type is aiohttp.WSMsgType.ERROR:
+                    exc = ws.exception()
+                    if exc is not None:
+                        raise exc
+                    raise RuntimeError("translate websocket error")
+                if msg.type in (
+                    aiohttp.WSMsgType.CLOSE,
+                    aiohttp.WSMsgType.CLOSING,
+                    aiohttp.WSMsgType.CLOSED,
+                ):
+                    # Clean close (idle timeout, session cap): let the
+                    # supervisor reconnect promptly.
+                    break
                 if msg.type is not aiohttp.WSMsgType.TEXT:
                     continue
                 event = json.loads(msg.data)
@@ -318,10 +340,6 @@ async def wait_for_audio_track(
                 return publication.track
         return None
 
-    track = _existing()
-    if track is not None:
-        return track
-
     future: asyncio.Future[rtc.Track] = asyncio.get_running_loop().create_future()
 
     def _on_subscribed(
@@ -336,8 +354,14 @@ async def wait_for_audio_track(
         ):
             future.set_result(track)
 
+    # Handler first, snapshot second. The other order drops a subscription that
+    # lands in between, and the wait then burns its full timeout for a track
+    # that is already there. `future.done()` de-duplicates if both fire.
     room.on("track_subscribed", _on_subscribed)
     try:
+        track = _existing()
+        if track is not None:
+            return track
         return await asyncio.wait_for(future, timeout=timeout)
     except asyncio.TimeoutError:
         logger.warning("no audio track for %s after %.0fs", identity, timeout)

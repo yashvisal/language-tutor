@@ -336,6 +336,8 @@ export function useLiveSession(): LiveSession {
   const transcriptSeen = useRef(
     new Map<string, { text: string; final: boolean }>()
   )
+  /** Index of the oldest transcription entry that is not yet seen-final. */
+  const transcriptScanFrom = useRef(0)
   const finalizedLearner = useRef<FinalizedUtterance[]>([])
   const liveLearnerSegment = useRef<string | null>(null)
   const correctionsSeen = useRef(new Set<string>())
@@ -345,6 +347,7 @@ export function useLiveSession(): LiveSession {
   useEffect(() => {
     if (connection !== "idle") return
     transcriptSeen.current.clear()
+    transcriptScanFrom.current = 0
     finalizedLearner.current = []
     liveLearnerSegment.current = null
     correctionsSeen.current.clear()
@@ -366,15 +369,13 @@ export function useLiveSession(): LiveSession {
     agent.attributes?.[PARTICIPANT_ATTRIBUTES.analyzer] === ANALYZER_OFF
 
   useEffect(() => {
-    // Only the tail can have changed: a segment we have already seen finalized
-    // is immutable, so scan back to the newest such entry and replay forward
-    // from there. Interims arrive ~2/second, and the history is unbounded.
-    let start = transcriptions.length
-    while (start > 0) {
-      const entry = transcriptions[start - 1]!
-      if (transcriptSeen.current.get(segmentIdOf(entry))?.final) break
-      start--
-    }
+    // `useTranscriptions` keeps insertion order and updates entries IN PLACE by
+    // `lk.segment_id`, so a change is not necessarily at the tail: an older
+    // learner segment can finalize after a newer tutor segment already has.
+    // Only a seen-final entry is immutable, so replay from the oldest entry
+    // that is not yet seen-final — the cursor advances past finalized prefixes
+    // afterwards, which keeps this off the unbounded history.
+    const start = transcriptScanFrom.current
 
     // Forward order matters from here: a delta for an unseen segment retires
     // whatever is on stage, and that is the only "turn advanced" signal the
@@ -422,6 +423,14 @@ export function useLiveSession(): LiveSession {
 
       transcriptSeen.current.set(segmentId, { text: entry.text, final })
     }
+
+    let cursor = start
+    while (cursor < transcriptions.length) {
+      const entry = transcriptions[cursor]!
+      if (!transcriptSeen.current.get(segmentIdOf(entry))?.final) break
+      cursor++
+    }
+    transcriptScanFrom.current = cursor
   }, [transcriptions, localIdentity, analyzerOff, emit])
 
   /* -- corrections -> analysis.complete ----------------------------------- */
@@ -438,11 +447,16 @@ export function useLiveSession(): LiveSession {
       // A stream still in flight parses as null; leave it unseen and retry on
       // the next chunk.
       if (!payload) continue
-      correctionsSeen.current.add(stream.streamInfo.id)
 
       const finalized = finalizedLearner.current
       const newest = finalized[finalized.length - 1]?.segmentId
+      // Corrections can beat their own segment's final onto the wire. Nothing
+      // to attribute them to yet, so leave the stream unseen: this effect runs
+      // again on the next render and the payload gets another chance, where
+      // marking it seen here would drop it forever.
       if (!newest) continue
+
+      correctionsSeen.current.add(stream.streamInfo.id)
 
       const bySegment = attributeCorrections(
         payload.text ?? "",
@@ -459,7 +473,11 @@ export function useLiveSession(): LiveSession {
         emit({ type: "analysis.complete", segmentId, corrections })
       }
     }
-  }, [correctionStreams, emit])
+    // `transcriptions` is a dependency so a payload deferred above is retried
+    // as soon as a learner segment finalizes; the effect declared above this
+    // one has already refreshed `finalizedLearner` by then. Re-running is free
+    // — `correctionsSeen` makes it idempotent.
+  }, [correctionStreams, transcriptions, emit])
 
   /* -- analyzer timeout --------------------------------------------------- */
 

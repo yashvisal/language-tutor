@@ -114,7 +114,33 @@ export function sessionReducer(
     }
 
     case "transcript.final": {
-      const next = patchSegment(state, event.segmentId, (t) =>
+      const known =
+        state.current?.id === event.segmentId ||
+        state.turns.some((t) => t.id === event.segmentId)
+      // A final for a segment we never saw a delta for is a whole utterance
+      // arriving at once (every interim missed, or a segment published only
+      // once finalized). Open it exactly as a delta would — otherwise the
+      // patch below finds nothing and the utterance never reaches the stage or
+      // history. Only the target stream may open a turn; a stray anchor final
+      // would open a turn with no words in it.
+      const base: SessionState =
+        known || event.language !== "target"
+          ? state
+          : {
+              ...state,
+              turns: state.current
+                ? [...state.turns, state.current]
+                : state.turns,
+              current: {
+                id: event.segmentId,
+                speaker: event.speaker,
+                target: "",
+                anchor: "",
+              },
+              phase: "live",
+            }
+
+      const next = patchSegment(base, event.segmentId, (t) =>
         withText(t, event.language, event.text)
       )
       // Only the target-language stream closes a turn; the anchor translation

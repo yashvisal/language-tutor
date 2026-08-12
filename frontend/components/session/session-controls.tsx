@@ -56,6 +56,7 @@ export function SessionControls({
                 variant="ghost"
                 size="icon-lg"
                 onClick={onReview}
+                aria-label="Review — holds the session"
                 className="rounded-full text-muted-foreground/70 hover:text-foreground"
               >
                 <History />
@@ -74,6 +75,7 @@ export function SessionControls({
                 variant="ghost"
                 size="icon-lg"
                 onClick={onToggleMute}
+                aria-label={muted ? "Unmute" : "Mute"}
                 className={cn(
                   "rounded-full text-muted-foreground hover:text-foreground",
                   muted && "bg-muted text-foreground"
@@ -88,7 +90,12 @@ export function SessionControls({
 
         <label className="flex cursor-pointer items-center gap-2 px-2 select-none">
           <Languages className="size-3.5 text-muted-foreground" />
-          <Switch size="sm" checked={showEn} onCheckedChange={onToggleEn} />
+          <Switch
+            size="sm"
+            aria-label="Show translation"
+            checked={showEn}
+            onCheckedChange={onToggleEn}
+          />
         </label>
 
         <Tooltip>
@@ -98,6 +105,7 @@ export function SessionControls({
                 variant="ghost"
                 size="icon-lg"
                 onClick={onTogglePause}
+                aria-label={paused ? "Resume" : "Hold"}
                 className={cn(
                   "rounded-full text-muted-foreground hover:text-foreground",
                   paused && "bg-primary/10 text-primary hover:text-primary"
@@ -120,6 +128,7 @@ export function SessionControls({
                     variant="ghost"
                     size="icon-lg"
                     onClick={onEnd}
+                    aria-label="End session"
                     className="rounded-full text-muted-foreground hover:text-destructive"
                   >
                     <PhoneOff />
