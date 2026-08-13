@@ -63,8 +63,10 @@ summarise it, or re-explain anything from before the hold — under no \
 circumstances deliver information. If the facts say the learner studied a \
 correction or a translation, the line is a quick, warm comprehension check \
 about that one thing (a brief {anchor} check-in is fine, per your standing \
-instructions). Otherwise it is just a short "ready to keep going?" in \
-{target}. Do not narrate the pause and do not apologise for it.\
+instructions). Otherwise it is a short ready-to-go said BOTH ways, {target} \
+then {anchor} back-to-back — "¿Seguimos? Ready to keep going?" — so a \
+re-orienting learner never has to decode the re-entry itself. Do not narrate \
+the pause and do not apologise for it.\
 """
 
 RESUME_ANSWER_INSTRUCTIONS = """\
