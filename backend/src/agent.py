@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import time
 from dataclasses import dataclass
 
@@ -46,7 +47,13 @@ from config import (
     RPC_RESUME,
     TutorConfig,
 )
-from prompts import greeting_instructions, resume_instructions, stt_prompt, tutor_instructions
+from prompts import (
+    BRIDGE_INTENTS,
+    greeting_instructions,
+    resume_instructions,
+    stt_prompt,
+    tutor_instructions,
+)
 from state import SessionFacts, SessionState
 from translate import SpanTranslator, register_translate_rpc
 
@@ -383,6 +390,11 @@ async def _register_pause_rpc(
 
             lines = _resume_facts(state, facts, brief)
             try:
+                # Shuffle the bridge's flavor: same intent twice in a row
+                # reads as a canned line, which is the one thing a re-entry
+                # must never feel like.
+                intent = random.choice([i for i in BRIDGE_INTENTS if i != state.last_bridge_intent])
+                state.last_bridge_intent = intent
                 session.generate_reply(
                     instructions=resume_instructions(
                         cfg,
@@ -391,6 +403,7 @@ async def _register_pause_rpc(
                         # interrupted delivery gets a one-line bridge, never a
                         # replay (the message is still on screen).
                         owes_answer=state.reply_was_pending,
+                        intent=intent,
                     )
                 )
             except Exception:

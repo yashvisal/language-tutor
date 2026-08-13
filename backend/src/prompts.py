@@ -62,12 +62,29 @@ screen and they can read every word of it, so do NOT finish it, restart it, \
 summarise it, or re-explain anything from before the hold — under no \
 circumstances deliver information. If the facts say the learner studied a \
 correction or a translation, the line is a quick, warm comprehension check \
-about that one thing (a brief {anchor} check-in is fine, per your standing \
-instructions). Otherwise it is a short ready-to-go said BOTH ways, {target} \
-then {anchor} back-to-back — "¿Seguimos? Ready to keep going?" — so a \
-re-orienting learner never has to decode the re-entry itself. Do not narrate \
-the pause and do not apologise for it.\
+about that SPECIFIC point — name the thing they looked at (the tense, the \
+word, the phrase) in one short question (a brief {anchor} check-in is fine, \
+per your standing instructions). Otherwise say a short ready-to-go BOTH ways, \
+{target} then {anchor} back-to-back, so a re-orienting learner never has to \
+decode the re-entry itself. Express roughly this intent, in your own words: \
+"{intent}". Do not narrate the pause and do not apologise for it.\
 """
+
+# Re-entry intents for the pause-only bridge, sampled by the worker so the
+# line varies session-long instead of becoming a catchphrase. Language-neutral
+# on purpose: the model renders them in the configured target/anchor pair.
+BRIDGE_INTENTS = [
+    "Shall we keep going?",
+    "Ready to jump back in?",
+    "Where were we — shall we pick it up?",
+    "All good? Let's continue",
+    "Take your time — ready when you are",
+    "Shall we get back to it?",
+    "Ready for a bit more?",
+    "Let's pick up where we left off",
+    "All set to continue?",
+    "Good to go?",
+]
 
 RESUME_ANSWER_INSTRUCTIONS = """\
 The conversation was on hold and has just resumed. What happened, as facts:
@@ -172,7 +189,9 @@ def translate_instructions(cfg: TutorConfig) -> str:
     )
 
 
-def resume_instructions(cfg: TutorConfig, facts: list[str], *, owes_answer: bool) -> str:
+def resume_instructions(
+    cfg: TutorConfig, facts: list[str], *, owes_answer: bool, intent: str = ""
+) -> str:
     """Situation brief for a post-hold `generate_reply`.
 
     Two shapes, chosen by the worker's own flags (live finding 2026-08-12 —
@@ -191,4 +210,5 @@ def resume_instructions(cfg: TutorConfig, facts: list[str], *, owes_answer: bool
         facts="\n".join(f"- {fact}" for fact in facts),
         target=cfg.target_language_name,
         anchor=cfg.anchor_language_name,
+        intent=intent or BRIDGE_INTENTS[0],
     )

@@ -32,6 +32,8 @@ _CATEGORY_LABELS = {"naturalness": "phrasing"}
 @dataclass
 class SessionState:
     paused: bool = False
+    # The last bridge intent used, so consecutive resumes never repeat a line.
+    last_bridge_intent: str | None = None
 
     # What the hold interrupted, captured when `tutor.pause` fires. Resume reads
     # it to decide whether the tutor owes the learner a re-entry or should stay
