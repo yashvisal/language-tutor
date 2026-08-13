@@ -193,10 +193,16 @@ export function ConversationStage({
       }}
     >
       {/* The peek is a modal overlay: while it is up, the stage beneath it is
-          not reachable by keyboard or pointer. */}
+          not reachable by keyboard or pointer — and fully invisible. The peek's
+          backdrop is translucent, and exited turns can linger in the DOM (a
+          known AnimatePresence popLayout quirk), so a merely-dimmed stage
+          bleeds ghost text through the review surface. */}
       <div
         inert={historyOpen}
-        className="flex h-full flex-col items-center justify-center px-8 pb-24"
+        className={cn(
+          "flex h-full flex-col items-center justify-center px-8 pb-24 transition-opacity duration-200",
+          historyOpen && "opacity-0"
+        )}
       >
         {/* Aura — viewport-centered, and deliberately outside the text grid:
             it is the fixed anchor the columns re-center beneath. */}
