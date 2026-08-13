@@ -31,8 +31,10 @@
  *    reconciled: while desired != reported the RPC is re-sent, so a dropped
  *    call, a reconnect, or a fresh agent all converge instead of stranding the
  *    surface and the tutor in opposite states. The *surface* freeze is instant
- *    and purely client-side; only the RPC waits out `HOLD_DEBOUNCE_MS`, so a
- *    glance at a correction never interrupts the tutor's voice.
+ *    and purely client-side; only the RPC is debounced — on the way up so a
+ *    glance at a correction never interrupts the tutor's voice, and on the way
+ *    down so hopping from one correction to the next never lets it start a
+ *    sentence it will be cut off mid-word.
  *
  * The surface's other invariant is that a HELD SESSION DOES NOT MOVE. In replay
  * that is free (a held mock never schedules a beat); live, speech keeps
@@ -68,6 +70,7 @@ import {
   TUTOR_SESSION_OPTIONS,
   tutorTokenSource,
 } from "./livekit"
+import { TRANSLATE_TIMEOUT_MS } from "./protocol"
 import type {
   ResumeCorrectionPayload,
   ResumePayload,
@@ -98,6 +101,17 @@ const ANALYSIS_TIMEOUT_MS = 8000
  */
 const HOLD_DEBOUNCE_MS = 400
 
+/**
+ * The release's mirror image. Hold-hopping is normal — close one correction,
+ * open the next — and each gap would otherwise fire a resume the worker answers
+ * with a re-entry reply, cut off by the next pause a moment later: a blurted
+ * fragment. So the resume waits for the hold set to STAY empty this long, and a
+ * hold reappearing inside the window cancels the release outright: the pause was
+ * never lifted, so there is nothing to re-send and the held clock keeps running.
+ * The surface unfreeze is not debounced — that is driven by the raw hold set.
+ */
+const RELEASE_DEBOUNCE_MS = 300
+
 /** How long to wait before re-sending an unacknowledged pause/resume RPC. */
 const PAUSE_RETRY_MS = 2000
 
@@ -105,18 +119,18 @@ const PAUSE_RETRY_MS = 2000
 const MAX_PAUSE_ATTEMPTS = 5
 
 /**
- * How long the overlay waits for a translation. The worker self-limits to 4s
- * and answers failures with an error string rather than silence, so anything
- * that reaches this ceiling is the transport, not the model.
- */
-const TRANSLATE_TIMEOUT_MS = 5000
-
-/**
  * How many finalized learner utterances stay joinable. Corrections arrive
  * within a turn or two of the speech that produced them, so anything older is
  * dead weight — and every entry costs a `normalize()` pass per payload.
  */
 const MAX_FINALIZED = 10
+
+/**
+ * Separator for the translation cache's composite key. A NUL never occurs in
+ * transcript text, so no combination of turn id, speaker and span can collide
+ * with another.
+ */
+const KEY_SEP = "\u0000"
 
 /** Events that must not reach the reducer while the session is held. */
 const TURN_ADVANCING = new Set<SessionEvent["type"]>([
@@ -387,12 +401,46 @@ export function useLiveSession(): LiveSession {
   const finalizedLearner = useRef<FinalizedUtterance[]>([])
   const correctionsSeen = useRef(new Set<string>())
   /**
-   * Translations already paid for, keyed by speaker and normalized span. A
-   * learner who re-reads the same phrase gets it back instantly instead of
-   * watching a shimmer for something the session already knows — and the
-   * normalized key means casing and punctuation drift never miss.
+   * Translations already paid for, keyed by turn, speaker and RAW span. Raw
+   * because punctuation is meaning ("Vamos a comer, niños"), and turn-scoped
+   * because the same words in a later turn are a different question — a
+   * normalized, turn-blind key would answer one with the other's result. A
+   * learner re-reading a phrase inside the same turn still pays nothing.
+   *
+   * The value is the in-flight PROMISE, not the answer: a second selection
+   * while the first is still out joins that round trip instead of buying
+   * another. Rejections are evicted (see `translate`), so a failure retries.
    */
-  const translations = useRef(new Map<string, string>())
+  const translations = useRef(new Map<string, Promise<string>>())
+
+  /* -- pause-cycle bookkeeping (see the hold reconciler below) ------------- */
+
+  /**
+   * A hold that has lasted long enough to be worth interrupting the tutor for
+   * — and, on the way down, one that has been gone long enough to be worth
+   * resuming for. The surface froze the moment the first hold landed; this is
+   * the only thing the agent ever sees, so a hold that clears inside the window
+   * is invisible to it — no pause, and therefore no resume either.
+   */
+  const [holdSettled, setHoldSettled] = useState(false)
+
+  /** When the pause RPC actually went out; null until it does. */
+  const pauseSentAt = useRef<number | null>(null)
+  /**
+   * How long the agent was held, frozen at release. Not recomputed per retry:
+   * a re-sent resume describes the same hold, not a longer one.
+   */
+  const heldMs = useRef(0)
+  /** Every reason that was active at any point in the current hold. */
+  const holdReasons = useRef<PauseReason[]>([])
+  /**
+   * Whether a hold cycle is live — which outlasts the hold set itself, through
+   * the release debounce. A hold arriving while this is still true is the same
+   * pause continuing, not a new one.
+   */
+  const cycleOpen = useRef(false)
+  /** When the live cycle's first hold went up, for the settle countdown. */
+  const cycleStart = useRef(0)
 
   useEffect(() => {
     if (connection !== "idle") return
@@ -402,6 +450,16 @@ export function useLiveSession(): LiveSession {
     correctionsSeen.current.clear()
     translations.current.clear()
     buffered.current = []
+    // The pause cycle belongs to the room that is going away. A resume sent to
+    // the NEXT tutor must not brief it with a five-minute `held_ms`, the last
+    // session's reasons, or a correction from a conversation it never had — so
+    // the cycle is closed here and reopened from scratch (by the reconciler
+    // below, which re-runs on `connection`) if the session is still held.
+    cycleOpen.current = false
+    pauseSentAt.current = null
+    heldMs.current = 0
+    holdReasons.current = []
+    inspected.current = null
     dispatch({ type: "session.reset" })
   }, [connection])
 
@@ -549,51 +607,61 @@ export function useLiveSession(): LiveSession {
   /* -- holds <-> pause / resume RPC --------------------------------------- */
 
   /**
-   * A hold that has lasted long enough to be worth interrupting the tutor for.
-   * The surface froze the moment `held` went true; this is the only thing the
-   * agent ever sees, so a hold that clears inside the window is invisible to it
-   * — no pause, and therefore no resume either.
+   * The whole life of a hold cycle, in one effect keyed on the hold SET.
+   *
+   * Opening, accumulating reasons and closing were three effects whose
+   * correctness depended on their declaration order; they are one here because
+   * they are one fact. `state.holds` is the key rather than `held` so that a
+   * reason added mid-cycle is recorded without restarting the settle clock —
+   * that is what `cycleStart` is for.
+   *
+   * Both edges are debounced, and asymmetrically. Rising: a glance that opens
+   * and closes a correction inside `HOLD_DEBOUNCE_MS` never reaches the agent.
+   * Falling: the release is deferred by `RELEASE_DEBOUNCE_MS`, and a hold
+   * arriving inside that window CANCELS it rather than restarting anything —
+   * the pause was never lifted, so the cycle simply continues with the same
+   * `pauseSentAt`. `inspected` is deliberately never cleared here; see its
+   * declaration.
+   *
+   * `connection` is a dependency so that a room going away (which closes the
+   * cycle above) reopens a fresh one against the new tutor while still held.
    */
-  const [holdSettled, setHoldSettled] = useState(false)
-
-  /** When the pause RPC actually went out; null until it does. */
-  const pauseSentAt = useRef<number | null>(null)
-  /**
-   * How long the agent was held, frozen at release. Not recomputed per retry:
-   * a re-sent resume describes the same hold, not a longer one.
-   */
-  const heldMs = useRef(0)
-  /** Every reason that was active at any point in the current hold. */
-  const holdReasons = useRef<PauseReason[]>([])
-
   useEffect(() => {
-    if (!held) return
-    // A fresh hold cycle. The previous cycle's metadata survived until now so
-    // its resume RPC could be retried with it; it is dead the moment a new hold
-    // opens. `inspected` is deliberately NOT cleared here — see its declaration.
-    holdReasons.current = []
-    pauseSentAt.current = null
-    const timer = setTimeout(() => setHoldSettled(true), HOLD_DEBOUNCE_MS)
-    // The release path: freeze how long the agent was actually held (the resume
-    // may be retried, and a retry describes the same hold, not a longer one)
-    // and drop the debounced desire, which is what fires the resume RPC.
-    return () => {
-      clearTimeout(timer)
-      heldMs.current =
-        pauseSentAt.current === null ? 0 : Date.now() - pauseSentAt.current
-      setHoldSettled(false)
+    if (state.holds.length === 0) {
+      // Scheduled even when no cycle is open: that is also how a `holdSettled`
+      // stranded by a reconnect (the reset above closes the cycle without
+      // touching state) gets dropped.
+      const timer = setTimeout(() => {
+        cycleOpen.current = false
+        // Freeze how long the agent was actually held: the resume may be
+        // retried, and a retry describes the same hold, not a longer one.
+        heldMs.current =
+          pauseSentAt.current === null ? 0 : Date.now() - pauseSentAt.current
+        setHoldSettled(false)
+      }, RELEASE_DEBOUNCE_MS)
+      return () => clearTimeout(timer)
     }
-  }, [held])
 
-  // Declared after the reset above so that within one commit the new cycle is
-  // opened before this run records into it.
-  useEffect(() => {
+    if (!cycleOpen.current) {
+      cycleOpen.current = true
+      cycleStart.current = Date.now()
+      holdReasons.current = []
+      pauseSentAt.current = null
+    }
     for (const reason of state.holds) {
       if (!holdReasons.current.includes(reason)) {
         holdReasons.current.push(reason)
       }
     }
-  }, [state.holds])
+    // Measured from the cycle's start, not this run's: a second reason arriving
+    // 300ms in must not buy the tutor another 400ms of talking.
+    const remaining = Math.max(
+      0,
+      HOLD_DEBOUNCE_MS - (Date.now() - cycleStart.current)
+    )
+    const timer = setTimeout(() => setHoldSettled(true), remaining)
+    return () => clearTimeout(timer)
+  }, [state.holds, connection])
 
   // Desired: what the (debounced) hold set says. Reported: what the agent says
   // it is doing (mirrored as an attribute so it survives reconnects). The two
@@ -675,32 +743,47 @@ export function useLiveSession(): LiveSession {
   /* -- select-to-translate ------------------------------------------------ */
 
   const translate = useCallback<TranslateFn>(
-    async (text, speaker, turnId) => {
-      const key = `${speaker}\u0000${normalize(text)}`
+    (text, speaker, turnId) => {
+      const key = [turnId ?? "", speaker, text].join(KEY_SEP)
       const cached = translations.current.get(key)
-      if (cached !== undefined) return cached
-      if (!agentIdentity) throw new Error("no tutor connected")
+      if (cached) return cached
 
-      const request: TranslateRequest = {
-        text,
-        speaker,
-        turn_id: turnId ?? null,
-      }
-      const raw = await room.localParticipant.performRpc({
-        destinationIdentity: agentIdentity,
-        method: RPC_METHODS.translate,
-        payload: JSON.stringify(request),
-        responseTimeout: TRANSLATE_TIMEOUT_MS,
-      })
+      const ask = async (): Promise<string> => {
+        if (!agentIdentity) throw new Error("no tutor connected")
 
-      const response = JSON.parse(raw) as TranslateResponse
-      if (!response.translation) {
-        throw new Error(response.error ?? "translation failed")
+        const request: TranslateRequest = {
+          text,
+          speaker,
+          turn_id: turnId ?? null,
+        }
+        const raw = await room.localParticipant.performRpc({
+          destinationIdentity: agentIdentity,
+          method: RPC_METHODS.translate,
+          payload: JSON.stringify(request),
+          responseTimeout: TRANSLATE_TIMEOUT_MS,
+        })
+
+        const response = JSON.parse(raw) as TranslateResponse
+        if (!response.translation) {
+          throw new Error(response.error ?? "translation failed")
+        }
+        return response.translation
       }
-      // Only successes are cached: an error is a moment, not an answer, and
+
+      // The PROMISE is cached, and before it resolves: a second selection of
+      // the same span while the first is still in flight (or a double-invoked
+      // effect under StrictMode) joins that round trip instead of buying
+      // another.
+      const pending = ask()
+      translations.current.set(key, pending)
+      // Only successes stay: an error is a moment, not an answer, and
       // re-selecting the span is exactly how a learner retries.
-      translations.current.set(key, response.translation)
-      return response.translation
+      void pending.catch(() => {
+        if (translations.current.get(key) === pending) {
+          translations.current.delete(key)
+        }
+      })
+      return pending
     },
     [agentIdentity, room]
   )

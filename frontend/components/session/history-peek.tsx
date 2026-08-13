@@ -6,7 +6,7 @@
  * the session for as long as it is open.
  */
 
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, type RefObject } from "react"
 import { X } from "lucide-react"
 import { motion } from "motion/react"
 
@@ -16,7 +16,10 @@ import {
   StageGrid,
   StageRow,
 } from "@/components/session/stage-grid"
-import { OVERLAY_ATTR } from "@/components/session/translate-overlay"
+import {
+  OVERLAY_ATTR,
+  OVERLAY_OPEN,
+} from "@/components/session/translate-overlay"
 import { Button } from "@/components/ui/button"
 import {
   Tooltip,
@@ -29,15 +32,26 @@ import { cn } from "@/lib/utils"
 export function HistoryPeek({
   turns,
   onClose,
+  restoreFocusTo,
 }: {
   turns: Turn[]
   onClose: () => void
+  /**
+   * What opened the peek, captured by the caller at interaction time (a ref, so
+   * nothing reads it during render). Null when there is nothing to go back to —
+   * the wheel gesture. It cannot be found from in here: the stage is marked
+   * `inert` in the same commit that mounts this, which blurs the trigger to
+   * `<body>` before any effect runs.
+   */
+  restoreFocusTo?: RefObject<HTMLElement | null>
 }) {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return
-      // One Escape, one layer: a translation open over the peek dismisses first.
-      if (document.querySelector(`[${OVERLAY_ATTR}]`)) return
+      // One Escape, one layer: a translation open over the peek dismisses
+      // first. The value matters — a card mid-exit is still in the DOM but is
+      // no longer a layer, and would otherwise swallow this Escape too.
+      if (document.querySelector(`[${OVERLAY_ATTR}="${OVERLAY_OPEN}"]`)) return
       onClose()
     }
     window.addEventListener("keydown", onKeyDown)
@@ -49,30 +63,20 @@ export function HistoryPeek({
    * marks `inert` while this is up), so focus must move into it on open or the
    * next Tab lands on nothing; and it must go back where it came from on close,
    * or a learner who opened this from the control bar loses their place.
-   *
-   * Two things the guards are for. The peek also opens from a wheel gesture,
-   * where there is no trigger to return to. And the trigger is remembered in a
-   * ref that ignores anything inside the panel: the stage is inert while this is
-   * open, so a re-entrant mount (StrictMode's double-invoke, in dev) would read
-   * `activeElement` as this dialog's own close button and hand focus nowhere.
    */
-  const panelRef = useRef<HTMLDivElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
-  const trigger = useRef<HTMLElement | null>(null)
   useEffect(() => {
-    const active = document.activeElement
-    if (active instanceof HTMLElement && !panelRef.current?.contains(active)) {
-      trigger.current = active
-    }
+    // Read on mount, not on close: whatever opened this peek is the thing to
+    // return to, whatever the ref happens to hold by then.
+    const trigger = restoreFocusTo?.current
     closeRef.current?.focus()
     return () => {
-      if (trigger.current?.isConnected) trigger.current.focus()
+      if (trigger?.isConnected) trigger.focus()
     }
-  }, [])
+  }, [restoreFocusTo])
 
   return (
     <motion.div
-      ref={panelRef}
       role="dialog"
       aria-modal="true"
       aria-label="Conversation history"

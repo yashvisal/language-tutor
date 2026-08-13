@@ -177,6 +177,9 @@ function ExplanationDisclosure({ text }: { text: string }) {
   )
 }
 
+/** Stable, so a defaulted `SettledText` never remounts its marks. */
+const NO_OP = () => {}
+
 /**
  * Settled target-language text with its marks live (no reveal animation).
  *
@@ -184,7 +187,19 @@ function ExplanationDisclosure({ text }: { text: string }) {
  * marker `SelectionTranslator` resolves a selection against, so every place
  * settled text renders gets the overlay without knowing it exists.
  */
-export function SettledText({ turn }: { turn: Turn }) {
+export function SettledText({
+  turn,
+  onCorrectionOpenChange = NO_OP,
+}: {
+  turn: Turn
+  /**
+   * Hold the session while one of these marks is open, exactly as the hero
+   * does. Optional because not every host needs it: the history peek already
+   * holds for `"history"` the whole time it is up, so its rows can keep the
+   * no-op. The pinned context row has no such cover and must wire this.
+   */
+  onCorrectionOpenChange?: (open: boolean, correction: Correction) => void
+}) {
   const segments = useMemo(() => segmentTurn(turn), [turn])
   return (
     <span {...translatableProps(turn)}>
@@ -194,7 +209,7 @@ export function SettledText({ turn }: { turn: Turn }) {
             key={seg.key}
             correction={seg.correction}
             active
-            onOpenChange={() => {}}
+            onOpenChange={onCorrectionOpenChange}
           >
             {seg.text}
           </CorrectionMark>

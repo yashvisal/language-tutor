@@ -30,11 +30,21 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { AnimatePresence, motion } from "motion/react"
 
 import type { Speaker, TranslateFn, Turn } from "@/lib/session/contract"
+import { MAX_SPAN_CHARS } from "@/lib/session/protocol"
 
 const TURN_ATTR = "data-translate-turn"
 const SPEAKER_ATTR = "data-translate-speaker"
-/** Set on the card so click-away, the wheel-to-peek gesture and Space skip it. */
+/**
+ * Set on the card's wrapper so the wheel-to-peek gesture and the peek's Escape
+ * can tell whether a translation is up. STATE-BEARING (`"open"` / `"closed"`)
+ * rather than merely present: the card lingers in the DOM for its ~120ms exit
+ * animation, and a guard that only checked for the attribute would swallow a
+ * second Escape aimed at the layer beneath. The wrapper is outside
+ * `AnimatePresence` precisely so its value keeps updating while the card exits.
+ */
 export const OVERLAY_ATTR = "data-translate-overlay"
+/** The only value the guards may treat as "a translation is up". */
+export const OVERLAY_OPEN = "open"
 
 /**
  * Mark a rendered turn's target text as selectable-to-translate. Only settled
@@ -52,12 +62,6 @@ export function translatableProps(turn: Pick<Turn, "id" | "speaker">) {
  */
 const MIN_SPAN_CHARS = 2
 
-/**
- * Mirrors the worker's own limit. Enforced here too so a stray select-all never
- * costs a round trip that can only come back as an error.
- */
-const MAX_SPAN_CHARS = 600
-
 const CARD_W = 300
 /** Assumed card height for the flip decision — cheaper than measuring, and the
  * card only ever holds a span, a line or two of translation, and padding. */
@@ -67,7 +71,12 @@ const GAP = 10
 const MARGIN = 12
 
 interface SelectionAnchor {
-  /** `speaker\0text` — identity of the question being asked. */
+  /**
+   * `turnId\0speaker\0text` — identity of the question being asked. The turn is
+   * part of it because a phrase repeated in a later turn is a NEW question: a
+   * turn-blind key would answer it instantly with the previous turn's result,
+   * including a stale "Couldn't translate".
+   */
   key: string
   text: string
   speaker: Speaker
@@ -92,10 +101,17 @@ interface Resolved {
  */
 export function SelectionTranslator({
   translate,
+  held,
   onHold,
   onRelease,
 }: {
   translate: TranslateFn
+  /**
+   * Whether the session currently holds for `"translation"` — the card's real
+   * open state, owned by the session rather than by this component. See the
+   * effect below.
+   */
+  held: boolean
   /** Called when the overlay opens. Must be referentially stable. */
   onHold: () => void
   /** Called when it closes. Must be referentially stable. */
@@ -125,7 +141,10 @@ export function SelectionTranslator({
       if (e.target instanceof Node && cardRef.current?.contains(e.target))
         return
       const next = resolveSelection()
-      if (next) setAnchor(next)
+      // Identity, not object equality: re-selecting the same span (a
+      // double-click, a re-drag) is the same question, so nothing re-renders.
+      if (next)
+        setAnchor((prev) => (prev && prev.key === next.key ? prev : next))
       else dismiss()
     }
 
@@ -155,6 +174,35 @@ export function SelectionTranslator({
     return onRelease
   }, [open, onHold, onRelease])
 
+  /**
+   * …and the hold set is the single source of truth for the other direction
+   * too. Space, the pause button, and anything else that clears the holds
+   * release `"translation"` without knowing this card exists; if the card
+   * rendered from private state it would stay painted over a session that had
+   * already resumed, and its eventual dismissal would release a reason nobody
+   * held. So: once the hold has actually been observed, losing it closes the
+   * card. Generic by construction — every release path is covered, and no
+   * caller has to special-case this component.
+   *
+   * `acquired` is the gap between asking for the hold (the effect above) and
+   * seeing it in state, during which `held` is legitimately false.
+   */
+  const acquired = useRef(false)
+  useEffect(() => {
+    if (!open) {
+      acquired.current = false
+      return
+    }
+    if (held) {
+      acquired.current = true
+      return
+    }
+    if (!acquired.current) return
+    // Clear the highlight too: the question was withdrawn, not answered.
+    document.getSelection()?.removeAllRanges()
+    dismiss()
+  }, [open, held, dismiss])
+
   useEffect(() => {
     if (!anchor) return
     const { key, text, speaker, turnId } = anchor
@@ -178,40 +226,45 @@ export function SelectionTranslator({
   const result = anchor && resolved?.key === anchor.key ? resolved : null
 
   return (
-    <AnimatePresence>
-      {anchor && (
-        <motion.div
-          // A stable key: re-selecting elsewhere repositions this card rather
-          // than crossfading two of them.
-          key="translate-overlay"
-          ref={cardRef}
-          role="status"
-          aria-label="Translation"
-          {...{ [OVERLAY_ATTR]: "" }}
-          initial={{ opacity: 0, scale: 0.96, y: -4 }}
-          animate={{ opacity: 1, scale: 1, y: 0 }}
-          exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.12 } }}
-          transition={{ duration: 0.16, ease: "easeOut" }}
-          style={{ ...cardPosition(anchor), width: CARD_W }}
-          className="fixed z-50 rounded-lg bg-popover p-3.5 text-sm text-popover-foreground shadow-md ring-1 ring-foreground/10"
-        >
-          <div className="line-clamp-2 text-xs text-muted-foreground/70 italic">
-            {anchor.text}
-          </div>
-          {result?.translation ? (
-            <p className="mt-2 leading-relaxed text-balance">
-              {result.translation}
-            </p>
-          ) : result?.failed ? (
-            <p className="mt-2 text-xs text-muted-foreground/70">
-              Couldn’t translate — try again
-            </p>
-          ) : (
-            <Shimmer />
-          )}
-        </motion.div>
-      )}
-    </AnimatePresence>
+    // The marker lives on this wrapper, not on the card: the card is frozen
+    // mid-exit by AnimatePresence and would keep claiming to be open for the
+    // length of its animation. The wrapper re-renders, so the guards read the
+    // truth. It contains the exiting card, so `closest()` still finds it.
+    <div {...{ [OVERLAY_ATTR]: open ? OVERLAY_OPEN : "closed" }}>
+      <AnimatePresence>
+        {anchor && (
+          <motion.div
+            // A stable key: re-selecting elsewhere repositions this card rather
+            // than crossfading two of them.
+            key="translate-overlay"
+            ref={cardRef}
+            role="status"
+            aria-label="Translation"
+            initial={{ opacity: 0, scale: 0.96, y: -4 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.12 } }}
+            transition={{ duration: 0.16, ease: "easeOut" }}
+            style={{ ...cardPosition(anchor), width: CARD_W }}
+            className="fixed z-50 rounded-lg bg-popover p-3.5 text-sm text-popover-foreground shadow-md ring-1 ring-foreground/10"
+          >
+            <div className="line-clamp-2 text-xs text-muted-foreground/70 italic">
+              {anchor.text}
+            </div>
+            {result?.translation ? (
+              <p className="mt-2 leading-relaxed text-balance">
+                {result.translation}
+              </p>
+            ) : result?.failed ? (
+              <p className="mt-2 text-xs text-muted-foreground/70">
+                Couldn’t translate — try again
+              </p>
+            ) : (
+              <Shimmer />
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   )
 }
 
@@ -297,7 +350,7 @@ function resolveSelection(): SelectionAnchor | null {
   if (rect.width === 0 && rect.height === 0) return null
 
   return {
-    key: `${speaker}\u0000${text}`,
+    key: `${turnId}\u0000${speaker}\u0000${text}`,
     text,
     speaker,
     turnId,

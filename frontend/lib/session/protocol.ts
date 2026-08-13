@@ -55,7 +55,7 @@ export const RPC_METHODS = {
 /**
  * The `tutor.translate` request. Snake_cased for the same reason as
  * `ResumePayload`: this is the JSON the Python worker parses, not a frontend
- * type. The worker rejects spans longer than 600 characters.
+ * type.
  */
 export interface TranslateRequest {
   text: string
@@ -63,6 +63,22 @@ export interface TranslateRequest {
   /** The turn the span was selected in, for the worker's logs. */
   turn_id: string | null
 }
+
+/**
+ * Longest span the worker will translate. Mirrored on the frontend — the
+ * overlay refuses to open on a stray select-all rather than paying for a round
+ * trip that can only come back as an error. The Python side keeps its own copy
+ * (cross-language duplication, documented there); this is the single frontend
+ * source.
+ */
+export const MAX_SPAN_CHARS = 600
+
+/**
+ * How long the overlay waits for a translation. The worker self-limits to 4s
+ * and answers failures with an error string rather than silence, so anything
+ * that reaches this ceiling is the transport, not the model.
+ */
+export const TRANSLATE_TIMEOUT_MS = 5000
 
 /** The `tutor.translate` reply: exactly one of these fields is present. */
 export interface TranslateResponse {

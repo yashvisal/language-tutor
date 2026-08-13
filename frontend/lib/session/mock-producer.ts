@@ -27,7 +27,7 @@
 import { useEffect, useReducer } from "react"
 
 import { CONVERSATION, INTERIM } from "@/lib/design/mock-conversation"
-import type { SessionEvent, Turn } from "./contract"
+import type { SessionEvent, TranslateFn, Turn } from "./contract"
 import {
   INITIAL_SESSION_STATE,
   sessionReducer,
@@ -189,6 +189,33 @@ export const MOCK_INITIAL_STATE: SessionState = openingEvents().reduce(
   sessionReducer,
   INITIAL_SESSION_STATE
 )
+
+/* -------------------------------------------------------------------------- */
+/*  Select-to-translate                                                       */
+/* -------------------------------------------------------------------------- */
+
+/** Roughly the round trip the worker's `tutor.translate` budgets for. */
+const MOCK_TRANSLATE_MS = 400
+
+/**
+ * Replay's answer to a selected span — the mock's half of `TranslateFn`, and it
+ * lives here for the same reason the beats do: the script is the only thing
+ * that knows what its turns mean. The turn id does the lookup, so any span of a
+ * scripted turn comes back as that turn's English; anything else gets an
+ * obviously-canned line rather than a plausible-looking lie, because the point
+ * of replay is the interaction, not the translation.
+ */
+export const mockTranslate: TranslateFn = (text, _speaker, turnId) =>
+  new Promise((resolve) =>
+    setTimeout(() => {
+      const scripted = CONVERSATION.find((turn) => turn.id === turnId)
+      resolve(
+        scripted?.es.includes(text)
+          ? scripted.en
+          : `“${text}” — replay has no translator.`
+      )
+    }, MOCK_TRANSLATE_MS)
+  )
 
 /* -------------------------------------------------------------------------- */
 /*  React driver                                                              */

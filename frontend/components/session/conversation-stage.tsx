@@ -28,7 +28,7 @@
  * audio track live.
  */
 
-import { useCallback, useEffect, type ReactNode } from "react"
+import { useCallback, useEffect, useRef, type ReactNode } from "react"
 import { AnimatePresence, motion } from "motion/react"
 
 import { HistoryPeek } from "@/components/session/history-peek"
@@ -43,6 +43,7 @@ import {
 } from "@/components/session/stage-grid"
 import {
   OVERLAY_ATTR,
+  OVERLAY_OPEN,
   SelectionTranslator,
   translatableProps,
 } from "@/components/session/translate-overlay"
@@ -130,6 +131,25 @@ export function ConversationStage({
     () => release("translation"),
     [release]
   )
+  const correctionOpenChange = useCallback(
+    (open: boolean, correction: Correction) =>
+      open ? hold("correction", correction) : release("correction"),
+    [hold, release]
+  )
+
+  /**
+   * What to hand focus back to when the peek closes. Captured HERE, at the
+   * moment of the gesture, because the peek makes the stage `inert` in the same
+   * commit it mounts in — by the time its effects run, focus has already been
+   * blurred to `<body>` and the trigger is unrecoverable.
+   */
+  const historyTrigger = useRef<HTMLElement | null>(null)
+  const openHistory = useCallback(() => {
+    const active = document.activeElement
+    historyTrigger.current =
+      active instanceof HTMLElement && active !== document.body ? active : null
+    hold("history")
+  }, [hold])
 
   // Space toggles the hold — a quiet keyboard affordance for resuming.
   useEffect(() => {
@@ -166,10 +186,10 @@ export function ConversationStage({
         // the wheel is over the translation card, which is its own surface.
         if (
           e.target instanceof Element &&
-          e.target.closest(`[${OVERLAY_ATTR}]`)
+          e.target.closest(`[${OVERLAY_ATTR}="${OVERLAY_OPEN}"]`)
         )
           return
-        if (e.deltaY < -6 && !historyOpen) hold("history")
+        if (e.deltaY < -6 && !historyOpen) openHistory()
       }}
     >
       {/* The peek is a modal overlay: while it is up, the stage beneath it is
@@ -238,7 +258,12 @@ export function ConversationStage({
                           ROW_LEADING
                         )}
                       >
-                        <SettledText turn={context} />
+                        {/* The pinned row's marks hold the session exactly as
+                            the hero's do — nothing else is covering it. */}
+                        <SettledText
+                          turn={context}
+                          onCorrectionOpenChange={correctionOpenChange}
+                        />
                       </p>
                     </StageRow>
                   </motion.div>
@@ -278,11 +303,7 @@ export function ConversationStage({
                           turn={turn}
                           live={phase === "live"}
                           marksActive={showMarks}
-                          onCorrectionOpenChange={(open, correction) =>
-                            open
-                              ? hold("correction", correction)
-                              : release("correction")
-                          }
+                          onCorrectionOpenChange={correctionOpenChange}
                         />
                         {phase === "live" && turn.target.length > 0 && (
                           <Caret paused={paused} />
@@ -306,6 +327,7 @@ export function ConversationStage({
           <HistoryPeek
             turns={historyTurns(state)}
             onClose={() => release("history")}
+            restoreFocusTo={historyTrigger}
           />
         )}
       </AnimatePresence>
@@ -315,6 +337,10 @@ export function ConversationStage({
       {translate && (
         <SelectionTranslator
           translate={translate}
+          // The hold set, not the card, decides whether a translation is up:
+          // Space and the pause button release it without knowing the card
+          // exists, and the card follows.
+          held={holds.includes("translation")}
           onHold={holdTranslation}
           onRelease={releaseTranslation}
         />
@@ -324,7 +350,7 @@ export function ConversationStage({
         <SessionControls
           paused={paused}
           muted={muted}
-          onReview={() => hold("history")}
+          onReview={openHistory}
           onToggleMute={onToggleMute}
           onTogglePause={() =>
             paused ? holds.forEach(release) : hold("control")

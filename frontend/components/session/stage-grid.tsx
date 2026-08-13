@@ -25,6 +25,13 @@ import { cn } from "@/lib/utils"
  */
 export const STAGE_COL_W = 580
 
+/**
+ * …but a fixed width clips inside the stage's `overflow-hidden` on a narrow
+ * window (the surface is desktop-first, not desktop-only). The column is
+ * therefore a ceiling, not a measurement.
+ */
+const STAGE_COL_WIDTH = `min(${STAGE_COL_W}px, 100%)`
+
 /** Line box shared by the body rows. */
 export const ROW_LEADING = "leading-7"
 /** Line box for the hero row. */
@@ -42,7 +49,10 @@ export function StageGrid({
   className?: string
 }) {
   return (
-    <div style={{ width: STAGE_COL_W }} className={cn("mx-auto", className)}>
+    <div
+      style={{ width: STAGE_COL_WIDTH }}
+      className={cn("mx-auto", className)}
+    >
       {children}
     </div>
   )

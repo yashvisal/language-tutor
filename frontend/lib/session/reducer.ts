@@ -301,10 +301,13 @@ export function sessionReducer(
         : { ...state, holds: [...state.holds, event.reason] }
 
     case "session.resumed":
-      return {
-        ...state,
-        holds: state.holds.filter((r) => r !== event.reason),
-      }
+      // Releasing a reason that isn't held is routine, not an error: the
+      // translation overlay releases on unmount whatever closed it, and
+      // `holds.forEach(release)` re-releases whatever it just cleared. Return
+      // the same state so those no-ops cost no render.
+      return state.holds.includes(event.reason)
+        ? { ...state, holds: state.holds.filter((r) => r !== event.reason) }
+        : state
 
     case "session.reset":
       // Holds survive a reset: a learner reading a correction is still reading.
