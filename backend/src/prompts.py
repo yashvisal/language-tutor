@@ -58,8 +58,11 @@ The conversation was on hold and has just resumed. What happened, as facts:
 
 Pick the conversation back up in one short turn, re-entering the way a tutor \
 naturally would after a break — follow your standing instructions about \
-language and pacing. Do not narrate the pause, do not apologise for it, and do \
-not replay your interrupted sentence word for word.\
+language and pacing. Everything you said before the hold — including the \
+start of any interrupted reply — is already in the conversation history and \
+the learner heard and can still read it: do NOT restate or re-answer any of \
+it. Continue past it, or simply move the conversation forward. Do not narrate \
+the pause and do not apologise for it.\
 """
 
 GREETING_INSTRUCTIONS = """\
