@@ -25,6 +25,7 @@ from livekit.agents import (
     AgentServer,
     AgentSession,
     JobContext,
+    StopResponse,
     TurnHandlingOptions,
     inference,
     llm,
@@ -57,10 +58,16 @@ logger = logging.getLogger("tutor.agent")
 class TutorAgent(Agent):
     """The conversation partner. Analysis happens beside it, never inside it."""
 
-    def __init__(self, cfg: TutorConfig, analyzer: CorrectionAnalyzer | None) -> None:
+    def __init__(
+        self,
+        cfg: TutorConfig,
+        analyzer: CorrectionAnalyzer | None,
+        state: SessionState,
+    ) -> None:
         super().__init__(instructions=tutor_instructions(cfg))
         self._cfg = cfg
         self._analyzer = analyzer
+        self._state = state
 
     # The analyzer trigger. Fires with the full committed turn because turn
     # detection happens agent-side — with model-owned turn detection this node
@@ -68,16 +75,22 @@ class TutorAgent(Agent):
     async def on_user_turn_completed(
         self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage
     ) -> None:
-        if self._analyzer is None:
-            return
         text = (new_message.text_content or "").strip()
-        if not text:
-            return
-        self._analyzer.analyze_in_background(
-            turn_id=new_message.id,
-            text=text,
-            context=recent_context(turn_ctx, exclude_id=new_message.id),
-        )
+        if text and self._analyzer is not None:
+            self._analyzer.analyze_in_background(
+                turn_id=new_message.id,
+                text=text,
+                context=recent_context(turn_ctx, exclude_id=new_message.id),
+            )
+
+        # A turn already in flight when the learner paused (STT finals lag the
+        # audio) still commits DURING the hold. Replying now would speak into a
+        # muted session and dump ghost text on resume (found live 2026-08-12) —
+        # suppress the reply, and mark it owed so the conversational re-entry
+        # answers this turn when the learner returns.
+        if self._state.paused:
+            self._state.reply_was_pending = True
+            raise StopResponse()
 
 
 server = AgentServer()
@@ -140,7 +153,7 @@ async def tutor(ctx: JobContext) -> None:
     ctx.add_shutdown_callback(_shutdown)
 
     await session.start(
-        agent=TutorAgent(cfg, analyzer),
+        agent=TutorAgent(cfg, analyzer, state),
         room=ctx.room,
         room_options=room_io.RoomOptions(
             # Text input is off: this is a voice surface, not a chat box.

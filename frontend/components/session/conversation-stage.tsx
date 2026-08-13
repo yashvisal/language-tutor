@@ -293,10 +293,14 @@ export function ConversationStage({
                       labelClassName="text-muted-foreground/70"
                     >
                       <p
-                        // Selectable-to-translate only once the utterance has
-                        // stopped moving — a half-arrived sentence is the wrong
-                        // question to answer.
-                        {...(phase === "settled"
+                        // The learner's own utterance is selectable only once
+                        // settled — translating your own half-arrived sentence
+                        // is the wrong question. TUTOR speech is the opposite:
+                        // in-the-moment comprehension is exactly when the
+                        // learner reaches for it (found live 2026-08-12), and
+                        // selecting already holds the session, so the text
+                        // freezes the instant they start reading.
+                        {...(turn.speaker === "tutor" || phase === "settled"
                           ? translatableProps(turn)
                           : {})}
                         className={cn(
