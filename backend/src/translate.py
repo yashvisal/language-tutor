@@ -56,10 +56,22 @@ class SpanTranslator:
     def __init__(self, cfg: TutorConfig) -> None:
         self._cfg = cfg
         self._instructions = translate_instructions(cfg)
-        self._client = openai.AsyncOpenAI(api_key=cfg.openai_api_key or None, max_retries=0)
+        # Built on first use. Constructing the client loads the CA bundle and
+        # builds an SSL context, and the translator is constructed on every job
+        # while plenty of sessions never translate anything — so that cost does
+        # not belong on the path to `session.start`.
+        self._client: openai.AsyncOpenAI | None = None
+
+    def _get_client(self) -> openai.AsyncOpenAI:
+        if self._client is None:
+            self._client = openai.AsyncOpenAI(
+                api_key=self._cfg.openai_api_key or None, max_retries=0
+            )
+        return self._client
 
     async def aclose(self) -> None:
-        await self._client.close()
+        if self._client is not None:
+            await self._client.close()
 
     async def translate(self, *, text: str, speaker: str, context: list[ContextTurn]) -> str:
         prompt = (
@@ -69,7 +81,7 @@ class SpanTranslator:
             + text
         )
 
-        response = await self._client.responses.create(
+        response = await self._get_client().responses.create(
             model=self._cfg.analyzer_model,
             instructions=self._instructions,
             input=prompt,

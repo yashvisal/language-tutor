@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from dataclasses import dataclass
 
 from dotenv import load_dotenv
 from livekit import agents, rtc
@@ -181,16 +182,66 @@ def _capture_pause_context(session: AgentSession, state: SessionState) -> None:
     state.learner_was_speaking = session.user_state == "speaking"
 
 
-def _resume_facts(state: SessionState, facts: SessionFacts, brief: dict) -> list[str]:
+@dataclass(init=False)
+class ResumeBrief:
+    """The advisory `tutor.resume` payload, coerced once at the boundary.
+
+    Every field crosses the wire from the client, so every field is optional and
+    every type is checked here — once — leaving `_resume_facts` to read plain
+    values. `present` records whether the client sent *any* brief at all, which
+    is a different question from whether the brief yielded any usable facts.
+    """
+
+    present: bool
+    held_ms: float | None
+    reasons: list[str]
+    # (original, replacement, category | None)
+    correction: tuple[str, str, str | None] | None
+
+    def __init__(self, raw: dict | None = None) -> None:
+        raw = raw if isinstance(raw, dict) else {}
+        self.present = bool(raw)
+        self.held_ms = _coerce_number(raw.get("held_ms"))
+        self.reasons = _coerce_reasons(raw.get("reasons"))
+        self.correction = _coerce_correction(raw.get("correction"))
+
+
+def _coerce_number(value: object) -> float | None:
+    # bool is an int subclass; a JSON `true` is not a duration.
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None
+
+
+def _coerce_reasons(value: object) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return sorted({r.strip() for r in value if isinstance(r, str) and r.strip()})
+
+
+def _coerce_correction(value: object) -> tuple[str, str, str | None] | None:
+    if not isinstance(value, dict):
+        return None
+    original = value.get("original")
+    replacement = value.get("replacement")
+    if not (isinstance(original, str) and original):
+        return None
+    if not (isinstance(replacement, str) and replacement):
+        return None
+    category = value.get("category")
+    return original, replacement, category if isinstance(category, str) and category else None
+
+
+def _resume_facts(state: SessionState, facts: SessionFacts, brief: ResumeBrief) -> list[str]:
     """Turn the resume payload plus the pause snapshot into plain statements."""
     lines: list[str] = []
 
     # The client's own measurement is authoritative (it owns the set of holds);
     # our timestamp is only a fallback for a payload that omitted it.
-    held_ms = brief.get("held_ms")
-    if not isinstance(held_ms, (int, float)) and state.paused_at is not None:
+    held_ms = brief.held_ms
+    if held_ms is None and state.paused_at is not None:
         held_ms = (time.monotonic() - state.paused_at) * 1000
-    if isinstance(held_ms, (int, float)) and held_ms > 0:
+    if held_ms is not None and held_ms > 0:
         seconds = held_ms / 1000
         lines.append(
             f"the conversation was on hold for about {seconds:.0f} seconds"
@@ -198,21 +249,15 @@ def _resume_facts(state: SessionState, facts: SessionFacts, brief: dict) -> list
             else "the conversation was on hold for a moment"
         )
 
-    reasons = [r for r in brief.get("reasons") or [] if isinstance(r, str) and r.strip()]
-    if reasons:
-        lines.append("the learner was looking at: " + ", ".join(sorted(set(reasons))))
+    if brief.reasons:
+        lines.append("the learner was looking at: " + ", ".join(brief.reasons))
 
-    correction = brief.get("correction")
-    if isinstance(correction, dict):
-        original = correction.get("original")
-        replacement = correction.get("replacement")
-        if isinstance(original, str) and isinstance(replacement, str) and original and replacement:
-            category = correction.get("category")
-            suffix = f" (a {category} correction)" if isinstance(category, str) and category else ""
-            lines.append(
-                f'they read a correction on their last turn: "{original}" -> '
-                f'"{replacement}"{suffix}'
-            )
+    if brief.correction is not None:
+        original, replacement, category = brief.correction
+        suffix = f" (a {category} correction)" if category else ""
+        lines.append(
+            f'they read a correction on their last turn: "{original}" -> "{replacement}"{suffix}'
+        )
 
     if state.tutor_was_speaking:
         lines.append("you were mid-sentence when the hold began")
@@ -226,16 +271,16 @@ def _resume_facts(state: SessionState, facts: SessionFacts, brief: dict) -> list
     return lines
 
 
-def _parse_brief(payload: str | None) -> dict:
+def _parse_brief(payload: str | None) -> ResumeBrief:
     """Resume payloads are advisory. Anything unreadable means "no brief"."""
     if not payload or not payload.strip():
-        return {}
+        return ResumeBrief()
     try:
         brief = json.loads(payload)
     except json.JSONDecodeError:
         logger.warning("tutor.resume: unparseable payload, resuming without a brief")
-        return {}
-    return brief if isinstance(brief, dict) else {}
+        return ResumeBrief()
+    return ResumeBrief(brief)
 
 
 async def _register_pause_rpc(
@@ -250,7 +295,21 @@ async def _register_pause_rpc(
     debounces them, because the surface freeze is client-side and instant.
     """
 
-    async def _apply(paused: bool) -> None:
+    # The last answer each side gave, so a retry gets the same answer back.
+    last_resume_ack = json.dumps({"paused": False, "resumed": False})
+
+    async def _apply(paused: bool) -> bool:
+        """Edge-triggered. Returns False when the session was already there.
+
+        The frontend re-sends `tutor.pause` every couple of seconds until it
+        observes the paused attribute, so this runs more than once per hold.
+        Only the transition may touch the session: a second pause would snapshot
+        a session we have already interrupted (recording "nothing was happening"
+        over the truth) and re-stamp `paused_at`, and a second resume would fire
+        a second `generate_reply`.
+        """
+        if state.paused == paused:
+            return False
         state.paused = paused
         if paused:
             # Read the session's state *before* interrupting it — afterwards
@@ -275,6 +334,7 @@ async def _register_pause_rpc(
             {ATTR_PAUSED: ATTR_TRUE if paused else ATTR_FALSE}
         )
         logger.info("session %s", "paused" if paused else "resumed")
+        return True
 
     async def _pause(_data: rtc.RpcInvocationData) -> str:
         await _apply(True)
@@ -288,24 +348,34 @@ async def _register_pause_rpc(
         # re-enter with judgment — and only when it actually owes the learner
         # something. If the learner was mid-utterance, resume stays silent and
         # lets them finish.
+        nonlocal last_resume_ack
         brief = _parse_brief(data.payload)
-        await _apply(False)
+        if not await _apply(False):
+            # A retry of a resume we already handled: same answer, no second
+            # re-entry.
+            return last_resume_ack
 
-        if not brief or not state.tutor_owes_reentry:
-            state.clear_pause_context()
-            return json.dumps({"paused": False, "resumed": False})
-
-        lines = _resume_facts(state, facts, brief)
-        state.clear_pause_context()
         try:
-            session.generate_reply(instructions=resume_instructions(lines))
-        except Exception:
-            # Never fail the resume: the surface has already unfrozen.
-            logger.exception("conversational resume failed")
-            return json.dumps({"paused": False, "resumed": False})
+            if not brief.present or not state.tutor_owes_reentry:
+                last_resume_ack = json.dumps({"paused": False, "resumed": False})
+                return last_resume_ack
 
-        logger.info("conversational resume", extra={"facts": len(lines)})
-        return json.dumps({"paused": False, "resumed": True})
+            lines = _resume_facts(state, facts, brief)
+            try:
+                session.generate_reply(instructions=resume_instructions(lines))
+            except Exception:
+                # Never fail the resume: the surface has already unfrozen.
+                logger.exception("conversational resume failed")
+                last_resume_ack = json.dumps({"paused": False, "resumed": False})
+                return last_resume_ack
+
+            logger.info("conversational resume", extra={"facts": len(lines)})
+            last_resume_ack = json.dumps({"paused": False, "resumed": True})
+            return last_resume_ack
+        finally:
+            # One exit for the snapshot, whatever path the resume took: a leaked
+            # snapshot would describe the *previous* hold on the next resume.
+            state.clear_pause_context()
 
     ctx.room.local_participant.register_rpc_method(RPC_PAUSE, _pause)
     ctx.room.local_participant.register_rpc_method(RPC_RESUME, _resume)

@@ -24,14 +24,9 @@ from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 
-# Categories worth naming in a brief, in the order a brief reads them.
-_CATEGORY_LABELS = {
-    "tense": "tense",
-    "agreement": "agreement",
-    "word-order": "word-order",
-    "vocabulary": "vocabulary",
-    "naturalness": "phrasing",
-}
+# Category names read fine in a brief as-is; only this one needs rewording.
+# Anything absent falls through to the category name itself.
+_CATEGORY_LABELS = {"naturalness": "phrasing"}
 
 
 @dataclass
