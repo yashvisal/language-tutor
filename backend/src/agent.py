@@ -151,6 +151,10 @@ async def tutor(ctx: JobContext) -> None:
     await _register_pause_rpc(ctx, session, state, facts)
     await register_translate_rpc(ctx, session, translator)
 
+    # Warm the translate client off the critical path: the first RPC otherwise
+    # pays TLS + CA-bundle setup on the learner's first card.
+    translator.warm_in_background()
+
     # Tell the frontend whether corrections are coming at all, so it can skip
     # the analyzing phase entirely when the analyzer is off.
     await ctx.room.local_participant.set_attributes(

@@ -69,6 +69,26 @@ class SpanTranslator:
             )
         return self._client
 
+    async def warm(self) -> None:
+        """Pre-pay the cold-start costs off the critical path.
+
+        The first request through a fresh client pays CA-bundle load, SSL
+        context, and the TLS handshake — up to a second on a bad network,
+        which lands on the learner's FIRST translation card. A free
+        `models.retrieve` warms the whole path. Called as a background task
+        after session start; failures are irrelevant (the real request will
+        just pay the cost itself).
+        """
+        try:
+            await self._get_client().models.retrieve(self._cfg.translate_model)
+        except Exception:
+            logger.debug("translate warmup failed (harmless)", exc_info=True)
+
+    def warm_in_background(self) -> None:
+        """Fire-and-forget `warm()`. The task reference lives on the instance
+        (which the RPC closure keeps alive) so it cannot be GC-cancelled."""
+        self._warm_task = asyncio.create_task(self.warm())
+
     async def aclose(self) -> None:
         if self._client is not None:
             await self._client.close()
@@ -82,7 +102,7 @@ class SpanTranslator:
         )
 
         response = await self._get_client().responses.create(
-            model=self._cfg.analyzer_model,
+            model=self._cfg.translate_model,
             instructions=self._instructions,
             input=prompt,
             # Same reason as the analyzer: default reasoning effort puts

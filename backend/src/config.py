@@ -113,6 +113,12 @@ class TutorConfig:
     analyzer_model: str = "gpt-5.6-luna"
     analyzer_enabled: bool = True
 
+    # Select-to-translate model. Short spans, light context: a nano-tier
+    # non-reasoning model is 3.5x cheaper than Luna and at least as fast for
+    # this job (researched 2026-08-12; Luna's TTFT is already floor-tier, so
+    # the felt latency win comes from connection warming, not the model).
+    translate_model: str = "gpt-5-nano"
+
     openai_api_key: str = field(default="", repr=False)
 
     @classmethod
@@ -127,6 +133,7 @@ class TutorConfig:
             stt_model=_env("TUTOR_STT_MODEL", "gpt-live-transcribe"),
             analyzer_model=_env("TUTOR_ANALYZER_MODEL", "gpt-5.6-luna"),
             analyzer_enabled=_env_bool("TUTOR_ANALYZER_ENABLED", True),
+            translate_model=_env("TUTOR_TRANSLATE_MODEL", "gpt-5-nano"),
             openai_api_key=_env("OPENAI_API_KEY", ""),
         )
 
