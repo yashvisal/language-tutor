@@ -85,7 +85,7 @@ TUTOR_MAX_ENDPOINT_S=6.0            # patience for a learner mid-word-search
 TUTOR_STT_MODEL=gpt-live-transcribe
 TUTOR_ANALYZER_MODEL=gpt-5.6-luna
 TUTOR_ANALYZER_ENABLED=true
-TUTOR_TRANSLATE_MODEL=gpt-5-nano
+TUTOR_TRANSLATE_MODEL=gpt-5.6-luna
 ```
 
 `TUTOR_ANALYZER_ENABLED=false` is published to the frontend as the
