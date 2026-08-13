@@ -161,7 +161,7 @@ async def tutor(ctx: JobContext) -> None:
         ),
     )
 
-    await _register_pause_rpc(ctx, session, state, facts)
+    await _register_pause_rpc(ctx, session, state, facts, cfg)
     await register_translate_rpc(ctx, session, translator)
 
     # Warm the translate client off the critical path: the first RPC otherwise
@@ -301,7 +301,11 @@ def _parse_brief(payload: str | None) -> ResumeBrief:
 
 
 async def _register_pause_rpc(
-    ctx: JobContext, session: AgentSession, state: SessionState, facts: SessionFacts
+    ctx: JobContext,
+    session: AgentSession,
+    state: SessionState,
+    facts: SessionFacts,
+    cfg: TutorConfig,
 ) -> None:
     """Pause/resume, driven by the frontend's client-side set of holds.
 
@@ -379,7 +383,16 @@ async def _register_pause_rpc(
 
             lines = _resume_facts(state, facts, brief)
             try:
-                session.generate_reply(instructions=resume_instructions(lines))
+                session.generate_reply(
+                    instructions=resume_instructions(
+                        cfg,
+                        lines,
+                        # An unanswered learner turn gets a real answer; an
+                        # interrupted delivery gets a one-line bridge, never a
+                        # replay (the message is still on screen).
+                        owes_answer=state.reply_was_pending,
+                    )
+                )
             except Exception:
                 # Never fail the resume: the surface has already unfrozen.
                 logger.exception("conversational resume failed")

@@ -52,17 +52,29 @@ unless asked directly. Your output is spoken aloud: no markdown, no lists, no \
 emoji, no stage directions.\
 """
 
-RESUME_INSTRUCTIONS = """\
+RESUME_BRIDGE_INSTRUCTIONS = """\
 The conversation was on hold and has just resumed. What happened, as facts:
 {facts}
 
-Pick the conversation back up in one short turn, re-entering the way a tutor \
-naturally would after a break — follow your standing instructions about \
-language and pacing. Everything you said before the hold — including the \
-start of any interrupted reply — is already in the conversation history and \
-the learner heard and can still read it: do NOT restate or re-answer any of \
-it. Continue past it, or simply move the conversation forward. Do not narrate \
-the pause and do not apologise for it.\
+Say ONE short re-entry line, then stop and wait for the learner. It is a \
+bridge, not content: your interrupted message is still on the learner's \
+screen and they can read every word of it, so do NOT finish it, restart it, \
+summarise it, or re-explain anything from before the hold — under no \
+circumstances deliver information. If the facts say the learner studied a \
+correction or a translation, the line is a quick, warm comprehension check \
+about that one thing (a brief {anchor} check-in is fine, per your standing \
+instructions). Otherwise it is just a short "ready to keep going?" in \
+{target}. Do not narrate the pause and do not apologise for it.\
+"""
+
+RESUME_ANSWER_INSTRUCTIONS = """\
+The conversation was on hold and has just resumed. What happened, as facts:
+{facts}
+
+The learner's last message was never answered — answer it now, short and \
+natural, per your standing instructions about language and pacing. Do not \
+repeat or re-explain anything from before the hold (it is all still on the \
+learner's screen), do not narrate the pause, and do not apologise for it.\
 """
 
 GREETING_INSTRUCTIONS = """\
@@ -158,12 +170,23 @@ def translate_instructions(cfg: TutorConfig) -> str:
     )
 
 
-def resume_instructions(facts: list[str]) -> str:
+def resume_instructions(cfg: TutorConfig, facts: list[str], *, owes_answer: bool) -> str:
     """Situation brief for a post-hold `generate_reply`.
 
-    `facts` are plain observed statements — hold duration, why it was held, what
-    the tutor was doing, what the session has shown so far. Facts only: the
-    prompt states what happened and reminds the model to re-enter naturally, and
-    deliberately never scripts the line it should say.
+    Two shapes, chosen by the worker's own flags (live finding 2026-08-12 —
+    "continue naturally" made the model re-deliver its interrupted message):
+
+    - `owes_answer=False`: the tutor was interrupted mid-delivery. Re-entry is
+      a BRIDGE — one comprehension-check or ready-to-go line, never content.
+      The truncated message is still on screen; the learner reads, the tutor
+      doesn't repeat.
+    - `owes_answer=True`: a learner turn was never answered (it committed
+      during the hold, or the hold killed the pending reply). That one gets a
+      real answer — silence there is dead air.
     """
-    return RESUME_INSTRUCTIONS.format(facts="\n".join(f"- {fact}" for fact in facts))
+    template = RESUME_ANSWER_INSTRUCTIONS if owes_answer else RESUME_BRIDGE_INSTRUCTIONS
+    return template.format(
+        facts="\n".join(f"- {fact}" for fact in facts),
+        target=cfg.target_language_name,
+        anchor=cfg.anchor_language_name,
+    )
