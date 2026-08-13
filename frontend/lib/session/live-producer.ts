@@ -51,7 +51,13 @@ import {
   type TrackReference,
 } from "@livekit/components-react"
 
-import type { Correction, PauseReason, SessionEvent, Speaker } from "./contract"
+import type {
+  Correction,
+  PauseReason,
+  SessionEvent,
+  Speaker,
+  TranslateFn,
+} from "./contract"
 import {
   ANALYZER_OFF,
   ATTRIBUTE_TRUE,
@@ -62,7 +68,12 @@ import {
   TUTOR_SESSION_OPTIONS,
   tutorTokenSource,
 } from "./livekit"
-import type { ResumeCorrectionPayload, ResumePayload } from "./protocol"
+import type {
+  ResumeCorrectionPayload,
+  ResumePayload,
+  TranslateRequest,
+  TranslateResponse,
+} from "./protocol"
 import {
   INITIAL_SESSION_STATE,
   isHeld,
@@ -92,6 +103,13 @@ const PAUSE_RETRY_MS = 2000
 
 /** Attempts per desired pause state before giving up on this agent. */
 const MAX_PAUSE_ATTEMPTS = 5
+
+/**
+ * How long the overlay waits for a translation. The worker self-limits to 4s
+ * and answers failures with an error string rather than silence, so anything
+ * that reaches this ceiling is the transport, not the model.
+ */
+const TRANSLATE_TIMEOUT_MS = 5000
 
 /**
  * How many finalized learner utterances stay joinable. Corrections arrive
@@ -247,6 +265,8 @@ export interface LiveSession {
   agentAudioTrack: TrackReference | undefined
   /** The room, for `RoomAudioRenderer` and anything else that needs it. */
   room: Room
+  /** Select-to-translate's back end. Session-cached; see `translations`. */
+  translate: TranslateFn
 }
 
 export function useLiveSession(): LiveSession {
@@ -366,6 +386,13 @@ export function useLiveSession(): LiveSession {
   const transcriptScanFrom = useRef(0)
   const finalizedLearner = useRef<FinalizedUtterance[]>([])
   const correctionsSeen = useRef(new Set<string>())
+  /**
+   * Translations already paid for, keyed by speaker and normalized span. A
+   * learner who re-reads the same phrase gets it back instantly instead of
+   * watching a shimmer for something the session already knows — and the
+   * normalized key means casing and punctuation drift never miss.
+   */
+  const translations = useRef(new Map<string, string>())
 
   useEffect(() => {
     if (connection !== "idle") return
@@ -373,6 +400,7 @@ export function useLiveSession(): LiveSession {
     transcriptScanFrom.current = 0
     finalizedLearner.current = []
     correctionsSeen.current.clear()
+    translations.current.clear()
     buffered.current = []
     dispatch({ type: "session.reset" })
   }, [connection])
@@ -644,9 +672,43 @@ export function useLiveSession(): LiveSession {
     return () => clearTimeout(timer)
   }, [agentIdentity, desiredPause, reportedPause, pauseRetry, room])
 
+  /* -- select-to-translate ------------------------------------------------ */
+
+  const translate = useCallback<TranslateFn>(
+    async (text, speaker, turnId) => {
+      const key = `${speaker}\u0000${normalize(text)}`
+      const cached = translations.current.get(key)
+      if (cached !== undefined) return cached
+      if (!agentIdentity) throw new Error("no tutor connected")
+
+      const request: TranslateRequest = {
+        text,
+        speaker,
+        turn_id: turnId ?? null,
+      }
+      const raw = await room.localParticipant.performRpc({
+        destinationIdentity: agentIdentity,
+        method: RPC_METHODS.translate,
+        payload: JSON.stringify(request),
+        responseTimeout: TRANSLATE_TIMEOUT_MS,
+      })
+
+      const response = JSON.parse(raw) as TranslateResponse
+      if (!response.translation) {
+        throw new Error(response.error ?? "translation failed")
+      }
+      // Only successes are cached: an error is a moment, not an answer, and
+      // re-selecting the span is exactly how a learner retries.
+      translations.current.set(key, response.translation)
+      return response.translation
+    },
+    [agentIdentity, room]
+  )
+
   return {
     state,
     dispatch: clientDispatch,
+    translate,
     connection,
     error,
     connect,

@@ -41,11 +41,17 @@ import {
   StageGrid,
   StageRow,
 } from "@/components/session/stage-grid"
+import {
+  OVERLAY_ATTR,
+  SelectionTranslator,
+  translatableProps,
+} from "@/components/session/translate-overlay"
 import type {
   AgentState,
   Correction,
   PauseReason,
   SessionEvent,
+  TranslateFn,
 } from "@/lib/session/contract"
 import {
   heroTurn,
@@ -84,6 +90,11 @@ export interface ConversationStageProps {
    * interim). It renders with an ellipsis instead of a caret once frozen.
    */
   interimSegmentId?: string
+  /**
+   * Translates a selected span. Omitted where nothing can answer — the overlay
+   * simply never opens then, rather than opening onto an error.
+   */
+  translate?: TranslateFn
 }
 
 export function ConversationStage({
@@ -94,6 +105,7 @@ export function ConversationStage({
   onToggleMute,
   onEnd,
   interimSegmentId,
+  translate,
 }: ConversationStageProps) {
   const { phase, holds } = state
 
@@ -110,6 +122,13 @@ export function ConversationStage({
   const release = useCallback(
     (reason: PauseReason) => dispatch({ type: "session.resumed", reason }),
     [dispatch]
+  )
+
+  // Bound once so the overlay's hold effect keys on open/closed and nothing else.
+  const holdTranslation = useCallback(() => hold("translation"), [hold])
+  const releaseTranslation = useCallback(
+    () => release("translation"),
+    [release]
   )
 
   // Space toggles the hold — a quiet keyboard affordance for resuming.
@@ -143,11 +162,22 @@ export function ConversationStage({
     <div
       className="relative h-full overflow-hidden bg-background"
       onWheel={(e) => {
-        // Scrolling up means "I'm reading, not talking" — hold and peek.
+        // Scrolling up means "I'm reading, not talking" — hold and peek. Unless
+        // the wheel is over the translation card, which is its own surface.
+        if (
+          e.target instanceof Element &&
+          e.target.closest(`[${OVERLAY_ATTR}]`)
+        )
+          return
         if (e.deltaY < -6 && !historyOpen) hold("history")
       }}
     >
-      <div className="flex h-full flex-col items-center justify-center px-8 pb-24">
+      {/* The peek is a modal overlay: while it is up, the stage beneath it is
+          not reachable by keyboard or pointer. */}
+      <div
+        inert={historyOpen}
+        className="flex h-full flex-col items-center justify-center px-8 pb-24"
+      >
         {/* Aura — viewport-centered, and deliberately outside the text grid:
             it is the fixed anchor the columns re-center beneath. */}
         <div className="flex w-full shrink-0 justify-center">
@@ -232,6 +262,12 @@ export function ConversationStage({
                       labelClassName="text-muted-foreground/70"
                     >
                       <p
+                        // Selectable-to-translate only once the utterance has
+                        // stopped moving — a half-arrived sentence is the wrong
+                        // question to answer.
+                        {...(phase === "settled"
+                          ? translatableProps(turn)
+                          : {})}
                         className={cn(
                           // Two hero lines reserved, on the hero line box.
                           "min-h-[4.3rem] text-[1.6rem] tracking-[-0.018em] text-balance",
@@ -274,16 +310,28 @@ export function ConversationStage({
         )}
       </AnimatePresence>
 
-      <SessionControls
-        paused={paused}
-        muted={muted}
-        onReview={() => hold("history")}
-        onToggleMute={onToggleMute}
-        onTogglePause={() =>
-          paused ? holds.forEach(release) : hold("control")
-        }
-        onEnd={onEnd}
-      />
+      {/* Select-to-translate. Lives at the stage root so it can float over the
+          history peek as readily as over the hero. */}
+      {translate && (
+        <SelectionTranslator
+          translate={translate}
+          onHold={holdTranslation}
+          onRelease={releaseTranslation}
+        />
+      )}
+
+      <div inert={historyOpen}>
+        <SessionControls
+          paused={paused}
+          muted={muted}
+          onReview={() => hold("history")}
+          onToggleMute={onToggleMute}
+          onTogglePause={() =>
+            paused ? holds.forEach(release) : hold("control")
+          }
+          onEnd={onEnd}
+        />
+      </div>
 
       {/* Dev readout: what the engine thinks is happening. */}
       <div className="absolute right-4 bottom-4 z-10 font-mono text-[10px] text-muted-foreground/50">

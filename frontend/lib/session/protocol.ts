@@ -48,7 +48,27 @@ export const STREAM_ATTRIBUTES = {
 export const RPC_METHODS = {
   pause: "tutor.pause",
   resume: "tutor.resume",
+  /** Select-to-translate: one settled span in, one translation out. */
+  translate: "tutor.translate",
 } as const
+
+/**
+ * The `tutor.translate` request. Snake_cased for the same reason as
+ * `ResumePayload`: this is the JSON the Python worker parses, not a frontend
+ * type. The worker rejects spans longer than 600 characters.
+ */
+export interface TranslateRequest {
+  text: string
+  speaker: string
+  /** The turn the span was selected in, for the worker's logs. */
+  turn_id: string | null
+}
+
+/** The `tutor.translate` reply: exactly one of these fields is present. */
+export interface TranslateResponse {
+  translation?: string
+  error?: string
+}
 
 /**
  * The correction the learner inspected during a hold, as it travels on the

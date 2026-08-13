@@ -6,7 +6,7 @@
  * the session for as long as it is open.
  */
 
-import { useEffect } from "react"
+import { useEffect, useRef } from "react"
 import { X } from "lucide-react"
 import { motion } from "motion/react"
 
@@ -16,6 +16,7 @@ import {
   StageGrid,
   StageRow,
 } from "@/components/session/stage-grid"
+import { OVERLAY_ATTR } from "@/components/session/translate-overlay"
 import { Button } from "@/components/ui/button"
 import {
   Tooltip,
@@ -34,14 +35,47 @@ export function HistoryPeek({
 }) {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose()
+      if (e.key !== "Escape") return
+      // One Escape, one layer: a translation open over the peek dismisses first.
+      if (document.querySelector(`[${OVERLAY_ATTR}]`)) return
+      onClose()
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
   }, [onClose])
 
+  /**
+   * Dialog focus, both directions. The panel covers the stage (which the stage
+   * marks `inert` while this is up), so focus must move into it on open or the
+   * next Tab lands on nothing; and it must go back where it came from on close,
+   * or a learner who opened this from the control bar loses their place.
+   *
+   * Two things the guards are for. The peek also opens from a wheel gesture,
+   * where there is no trigger to return to. And the trigger is remembered in a
+   * ref that ignores anything inside the panel: the stage is inert while this is
+   * open, so a re-entrant mount (StrictMode's double-invoke, in dev) would read
+   * `activeElement` as this dialog's own close button and hand focus nowhere.
+   */
+  const panelRef = useRef<HTMLDivElement>(null)
+  const closeRef = useRef<HTMLButtonElement>(null)
+  const trigger = useRef<HTMLElement | null>(null)
+  useEffect(() => {
+    const active = document.activeElement
+    if (active instanceof HTMLElement && !panelRef.current?.contains(active)) {
+      trigger.current = active
+    }
+    closeRef.current?.focus()
+    return () => {
+      if (trigger.current?.isConnected) trigger.current.focus()
+    }
+  }, [])
+
   return (
     <motion.div
+      ref={panelRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Conversation history"
       initial={{ opacity: 0, y: -12 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -12 }}
@@ -54,6 +88,7 @@ export function HistoryPeek({
             <TooltipTrigger
               render={
                 <Button
+                  ref={closeRef}
                   variant="ghost"
                   size="icon-sm"
                   onClick={onClose}

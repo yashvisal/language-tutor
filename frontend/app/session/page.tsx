@@ -42,6 +42,7 @@ export default function SessionPage() {
         muted={live.muted}
         onToggleMute={live.toggleMute}
         onEnd={live.disconnect}
+        translate={live.translate}
         renderAura={(auraState) => (
           <TutorAura
             state={auraState}

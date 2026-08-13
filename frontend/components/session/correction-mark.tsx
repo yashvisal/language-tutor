@@ -14,6 +14,7 @@ import { useMemo, useReducer, type ReactNode } from "react"
 import { MoveRight } from "lucide-react"
 import { motion } from "motion/react"
 
+import { translatableProps } from "@/components/session/translate-overlay"
 import {
   Popover,
   PopoverContent,
@@ -176,11 +177,17 @@ function ExplanationDisclosure({ text }: { text: string }) {
   )
 }
 
-/** Settled target-language text with its marks live (no reveal animation). */
+/**
+ * Settled target-language text with its marks live (no reveal animation).
+ *
+ * The wrapper span is what makes the text selectable-to-translate: it is the
+ * marker `SelectionTranslator` resolves a selection against, so every place
+ * settled text renders gets the overlay without knowing it exists.
+ */
 export function SettledText({ turn }: { turn: Turn }) {
   const segments = useMemo(() => segmentTurn(turn), [turn])
   return (
-    <>
+    <span {...translatableProps(turn)}>
       {segments.map((seg) =>
         seg.correction ? (
           <CorrectionMark
@@ -195,6 +202,6 @@ export function SettledText({ turn }: { turn: Turn }) {
           <span key={seg.key}>{seg.text}</span>
         )
       )}
-    </>
+    </span>
   )
 }

@@ -107,6 +107,19 @@ export const CATEGORY_LABELS: Record<CorrectionCategory, string> = {
  */
 export type PauseReason = "control" | "correction" | "history" | "translation"
 
+/**
+ * Translate one selected span of settled text into the anchor language — the
+ * whole of select-to-translate's contract with its producer. It is a plain
+ * request/response call rather than an event because the answer belongs to the
+ * overlay that asked, not to the session state: nothing on the stage changes.
+ * Rejects on timeout, transport failure, or a worker-side error.
+ */
+export type TranslateFn = (
+  text: string,
+  speaker: Speaker,
+  turnId?: string
+) => Promise<string>
+
 /* -------------------------------------------------------------------------- */
 /*  Events                                                                    */
 /* -------------------------------------------------------------------------- */
