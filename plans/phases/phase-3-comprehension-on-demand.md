@@ -1,7 +1,7 @@
 # Phase 3: Comprehension On Demand
 
-*Status: draft, pending Yash's review. Read `plans/product-vision.md` and the
-phase-2 evaluation findings first.*
+*Status: COMPLETE (2026-08-14). All workstreams validated in live sessions —
+see "Live evaluation findings" at the end. Read `plans/product-vision.md` first.*
 
 ## The decision this phase implements
 
@@ -145,3 +145,55 @@ build item here; its refinement continues through live testing.
 - Live sessions confirm the loop still feels complete without ambient
   translation — and record whether select-to-translate gets used enough to
   justify richer treatments later.
+
+
+---
+
+## Live evaluation findings (2026-08-13/14)
+
+All three resume paths, select-to-translate, the one-column stage, and the
+analyzer passed live validation. What the sessions taught us:
+
+1. **Prose cannot beat a realtime model's continuation instinct.** With its
+   own truncated sentence last in history, "do NOT finish it" loses — the
+   plain-pause re-entry replayed content until it became an EXACT-output
+   instruction (the worker shuffles ten language-neutral intents, no repeats;
+   the model renders the line bilingually but does not compose it). The
+   check-in and owed-answer paths, which have a concrete anchor to talk about,
+   follow prose instructions fine. Rule of thumb going forward: give the model
+   judgment where it has material, and exact output where it does not.
+2. **Turns commit during holds.** STT finals lag the audio, so pausing right
+   after speaking lands the turn mid-pause; the worker suppresses that reply
+   (`StopResponse`) and marks it owed so the re-entry answers it. Without
+   this, the reply is spoken into a muted session and its transcript dumps on
+   resume.
+3. **Tutor speech is selectable while still arriving** — in-the-moment
+   comprehension is the actual use case, and selection holds the session, so
+   the settled-only gate was wrong for tutor turns (kept for learner turns).
+4. **The analyzer had a perfect audited session** (4/4 turns judged
+   correctly), including using conversation context to repair an STT
+   mishearing ("Hamas" -> hummus) and correctly passing a clean turn ("uso"
+   used correctly). Luna stays for translate; the felt translate latency was
+   the cold TLS connection, fixed by background warmup, not the model.
+5. **"Heavy" sessions were environmental both times it was investigated:**
+   once degraded transport to LiveKit's hosted inference (500-657ms, timeouts),
+   once local CPU contention/thermal throttling ("inference is slower than
+   realtime" plus a hot laptop running Spotify/Discord/an always-on mic app).
+   Architecture was ruled out both times by healthy sessions on the same
+   build. Deploying the worker to LiveKit Cloud (phase 4+) removes the local
+   half of this.
+6. **Design corrections from live feel:** the two-bar pause caret read as a
+   glitch, not a state (now a single steady caret); the translucent review
+   overlay leaked lingering exited-turn ghosts (stage now fully hidden under
+   it); bridge lines are bilingual, target then anchor, so re-orientation
+   never requires decoding.
+
+### Carried to phase 4
+
+- Learner profiles and pacing/complexity tuning (the phase headline), with
+  the declared-vs-inferred typing and feedback-loop mediation as designed.
+- Touch/keyboard selection paths for select-to-translate (desktop-first V0).
+- Afterthought-turn merging (still an open product question).
+- Worker deployment to LiveKit Cloud.
+- Correction popover render-from-holds conversion; Base UI Dialog swap for
+  the history peek (polish).
