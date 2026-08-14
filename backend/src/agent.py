@@ -403,6 +403,7 @@ async def _register_pause_rpc(
                         # interrupted delivery gets a one-line bridge, never a
                         # replay (the message is still on screen).
                         owes_answer=state.reply_was_pending,
+                        studied=brief.correction is not None,
                         intent=intent,
                     )
                 )

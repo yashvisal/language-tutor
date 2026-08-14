@@ -52,22 +52,31 @@ unless asked directly. Your output is spoken aloud: no markdown, no lists, no \
 emoji, no stage directions.\
 """
 
-RESUME_BRIDGE_INSTRUCTIONS = """\
+RESUME_CHECK_INSTRUCTIONS = """\
 The conversation was on hold and has just resumed. What happened, as facts:
 {facts}
 
 Say ONE short re-entry line, then stop and wait for the learner. It is a \
 bridge, not content: your interrupted message is still on the learner's \
 screen and they can read every word of it, so do NOT finish it, restart it, \
-summarise it, or re-explain anything from before the hold — under no \
-circumstances deliver information. If the facts say the learner studied a \
-correction or a translation, the line is a quick, warm comprehension check \
-about that SPECIFIC point — name the thing they looked at (the tense, the \
-word, the phrase) in one short question (a brief {anchor} check-in is fine, \
-per your standing instructions). Otherwise say a short ready-to-go BOTH ways, \
-{target} then {anchor} back-to-back, so a re-orienting learner never has to \
-decode the re-entry itself. Express roughly this intent, in your own words: \
-"{intent}". Do not narrate the pause and do not apologise for it.\
+summarise it, or re-explain anything from before the hold. The line is a \
+quick, warm comprehension check about the SPECIFIC thing the facts say the \
+learner studied — name it (the tense, the word, the phrase) in one short \
+question (a brief {anchor} check-in is fine, per your standing instructions). \
+Do not narrate the pause and do not apologise for it.\
+"""
+
+# The plain-pause re-entry is an EXACT-output instruction, deliberately. With
+# its own truncated sentence sitting last in history, a realtime model's
+# continuation instinct beats any amount of "do not finish it" prose (observed
+# live 2026-08-14: two word-for-word replays). Zero latitude means zero replay;
+# variety comes from the worker-shuffled intent, not from the model.
+RESUME_EXACT_INSTRUCTIONS = """\
+The conversation was on hold and has just resumed. Your ENTIRE reply is one \
+short line and nothing else: say "{intent}" in {target}, then say it again in \
+{anchor}. Nothing before it, nothing after it. Do not continue, finish, or \
+repeat any earlier message — it is still on the learner's screen — and do not \
+mention the pause.\
 """
 
 # Re-entry intents for the pause-only bridge, sampled by the worker so the
@@ -190,7 +199,12 @@ def translate_instructions(cfg: TutorConfig) -> str:
 
 
 def resume_instructions(
-    cfg: TutorConfig, facts: list[str], *, owes_answer: bool, intent: str = ""
+    cfg: TutorConfig,
+    facts: list[str],
+    *,
+    owes_answer: bool,
+    studied: bool = False,
+    intent: str = "",
 ) -> str:
     """Situation brief for a post-hold `generate_reply`.
 
@@ -205,7 +219,12 @@ def resume_instructions(
       during the hold, or the hold killed the pending reply). That one gets a
       real answer — silence there is dead air.
     """
-    template = RESUME_ANSWER_INSTRUCTIONS if owes_answer else RESUME_BRIDGE_INSTRUCTIONS
+    if owes_answer:
+        template = RESUME_ANSWER_INSTRUCTIONS
+    elif studied:
+        template = RESUME_CHECK_INSTRUCTIONS
+    else:
+        template = RESUME_EXACT_INSTRUCTIONS
     return template.format(
         facts="\n".join(f"- {fact}" for fact in facts),
         target=cfg.target_language_name,
