@@ -30,7 +30,11 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { AnimatePresence, motion } from "motion/react"
 
 import type { Speaker, TranslateFn, Turn } from "@/lib/session/contract"
-import { MAX_SPAN_CHARS } from "@/lib/session/protocol"
+import {
+  ANCHOR_LANGUAGE,
+  MAX_SPAN_CHARS,
+  TARGET_LANGUAGE,
+} from "@/lib/session/protocol"
 
 const TURN_ATTR = "data-translate-turn"
 const SPEAKER_ATTR = "data-translate-speaker"
@@ -247,11 +251,16 @@ export function SelectionTranslator({
             style={{ ...cardPosition(anchor), width: CARD_W }}
             className="fixed z-50 rounded-lg bg-popover p-3.5 text-sm text-popover-foreground shadow-md ring-1 ring-foreground/10"
           >
-            <div className="line-clamp-2 text-xs text-muted-foreground/70 italic">
+            {/* Each run declares its language: two languages sit side by side
+                here, and screen readers pronounce by the nearest lang. */}
+            <div
+              lang={TARGET_LANGUAGE}
+              className="line-clamp-2 text-xs text-muted-foreground/70 italic"
+            >
               {anchor.text}
             </div>
             {result?.translation ? (
-              <p className="mt-2 leading-relaxed text-balance">
+              <p lang={ANCHOR_LANGUAGE} className="mt-2 leading-relaxed text-balance">
                 {result.translation}
               </p>
             ) : result?.failed ? (

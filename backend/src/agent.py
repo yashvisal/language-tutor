@@ -97,6 +97,10 @@ class TutorAgent(Agent):
         # answers this turn when the learner returns.
         if self._state.paused:
             self._state.reply_was_pending = True
+            # The utterance they were mid-way through at pause time has now
+            # committed — the "learner keeps the floor" veto no longer applies,
+            # or the owed answer above would be suppressed on resume.
+            self._state.learner_was_speaking = False
             raise StopResponse()
 
 

@@ -126,7 +126,7 @@ agent will never join.
 | `tutor.paused` (participant attribute)   | `"true"` / `"false"`                                            |
 | `tutor.analyzer` (participant attribute) | `"on"` / `"off"` — whether corrections are enabled at all       |
 | `lk.agent.state` (participant attribute) | Agent state, published by the SDK                               |
-| RPC `tutor.pause` / `tutor.resume`       | Frontend → worker, one call per state change                    |
+| RPC `tutor.pause` / `tutor.resume`       | Frontend → worker, one logical call per state change (retries are idempotent) |
 | RPC `tutor.translate`                    | Frontend → worker, one selected span → its anchor translation   |
 
 Corrections payload:
@@ -168,7 +168,8 @@ so the frontend can highlight by plain substring match.
 `speaker` is `"learner"` or `"tutor"`; `turn_id` is optional and used only for
 logging. The span is target-language text and the translation comes back in the
 anchor language. The worker budgets 4s (the frontend times out at 5s) and every
-failure is an `error` field, never a raised RPC error.
+worker-side failure is an `error` field. Transport failures (RPC timeout,
+no tutor connected) reject the RPC itself — the frontend handles both.
 
 ## Pause semantics
 
@@ -217,7 +218,8 @@ the same object. It is evidence that is *observed*, deliberately separate from
 the phase-4 learner profile, which is configuration that is *set*.
 
 The resume response is `{"paused": false, "resumed": <bool>}`, where `resumed`
-reports whether a re-entry reply was generated.
+reports whether a re-entry reply was *requested* — generation is
+fire-and-forget; completion is not awaited or reported.
 
 ## Checks
 

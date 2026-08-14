@@ -16,7 +16,8 @@ was more engineering in service of a questionable feature. Phase 2's evaluation
 called translation "the weakest link"; the correct response is deletion, not
 reinforcement.
 
-What replaces it: **select any settled text — learner or tutor — and an
+What replaces it: **select text — learner turns once settled, tutor turns
+even while still arriving (amended from live testing, see findings) — and an
 overlay translates exactly that span, on demand.** One interaction for both
 sides of the conversation, built on machinery that already exists:
 
@@ -138,7 +139,8 @@ build item here; its refinement continues through live testing.
 - Zero translation infrastructure running during normal conversation; the
   translate socket and its heuristics are deleted, not disabled.
 - Conversational resume: no dead air after a hold the tutor was talking into; short glances never interrupt the voice at all.
-- Select-to-translate works on both speakers' settled turns, holds the session
+- Select-to-translate works on learner settled turns and tutor turns
+  (including in-flight), holds the session
   while open, and feels like the correction popover's sibling.
 - The one-column stage renders tutor and learner turns at full width with the
   existing typography and motion intact.
@@ -157,7 +159,8 @@ analyzer passed live validation. What the sessions taught us:
 1. **Prose cannot beat a realtime model's continuation instinct.** With its
    own truncated sentence last in history, "do NOT finish it" loses — the
    plain-pause re-entry replayed content until it became an EXACT-output
-   instruction (the worker shuffles ten language-neutral intents, no repeats;
+   instruction (the worker shuffles ten language-neutral intents, never repeating the
+   immediately previous one;
    the model renders the line bilingually but does not compose it). The
    check-in and owed-answer paths, which have a concrete anchor to talk about,
    follow prose instructions fine. Rule of thumb going forward: give the model
