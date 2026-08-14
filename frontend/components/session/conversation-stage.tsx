@@ -3,9 +3,10 @@
 /**
  * STAGE SPLIT — the conversation surface.
  *
- * The hybrid settled in phase 1: aura-stage's stage presence and utterance
- * lifecycle, plus split-columns' collapsible anchor-language column — governed
- * by two ideas the other variants don't have.
+ * The hybrid settled in phase 1 (aura-stage's stage presence and utterance
+ * lifecycle) reduced in phase 3 to a single full-width text column — live
+ * translation is gone, so the anchor column went with it. Two ideas the other
+ * variants don't have still govern it.
  *
  * 1. RELEVANCE, NOT RECENCY. Exactly two lines live on the stage: the current
  *    utterance (the hero) and the one turn it is answering (pinned above,
@@ -27,7 +28,7 @@
  * audio track live.
  */
 
-import { memo, useCallback, useEffect, useReducer, type ReactNode } from "react"
+import { useCallback, useEffect, useRef, type ReactNode } from "react"
 import { AnimatePresence, motion } from "motion/react"
 
 import { HistoryPeek } from "@/components/session/history-peek"
@@ -40,10 +41,18 @@ import {
   StageGrid,
   StageRow,
 } from "@/components/session/stage-grid"
+import {
+  OVERLAY_ATTR,
+  OVERLAY_OPEN,
+  SelectionTranslator,
+  translatableProps,
+} from "@/components/session/translate-overlay"
 import type {
   AgentState,
+  Correction,
   PauseReason,
   SessionEvent,
+  TranslateFn,
 } from "@/lib/session/contract"
 import {
   heroTurn,
@@ -51,7 +60,6 @@ import {
   isHeld,
   marksActive,
   pinnedTurn,
-  wordsOf,
   type SessionState,
 } from "@/lib/session/reducer"
 import { cn } from "@/lib/utils"
@@ -83,34 +91,12 @@ export interface ConversationStageProps {
    * interim). It renders with an ellipsis instead of a caret once frozen.
    */
   interimSegmentId?: string
+  /**
+   * Translates a selected span. Omitted where nothing can answer — the overlay
+   * simply never opens then, rather than opening onto an error.
+   */
+  translate?: TranslateFn
 }
-
-/**
- * The hero's anchor-language line, word by word. Memoized on the text alone:
- * target-language interims arrive several times a second and almost never move
- * the translation, so the spans (and their entry animations) must not be
- * rebuilt on every one.
- *
- * The anchor arrives on its own stream, already trailing — the lag is the
- * producer's, not a render trick.
- */
-const AnchorWords = memo(function AnchorWords({ text }: { text: string }) {
-  return (
-    <>
-      {wordsOf(text).map((word, i) => (
-        <motion.span
-          key={i}
-          initial={{ opacity: 0, filter: "blur(3px)" }}
-          animate={{ opacity: 1, filter: "blur(0px)" }}
-          transition={{ duration: 0.55, ease: "easeOut" }}
-          className="inline-block whitespace-pre"
-        >
-          {word}{" "}
-        </motion.span>
-      ))}
-    </>
-  )
-})
 
 export function ConversationStage({
   state,
@@ -120,24 +106,50 @@ export function ConversationStage({
   onToggleMute,
   onEnd,
   interimSegmentId,
+  translate,
 }: ConversationStageProps) {
   const { phase, holds } = state
-
-  const [showEn, toggleEn] = useReducer((v: boolean) => !v, true)
 
   const paused = isHeld(state)
   const historyOpen = holds.includes("history")
 
+  // `correction` rides along on the hold so the producer can tell the tutor
+  // what the learner stopped to study. Nothing on this side reads it.
   const hold = useCallback(
-    (reason: PauseReason) => dispatch({ type: "session.paused", reason }),
+    (reason: PauseReason, correction?: Correction) =>
+      dispatch({ type: "session.paused", reason, correction }),
     [dispatch]
   )
   const release = useCallback(
     (reason: PauseReason) => dispatch({ type: "session.resumed", reason }),
     [dispatch]
   )
-  const setHold = (reason: PauseReason, on: boolean) =>
-    on ? hold(reason) : release(reason)
+
+  // Bound once so the overlay's hold effect keys on open/closed and nothing else.
+  const holdTranslation = useCallback(() => hold("translation"), [hold])
+  const releaseTranslation = useCallback(
+    () => release("translation"),
+    [release]
+  )
+  const correctionOpenChange = useCallback(
+    (open: boolean, correction: Correction) =>
+      open ? hold("correction", correction) : release("correction"),
+    [hold, release]
+  )
+
+  /**
+   * What to hand focus back to when the peek closes. Captured HERE, at the
+   * moment of the gesture, because the peek makes the stage `inert` in the same
+   * commit it mounts in — by the time its effects run, focus has already been
+   * blurred to `<body>` and the trigger is unrecoverable.
+   */
+  const historyTrigger = useRef<HTMLElement | null>(null)
+  const openHistory = useCallback(() => {
+    const active = document.activeElement
+    historyTrigger.current =
+      active instanceof HTMLElement && active !== document.body ? active : null
+    hold("history")
+  }, [hold])
 
   // Space toggles the hold — a quiet keyboard affordance for resuming.
   useEffect(() => {
@@ -170,11 +182,28 @@ export function ConversationStage({
     <div
       className="relative h-full overflow-hidden bg-background"
       onWheel={(e) => {
-        // Scrolling up means "I'm reading, not talking" — hold and peek.
-        if (e.deltaY < -6 && !historyOpen) hold("history")
+        // Scrolling up means "I'm reading, not talking" — hold and peek. Unless
+        // the wheel is over the translation card, which is its own surface.
+        if (
+          e.target instanceof Element &&
+          e.target.closest(`[${OVERLAY_ATTR}="${OVERLAY_OPEN}"]`)
+        )
+          return
+        if (e.deltaY < -6 && !historyOpen) openHistory()
       }}
     >
-      <div className="flex h-full flex-col items-center justify-center px-8 pb-24">
+      {/* The peek is a modal overlay: while it is up, the stage beneath it is
+          not reachable by keyboard or pointer — and fully invisible. The peek's
+          backdrop is translucent, and exited turns can linger in the DOM (a
+          known AnimatePresence popLayout quirk), so a merely-dimmed stage
+          bleeds ghost text through the review surface. */}
+      <div
+        inert={historyOpen}
+        className={cn(
+          "flex h-full flex-col items-center justify-center px-8 pb-24 transition-opacity duration-200",
+          historyOpen && "opacity-0"
+        )}
+      >
         {/* Aura — viewport-centered, and deliberately outside the text grid:
             it is the fixed anchor the columns re-center beneath. */}
         <div className="flex w-full shrink-0 justify-center">
@@ -215,7 +244,7 @@ export function ConversationStage({
           transition={{ duration: 0.5, ease: "easeOut" }}
           className="mt-[clamp(1.5rem,5vh,3rem)] w-full"
         >
-          <StageGrid showEn={showEn}>
+          <StageGrid>
             {/* Pinned context — the turn the hero is answering. Readable,
                 deliberately secondary. */}
             <div className="min-h-[4.5rem]">
@@ -228,22 +257,19 @@ export function ConversationStage({
                     exit={{ opacity: 0, y: -8 }}
                     transition={{ duration: 0.4, ease: "easeOut" }}
                   >
-                    <StageRow
-                      showEn={showEn}
-                      speaker={context.speaker}
-                      en={
-                        <span className="text-muted-foreground/70">
-                          {context.anchor}
-                        </span>
-                      }
-                    >
+                    <StageRow speaker={context.speaker}>
                       <p
                         className={cn(
                           "text-base tracking-[-0.011em] text-foreground/55",
                           ROW_LEADING
                         )}
                       >
-                        <SettledText turn={context} />
+                        {/* The pinned row's marks hold the session exactly as
+                            the hero's do — nothing else is covering it. */}
+                        <SettledText
+                          turn={context}
+                          onCorrectionOpenChange={correctionOpenChange}
+                        />
                       </p>
                     </StageRow>
                   </motion.div>
@@ -263,13 +289,20 @@ export function ConversationStage({
                     transition={{ duration: 0.4, ease: "easeOut" }}
                   >
                     <StageRow
-                      showEn={showEn}
                       speaker={turn.speaker}
                       labelClassName="text-muted-foreground/70"
-                      enClassName={HERO_LEADING}
-                      en={<AnchorWords text={turn.anchor} />}
                     >
                       <p
+                        // The learner's own utterance is selectable only once
+                        // settled — translating your own half-arrived sentence
+                        // is the wrong question. TUTOR speech is the opposite:
+                        // in-the-moment comprehension is exactly when the
+                        // learner reaches for it (found live 2026-08-12), and
+                        // selecting already holds the session, so the text
+                        // freezes the instant they start reading.
+                        {...(turn.speaker === "tutor" || phase === "settled"
+                          ? translatableProps(turn)
+                          : {})}
                         className={cn(
                           // Two hero lines reserved, on the hero line box.
                           "min-h-[4.3rem] text-[1.6rem] tracking-[-0.018em] text-balance",
@@ -280,9 +313,7 @@ export function ConversationStage({
                           turn={turn}
                           live={phase === "live"}
                           marksActive={showMarks}
-                          onCorrectionOpenChange={(open) =>
-                            setHold("correction", open)
-                          }
+                          onCorrectionOpenChange={correctionOpenChange}
                         />
                         {phase === "live" && turn.target.length > 0 && (
                           <Caret paused={paused} />
@@ -305,24 +336,38 @@ export function ConversationStage({
         {historyOpen && (
           <HistoryPeek
             turns={historyTurns(state)}
-            showEn={showEn}
             onClose={() => release("history")}
+            restoreFocusTo={historyTrigger}
           />
         )}
       </AnimatePresence>
 
-      <SessionControls
-        paused={paused}
-        muted={muted}
-        showEn={showEn}
-        onReview={() => hold("history")}
-        onToggleMute={onToggleMute}
-        onToggleEn={toggleEn}
-        onTogglePause={() =>
-          paused ? holds.forEach(release) : hold("control")
-        }
-        onEnd={onEnd}
-      />
+      {/* Select-to-translate. Lives at the stage root so it can float over the
+          history peek as readily as over the hero. */}
+      {translate && (
+        <SelectionTranslator
+          translate={translate}
+          // The hold set, not the card, decides whether a translation is up:
+          // Space and the pause button release it without knowing the card
+          // exists, and the card follows.
+          held={holds.includes("translation")}
+          onHold={holdTranslation}
+          onRelease={releaseTranslation}
+        />
+      )}
+
+      <div inert={historyOpen}>
+        <SessionControls
+          paused={paused}
+          muted={muted}
+          onReview={openHistory}
+          onToggleMute={onToggleMute}
+          onTogglePause={() =>
+            paused ? holds.forEach(release) : hold("control")
+          }
+          onEnd={onEnd}
+        />
+      </div>
 
       {/* Dev readout: what the engine thinks is happening. */}
       <div className="absolute right-4 bottom-4 z-10 font-mono text-[10px] text-muted-foreground/50">

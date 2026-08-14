@@ -1,21 +1,23 @@
 """LiveKit Agents worker for the language tutor.
 
-Pipeline (see plans/phases/phase-2-live-pipeline.md):
+Pipeline (see plans/phases/phase-2-live-pipeline.md and phase-3):
 
     GPT Realtime (speech-to-speech)    -> the tutor's voice
   + parallel STT (gpt-live-transcribe) -> live target-language transcripts
   + LiveKit semantic turn detector     -> the ONE turn clock for everything
-  + translation side-task              -> lagging anchor-language text
   + on_user_turn_completed             -> background analyzer -> corrections
+  + tutor.translate RPC                -> select-to-translate, on demand
 
 Run with `lk agent dev` (or `uv run python src/agent.py dev`).
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
+import random
+import time
+from dataclasses import dataclass
 
 from dotenv import load_dotenv
 from livekit import agents, rtc
@@ -24,6 +26,7 @@ from livekit.agents import (
     AgentServer,
     AgentSession,
     JobContext,
+    StopResponse,
     TurnHandlingOptions,
     inference,
     llm,
@@ -31,7 +34,7 @@ from livekit.agents import (
 )
 from livekit.plugins import openai
 
-from analyzer import CONTEXT_TURNS, AnalysisContextTurn, CorrectionAnalyzer
+from analyzer import CorrectionAnalyzer, recent_context
 from config import (
     AGENT_NAME,
     ANALYZER_OFF,
@@ -44,9 +47,15 @@ from config import (
     RPC_RESUME,
     TutorConfig,
 )
-from prompts import greeting_instructions, stt_prompt, tutor_instructions
-from state import SessionState
-from translation import TranslationTask, wait_for_audio_track
+from prompts import (
+    BRIDGE_INTENTS,
+    greeting_instructions,
+    resume_instructions,
+    stt_prompt,
+    tutor_instructions,
+)
+from state import SessionFacts, SessionState
+from translate import SpanTranslator, register_translate_rpc
 
 load_dotenv(".env.local")
 
@@ -56,10 +65,16 @@ logger = logging.getLogger("tutor.agent")
 class TutorAgent(Agent):
     """The conversation partner. Analysis happens beside it, never inside it."""
 
-    def __init__(self, cfg: TutorConfig, analyzer: CorrectionAnalyzer | None) -> None:
+    def __init__(
+        self,
+        cfg: TutorConfig,
+        analyzer: CorrectionAnalyzer | None,
+        state: SessionState,
+    ) -> None:
         super().__init__(instructions=tutor_instructions(cfg))
         self._cfg = cfg
         self._analyzer = analyzer
+        self._state = state
 
     # The analyzer trigger. Fires with the full committed turn because turn
     # detection happens agent-side — with model-owned turn detection this node
@@ -67,43 +82,26 @@ class TutorAgent(Agent):
     async def on_user_turn_completed(
         self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage
     ) -> None:
-        if self._analyzer is None:
-            return
         text = (new_message.text_content or "").strip()
-        if not text:
-            return
-        self._analyzer.analyze_in_background(
-            turn_id=new_message.id,
-            text=text,
-            context=_recent_context(turn_ctx, exclude_id=new_message.id),
-        )
+        if text and self._analyzer is not None:
+            self._analyzer.analyze_in_background(
+                turn_id=new_message.id,
+                text=text,
+                context=recent_context(turn_ctx, exclude_id=new_message.id),
+            )
 
-
-def _recent_context(
-    turn_ctx: llm.ChatContext, *, exclude_id: str, limit: int = CONTEXT_TURNS
-) -> list[AnalysisContextTurn]:
-    """The last `limit` messages of the chat context, as speaker-tagged lines.
-
-    `limit` defaults to the analyzer's own `CONTEXT_TURNS`, which is the single
-    knob for how much history the analyzer sees: the truncation happens here,
-    once, and the analyzer sends what it is given. Walking backwards means a
-    long lesson's full history is never flattened just to throw most of it away.
-    """
-    turns: list[AnalysisContextTurn] = []
-    for item in reversed(turn_ctx.items):
-        if len(turns) >= limit:
-            break
-        if getattr(item, "type", None) != "message":
-            continue
-        if item.id == exclude_id:
-            continue
-        text = (item.text_content or "").strip()
-        if not text:
-            continue
-        speaker = "learner" if item.role == "user" else "tutor"
-        turns.append(AnalysisContextTurn(speaker=speaker, text=text))
-    turns.reverse()
-    return turns
+        # A turn already in flight when the learner paused (STT finals lag the
+        # audio) still commits DURING the hold. Replying now would speak into a
+        # muted session and dump ghost text on resume (found live 2026-08-12) —
+        # suppress the reply, and mark it owed so the conversational re-entry
+        # answers this turn when the learner returns.
+        if self._state.paused:
+            self._state.reply_was_pending = True
+            # The utterance they were mid-way through at pause time has now
+            # committed — the "learner keeps the floor" veto no longer applies,
+            # or the owed answer above would be suppressed on resume.
+            self._state.learner_was_speaking = False
+            raise StopResponse()
 
 
 server = AgentServer()
@@ -113,6 +111,7 @@ server = AgentServer()
 async def tutor(ctx: JobContext) -> None:
     cfg = TutorConfig.from_env()
     state = SessionState()
+    facts = SessionFacts()
 
     logger.info(
         "starting tutor session",
@@ -133,8 +132,8 @@ async def tutor(ctx: JobContext) -> None:
             prompt=stt_prompt(cfg),
         ),
         # ONE turn clock: the semantic turn detector owns endpointing for the
-        # model's replies, the transcript segmentation, the analyzer trigger,
-        # and translation binding alike.
+        # model's replies, the transcript segmentation, and the analyzer
+        # trigger alike.
         turn_handling=TurnHandlingOptions(
             turn_detection=inference.TurnDetector(),
             # min_delay must outlast the STT flush lag or late transcripts
@@ -146,25 +145,16 @@ async def tutor(ctx: JobContext) -> None:
         ),
     )
 
-    analyzer = CorrectionAnalyzer(cfg, ctx.room) if cfg.analyzer_enabled else None
-    translation = TranslationTask(cfg=cfg, room=ctx.room, state=state)
-    wiring_task: asyncio.Task[None] | None = None
+    analyzer = CorrectionAnalyzer(cfg, ctx.room, facts) if cfg.analyzer_enabled else None
+    translator = SpanTranslator(cfg)
 
     async def _shutdown() -> None:
         # Every step is guarded and independent: one failing teardown must not
-        # strand the ones behind it (a leaked socket outlives the job).
-        if wiring_task is not None:
-            wiring_task.cancel()
-            try:
-                await wiring_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                logger.warning("translation wiring failed during shutdown", exc_info=True)
+        # strand the ones behind it.
         try:
-            await translation.aclose()
+            await translator.aclose()
         except Exception:
-            logger.warning("translation shutdown failed", exc_info=True)
+            logger.warning("translator shutdown failed", exc_info=True)
         if analyzer is not None:
             try:
                 await analyzer.aclose()
@@ -174,7 +164,7 @@ async def tutor(ctx: JobContext) -> None:
     ctx.add_shutdown_callback(_shutdown)
 
     await session.start(
-        agent=TutorAgent(cfg, analyzer),
+        agent=TutorAgent(cfg, analyzer, state),
         room=ctx.room,
         room_options=room_io.RoomOptions(
             # Text input is off: this is a voice surface, not a chat box.
@@ -182,7 +172,12 @@ async def tutor(ctx: JobContext) -> None:
         ),
     )
 
-    await _register_pause_rpc(ctx, session, state)
+    await _register_pause_rpc(ctx, session, state, facts, cfg)
+    await register_translate_rpc(ctx, session, translator)
+
+    # Warm the translate client off the critical path: the first RPC otherwise
+    # pays TLS + CA-bundle setup on the learner's first card.
+    translator.warm_in_background()
 
     # Tell the frontend whether corrections are coming at all, so it can skip
     # the analyzing phase entirely when the analyzer is off.
@@ -190,44 +185,168 @@ async def tutor(ctx: JobContext) -> None:
         {ATTR_ANALYZER: ANALYZER_ON if cfg.analyzer_enabled else ANALYZER_OFF}
     )
 
-    # Greet first, wire translation second. Resolving the participant and their
-    # microphone track can take seconds (or the full 30s timeout if the mic is
-    # slow or denied), and none of that should stand between the learner
-    # arriving and the tutor saying hello. Translation lagging the greeting by a
-    # few seconds is invisible; a silent session is not.
-    async def _start_translation() -> None:
-        participant = await ctx.wait_for_participant()
-        track = await wait_for_audio_track(ctx.room, participant.identity)
-        if track is not None:
-            translation.start(track)
-
-    def _on_wiring_done(task: asyncio.Task[None]) -> None:
-        # Translation is fail-soft, but it must fail *loudly*: without this the
-        # exception is only surfaced as asyncio's "never retrieved" noise at GC.
-        if task.cancelled():
-            return
-        exc = task.exception()
-        if exc is not None:
-            logger.warning("translation wiring failed", exc_info=exc)
-
-    # Held on a local so the shutdown callback can cancel it cleanly.
-    wiring_task = asyncio.create_task(_start_translation())
-    wiring_task.add_done_callback(_on_wiring_done)
-
     await session.generate_reply(instructions=greeting_instructions(cfg))
 
 
-async def _register_pause_rpc(ctx: JobContext, session: AgentSession, state: SessionState) -> None:
+def _capture_pause_context(session: AgentSession, state: SessionState) -> None:
+    """Snapshot what the hold is interrupting, before we interrupt it.
+
+    Three facts, read off the session's own state machine:
+
+    - `agent_state == "speaking"` (plus a live `current_speech` handle) means the
+      tutor was mid-sentence — resuming into silence would leave the thought
+      hanging.
+    - `agent_state == "thinking"` means a committed learner turn was waiting on
+      a reply that the hold is about to kill.
+    - `user_state == "speaking"` means the learner was mid-utterance. They keep
+      the floor: they paused to look something up, not to be talked at.
+    """
+    speech = session.current_speech
+    state.paused_at = time.monotonic()
+    state.tutor_was_speaking = session.agent_state == "speaking" or (
+        speech is not None and not speech.done()
+    )
+    state.reply_was_pending = session.agent_state == "thinking"
+    state.learner_was_speaking = session.user_state == "speaking"
+
+
+@dataclass(init=False)
+class ResumeBrief:
+    """The advisory `tutor.resume` payload, coerced once at the boundary.
+
+    Every field crosses the wire from the client, so every field is optional and
+    every type is checked here — once — leaving `_resume_facts` to read plain
+    values. `present` records whether the client sent *any* brief at all, which
+    is a different question from whether the brief yielded any usable facts.
+    """
+
+    present: bool
+    held_ms: float | None
+    reasons: list[str]
+    # (original, replacement, category | None)
+    correction: tuple[str, str, str | None] | None
+
+    def __init__(self, raw: dict | None = None) -> None:
+        raw = raw if isinstance(raw, dict) else {}
+        self.present = bool(raw)
+        self.held_ms = _coerce_number(raw.get("held_ms"))
+        self.reasons = _coerce_reasons(raw.get("reasons"))
+        self.correction = _coerce_correction(raw.get("correction"))
+
+
+def _coerce_number(value: object) -> float | None:
+    # bool is an int subclass; a JSON `true` is not a duration.
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None
+
+
+def _coerce_reasons(value: object) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return sorted({r.strip() for r in value if isinstance(r, str) and r.strip()})
+
+
+def _coerce_correction(value: object) -> tuple[str, str, str | None] | None:
+    if not isinstance(value, dict):
+        return None
+    original = value.get("original")
+    replacement = value.get("replacement")
+    if not (isinstance(original, str) and original):
+        return None
+    if not (isinstance(replacement, str) and replacement):
+        return None
+    category = value.get("category")
+    return original, replacement, category if isinstance(category, str) and category else None
+
+
+def _resume_facts(state: SessionState, facts: SessionFacts, brief: ResumeBrief) -> list[str]:
+    """Turn the resume payload plus the pause snapshot into plain statements."""
+    lines: list[str] = []
+
+    # The client's own measurement is authoritative (it owns the set of holds);
+    # our timestamp is only a fallback for a payload that omitted it.
+    held_ms = brief.held_ms
+    if held_ms is None and state.paused_at is not None:
+        held_ms = (time.monotonic() - state.paused_at) * 1000
+    if held_ms is not None and held_ms > 0:
+        seconds = held_ms / 1000
+        lines.append(
+            f"the conversation was on hold for about {seconds:.0f} seconds"
+            if seconds >= 1
+            else "the conversation was on hold for a moment"
+        )
+
+    if brief.reasons:
+        lines.append("the learner was looking at: " + ", ".join(brief.reasons))
+
+    if brief.correction is not None:
+        original, replacement, category = brief.correction
+        suffix = f" (a {category} correction)" if category else ""
+        lines.append(
+            f'they read a correction on their last turn: "{original}" -> "{replacement}"{suffix}'
+        )
+
+    if state.tutor_was_speaking:
+        lines.append("you were mid-sentence when the hold began")
+    elif state.reply_was_pending:
+        lines.append("you were about to reply to their last turn when the hold began")
+
+    summary = facts.summary()
+    if summary:
+        lines.append(summary)
+
+    return lines
+
+
+def _parse_brief(payload: str | None) -> ResumeBrief:
+    """Resume payloads are advisory. Anything unreadable means "no brief"."""
+    if not payload or not payload.strip():
+        return ResumeBrief()
+    try:
+        brief = json.loads(payload)
+    except json.JSONDecodeError:
+        logger.warning("tutor.resume: unparseable payload, resuming without a brief")
+        return ResumeBrief()
+    return ResumeBrief(brief)
+
+
+async def _register_pause_rpc(
+    ctx: JobContext,
+    session: AgentSession,
+    state: SessionState,
+    facts: SessionFacts,
+    cfg: TutorConfig,
+) -> None:
     """Pause/resume, driven by the frontend's client-side set of holds.
 
     The frontend collapses overlapping holds (explicit control, correction
-    inspection, history scroll) and sends exactly one pause or resume; the
-    worker only tracks the resulting boolean and mirrors it as an attribute.
+    inspection, selection-to-translate, history scroll) and sends exactly one
+    pause or resume; the worker only tracks the resulting boolean and mirrors it
+    as an attribute. Short glances never arrive here at all — the frontend
+    debounces them, because the surface freeze is client-side and instant.
     """
 
-    async def _apply(paused: bool) -> None:
+    # The last answer each side gave, so a retry gets the same answer back.
+    last_resume_ack = json.dumps({"paused": False, "resumed": False})
+
+    async def _apply(paused: bool) -> bool:
+        """Edge-triggered. Returns False when the session was already there.
+
+        The frontend re-sends `tutor.pause` every couple of seconds until it
+        observes the paused attribute, so this runs more than once per hold.
+        Only the transition may touch the session: a second pause would snapshot
+        a session we have already interrupted (recording "nothing was happening"
+        over the truth) and re-stamp `paused_at`, and a second resume would fire
+        a second `generate_reply`.
+        """
+        if state.paused == paused:
+            return False
         state.paused = paused
         if paused:
+            # Read the session's state *before* interrupting it — afterwards
+            # there is nothing left to observe.
+            _capture_pause_context(session, state)
             # Stop the tutor mid-sentence, then go deaf and mute.
             #
             # Deliberately *not* `clear_user_turn()`: a hold is often opened
@@ -236,13 +355,6 @@ async def _register_pause_rpc(ctx: JobContext, session: AgentSession, state: Ses
             # throw away what they had just said. Disabling the audio input
             # already stops new audio from arriving; what was already said stays
             # in the turn and settles normally on resume.
-            #
-            # Known gap: a realtime model cannot resume a truncated reply
-            # mid-utterance, so resuming after we interrupt the tutor can leave
-            # a beat of dead air until the learner speaks again. Interrupting is
-            # still the right call — a tutor that keeps talking through a pause
-            # is worse — but the resume behaviour is a product decision to
-            # revisit with live testing.
             await session.interrupt()
             session.input.set_audio_enabled(False)
             session.output.set_audio_enabled(False)
@@ -254,14 +366,64 @@ async def _register_pause_rpc(ctx: JobContext, session: AgentSession, state: Ses
             {ATTR_PAUSED: ATTR_TRUE if paused else ATTR_FALSE}
         )
         logger.info("session %s", "paused" if paused else "resumed")
+        return True
 
     async def _pause(_data: rtc.RpcInvocationData) -> str:
         await _apply(True)
         return json.dumps({"paused": True})
 
-    async def _resume(_data: rtc.RpcInvocationData) -> str:
-        await _apply(False)
-        return json.dumps({"paused": False})
+    async def _resume(data: rtc.RpcInvocationData) -> str:
+        # A realtime model cannot resume a truncated reply mid-word, and it
+        # should not try: a human tutor interrupted mid-thought re-enters
+        # ("como decía…") rather than replaying the tape. So instead of
+        # restoring audio, we hand the model a short factual brief and let it
+        # re-enter with judgment — and only when it actually owes the learner
+        # something. If the learner was mid-utterance, resume stays silent and
+        # lets them finish.
+        nonlocal last_resume_ack
+        brief = _parse_brief(data.payload)
+        if not await _apply(False):
+            # A retry of a resume we already handled: same answer, no second
+            # re-entry.
+            return last_resume_ack
+
+        try:
+            if not brief.present or not state.tutor_owes_reentry:
+                last_resume_ack = json.dumps({"paused": False, "resumed": False})
+                return last_resume_ack
+
+            lines = _resume_facts(state, facts, brief)
+            try:
+                # Shuffle the bridge's flavor: same intent twice in a row
+                # reads as a canned line, which is the one thing a re-entry
+                # must never feel like.
+                intent = random.choice([i for i in BRIDGE_INTENTS if i != state.last_bridge_intent])
+                state.last_bridge_intent = intent
+                session.generate_reply(
+                    instructions=resume_instructions(
+                        cfg,
+                        lines,
+                        # An unanswered learner turn gets a real answer; an
+                        # interrupted delivery gets a one-line bridge, never a
+                        # replay (the message is still on screen).
+                        owes_answer=state.reply_was_pending,
+                        studied=brief.correction is not None,
+                        intent=intent,
+                    )
+                )
+            except Exception:
+                # Never fail the resume: the surface has already unfrozen.
+                logger.exception("conversational resume failed")
+                last_resume_ack = json.dumps({"paused": False, "resumed": False})
+                return last_resume_ack
+
+            logger.info("conversational resume", extra={"facts": len(lines)})
+            last_resume_ack = json.dumps({"paused": False, "resumed": True})
+            return last_resume_ack
+        finally:
+            # One exit for the snapshot, whatever path the resume took: a leaked
+            # snapshot would describe the *previous* hold on the next resume.
+            state.clear_pause_context()
 
     ctx.room.local_participant.register_rpc_method(RPC_PAUSE, _pause)
     ctx.room.local_participant.register_rpc_method(RPC_RESUME, _resume)

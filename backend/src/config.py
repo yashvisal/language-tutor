@@ -6,8 +6,8 @@ target/anchor language pair is a parameter, per the product vision.
 The realtime model is OpenAI GPT Realtime, full stop. Grok Voice support was
 removed 2026-08-12: its plugin cannot hand turn detection to the agent
 (`can_disable_turn_detection = False`), which forces a second, disagreeing
-turn clock and degrades everything downstream (transcript segmentation,
-translation binding, the analyzer trigger). If xAI ships agent-side turn
+turn clock and degrades everything downstream (transcript segmentation, the
+analyzer trigger, the tutor's own replies). If xAI ships agent-side turn
 detection, reintroduce it as a factory branch here — the rest of the worker is
 provider-agnostic.
 """
@@ -27,9 +27,8 @@ from openai.types.realtime import RealtimeReasoning
 # nowhere else. These must byte-match `frontend/lib/session/protocol.ts`.
 
 # Text stream topics the frontend subscribes to. `lk.transcription` is published
-# by the SDK itself; these two are ours.
+# by the SDK itself; this one is ours.
 TOPIC_CORRECTIONS = "tutor.corrections"
-TOPIC_TRANSLATION = "tutor.translation"
 
 # Participant attributes.
 # `tutor.paused` mirrors pause state, so it survives reconnects.
@@ -47,15 +46,13 @@ ANALYZER_OFF = "off"
 # RPC methods the frontend invokes on the agent participant.
 RPC_PAUSE = "tutor.pause"
 RPC_RESUME = "tutor.resume"
+# Select-to-translate: one span in, one translation out. Request/response only —
+# there is no translation stream any more (phase 3, WS1/WS3).
+RPC_TRANSLATE = "tutor.translate"
 
 # Text stream attributes on `tutor.corrections`.
 ATTR_TURN_ID = "tutor.turn_id"
 ATTR_CORRECTION_COUNT = "tutor.correction_count"
-
-# Text stream attributes on `tutor.translation`.
-ATTR_LANGUAGE = "tutor.language"
-ATTR_SOURCE_LANGUAGE = "tutor.source_language"
-ATTR_ITEM_ID = "tutor.item_id"
 
 AGENT_NAME = "tutor"
 
@@ -111,12 +108,16 @@ class TutorConfig:
 
     stt_model: str = "gpt-live-transcribe"
 
+    # One text model serves both the analyzer and select-to-translate: both are
+    # short, cheap, out-of-band calls on settled text.
     analyzer_model: str = "gpt-5.6-luna"
     analyzer_enabled: bool = True
 
-    translation_enabled: bool = True
-    translation_model: str = "gpt-realtime-translate"
-    translation_url: str = "wss://api.openai.com/v1/realtime/translations"
+    # Select-to-translate model. Luna, by decision (2026-08-12): its TTFT is
+    # already floor-tier — the felt latency win came from connection warming,
+    # not the model — and quality is proven. gpt-5-nano remains the 3.5x
+    # cheaper candidate via TUTOR_TRANSLATE_MODEL if cost ever matters.
+    translate_model: str = "gpt-5.6-luna"
 
     openai_api_key: str = field(default="", repr=False)
 
@@ -132,11 +133,7 @@ class TutorConfig:
             stt_model=_env("TUTOR_STT_MODEL", "gpt-live-transcribe"),
             analyzer_model=_env("TUTOR_ANALYZER_MODEL", "gpt-5.6-luna"),
             analyzer_enabled=_env_bool("TUTOR_ANALYZER_ENABLED", True),
-            translation_enabled=_env_bool("TUTOR_TRANSLATION_ENABLED", True),
-            translation_model=_env("TUTOR_TRANSLATION_MODEL", "gpt-realtime-translate"),
-            translation_url=_env(
-                "TUTOR_TRANSLATION_URL", "wss://api.openai.com/v1/realtime/translations"
-            ),
+            translate_model=_env("TUTOR_TRANSLATE_MODEL", "gpt-5.6-luna"),
             openai_api_key=_env("OPENAI_API_KEY", ""),
         )
 
@@ -153,8 +150,8 @@ class TutorConfig:
 
         Model-side turn detection and input transcription are both off: the
         agent's turn detector owns endpointing (one turn clock for replies,
-        transcripts, analyzer, and translation alike), and the parallel `stt=`
-        plugin is the single source of transcripts.
+        transcripts, and the analyzer alike), and the parallel `stt=` plugin is
+        the single source of transcripts.
         """
         kwargs: dict = {
             "model": self.realtime_model,

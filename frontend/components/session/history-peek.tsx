@@ -6,7 +6,7 @@
  * the session for as long as it is open.
  */
 
-import { useEffect } from "react"
+import { useEffect, useRef, type RefObject } from "react"
 import { X } from "lucide-react"
 import { motion } from "motion/react"
 
@@ -16,6 +16,10 @@ import {
   StageGrid,
   StageRow,
 } from "@/components/session/stage-grid"
+import {
+  OVERLAY_ATTR,
+  OVERLAY_OPEN,
+} from "@/components/session/translate-overlay"
 import { Button } from "@/components/ui/button"
 import {
   Tooltip,
@@ -27,23 +31,55 @@ import { cn } from "@/lib/utils"
 
 export function HistoryPeek({
   turns,
-  showEn,
   onClose,
+  restoreFocusTo,
 }: {
   turns: Turn[]
-  showEn: boolean
   onClose: () => void
+  /**
+   * What opened the peek, captured by the caller at interaction time (a ref, so
+   * nothing reads it during render). Null when there is nothing to go back to —
+   * the wheel gesture. It cannot be found from in here: the stage is marked
+   * `inert` in the same commit that mounts this, which blurs the trigger to
+   * `<body>` before any effect runs.
+   */
+  restoreFocusTo?: RefObject<HTMLElement | null>
 }) {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose()
+      if (e.key !== "Escape") return
+      // One Escape, one layer: a translation open over the peek dismisses
+      // first. The value matters — a card mid-exit is still in the DOM but is
+      // no longer a layer, and would otherwise swallow this Escape too.
+      if (document.querySelector(`[${OVERLAY_ATTR}="${OVERLAY_OPEN}"]`)) return
+      onClose()
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
   }, [onClose])
 
+  /**
+   * Dialog focus, both directions. The panel covers the stage (which the stage
+   * marks `inert` while this is up), so focus must move into it on open or the
+   * next Tab lands on nothing; and it must go back where it came from on close,
+   * or a learner who opened this from the control bar loses their place.
+   */
+  const closeRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    // Read on mount, not on close: whatever opened this peek is the thing to
+    // return to, whatever the ref happens to hold by then.
+    const trigger = restoreFocusTo?.current
+    closeRef.current?.focus()
+    return () => {
+      if (trigger?.isConnected) trigger.focus()
+    }
+  }, [restoreFocusTo])
+
   return (
     <motion.div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Conversation history"
       initial={{ opacity: 0, y: -12 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -12 }}
@@ -56,6 +92,7 @@ export function HistoryPeek({
             <TooltipTrigger
               render={
                 <Button
+                  ref={closeRef}
                   variant="ghost"
                   size="icon-sm"
                   onClick={onClose}
@@ -70,19 +107,14 @@ export function HistoryPeek({
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-16">
           {/* Same grid as the stage, so history reads as the same document. */}
-          <StageGrid showEn={showEn} className="space-y-7 pt-2">
+          <StageGrid className="space-y-7 pt-2">
             {turns.length === 0 && (
               <p className="pt-16 text-sm text-muted-foreground/60">
                 Nothing to review yet.
               </p>
             )}
             {turns.map((turn) => (
-              <StageRow
-                key={turn.id}
-                showEn={showEn}
-                speaker={turn.speaker}
-                en={turn.anchor}
-              >
+              <StageRow key={turn.id} speaker={turn.speaker}>
                 <p
                   className={cn(
                     "text-base tracking-[-0.011em]",

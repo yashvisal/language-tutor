@@ -10,9 +10,8 @@
  * Two rules the shapes here encode, both dictated by the live pipeline:
  *
  * 1. SEGMENT IDS ARE THE JOIN KEY. LiveKit stamps `lk.segment_id` on every
- *    transcription stream; the analyzer echoes it on its corrections and the
- *    translation side-task echoes it on its lines. One segment = one utterance
- *    = one `Turn` on screen.
+ *    transcription stream and the analyzer's corrections are attributed back to
+ *    it. One segment = one utterance = one `Turn` on screen.
  * 2. TRANSCRIPT DELTAS ARE CUMULATIVE. STT interims are throttled snapshots
  *    ("here is the transcript so far", roughly every 500ms), not word events.
  *    A delta therefore *replaces* the segment's text rather than appending to
@@ -65,15 +64,19 @@ export interface TurnSegment {
 
 /**
  * A settled or in-flight conversational turn. `id` is the FIRST segment's id;
- * late-arriving corrections or translation lines join against any segment the
- * turn owns.
+ * late-arriving corrections join against any segment the turn owns.
  */
 export interface Turn {
   id: string
   speaker: Speaker
   /** Joined target-language text (what was actually said). Cumulative while live. */
   target: string
-  /** Joined anchor-language translation. Lags the target during live speech. */
+  /**
+   * Joined anchor-language text. Nothing populates this since live translation
+   * was removed (translation is select-to-translate and lives in overlay
+   * state); the field stays because the contract's door to a future ambient
+   * mode costs nothing to hold open.
+   */
   anchor: string
   /** The STT segments this turn coalesces. Absent for mock/single-segment turns. */
   segments?: TurnSegment[]
@@ -97,12 +100,25 @@ export const CATEGORY_LABELS: Record<CorrectionCategory, string> = {
 
 /**
  * Why the session is being held. Multiple sources can hold it at once (the
- * control button is sticky; a correction popover and a history peek release
- * themselves), so holds are a set, not a boolean. This set is client-side
- * state: the live adapter collapses "any hold" into a single pause RPC and
- * "no holds left" into a resume.
+ * control button is sticky; a correction popover, a translation overlay and a
+ * history peek release themselves), so holds are a set, not a boolean. This set
+ * is client-side state: the live adapter collapses "any hold" into a single
+ * pause RPC and "no holds left" into a resume.
  */
-export type PauseReason = "control" | "correction" | "history"
+export type PauseReason = "control" | "correction" | "history" | "translation"
+
+/**
+ * Translate one selected span of settled text into the anchor language — the
+ * whole of select-to-translate's contract with its producer. It is a plain
+ * request/response call rather than an event because the answer belongs to the
+ * overlay that asked, not to the session state: nothing on the stage changes.
+ * Rejects on timeout, transport failure, or a worker-side error.
+ */
+export type TranslateFn = (
+  text: string,
+  speaker: Speaker,
+  turnId?: string
+) => Promise<string>
 
 /* -------------------------------------------------------------------------- */
 /*  Events                                                                    */
@@ -123,9 +139,9 @@ export interface TranscriptDeltaEvent extends TranscriptEventBase {
 }
 
 /**
- * The segment is closed in this language: `text` is final. The *target*-
- * language final is what drives the turn lifecycle — the anchor stream
- * finishing later only updates translation text.
+ * The segment is closed in this language: `text` is final. Only the *target*-
+ * language final drives the turn lifecycle; the anchor role survives on these
+ * events for a future producer that has anchor text to send.
  */
 export interface TranscriptFinalEvent extends TranscriptEventBase {
   type: "transcript.final"
@@ -162,6 +178,13 @@ export interface AgentStateEvent {
 export interface SessionPausedEvent {
   type: "session.paused"
   reason: PauseReason
+  /**
+   * The correction the learner just opened, on a `"correction"` hold. The
+   * reducer ignores it — it exists so the live producer can name the thing that
+   * was being studied in its resume payload, without the UI having to know the
+   * pause pipeline exists.
+   */
+  correction?: Correction
 }
 
 export interface SessionResumedEvent {

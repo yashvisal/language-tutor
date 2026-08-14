@@ -14,6 +14,7 @@ import { useMemo, useReducer, type ReactNode } from "react"
 import { MoveRight } from "lucide-react"
 import { motion } from "motion/react"
 
+import { translatableProps } from "@/components/session/translate-overlay"
 import {
   Popover,
   PopoverContent,
@@ -107,12 +108,13 @@ export function CorrectionMark({
   correction: Correction
   /** Marks only surface once the turn has settled. */
   active: boolean
-  onOpenChange: (open: boolean) => void
+  /** The correction is echoed back so the caller's hold can name it. */
+  onOpenChange: (open: boolean, correction: Correction) => void
   children: ReactNode
 }) {
   const style = CATEGORY_STYLES[correction.category]
   return (
-    <Popover onOpenChange={onOpenChange}>
+    <Popover onOpenChange={(open) => onOpenChange(open, correction)}>
       <PopoverTrigger
         nativeButton={false}
         render={
@@ -175,18 +177,39 @@ function ExplanationDisclosure({ text }: { text: string }) {
   )
 }
 
-/** Settled target-language text with its marks live (no reveal animation). */
-export function SettledText({ turn }: { turn: Turn }) {
+/** Stable, so a defaulted `SettledText` never remounts its marks. */
+const NO_OP = () => {}
+
+/**
+ * Settled target-language text with its marks live (no reveal animation).
+ *
+ * The wrapper span is what makes the text selectable-to-translate: it is the
+ * marker `SelectionTranslator` resolves a selection against, so every place
+ * settled text renders gets the overlay without knowing it exists.
+ */
+export function SettledText({
+  turn,
+  onCorrectionOpenChange = NO_OP,
+}: {
+  turn: Turn
+  /**
+   * Hold the session while one of these marks is open, exactly as the hero
+   * does. Optional because not every host needs it: the history peek already
+   * holds for `"history"` the whole time it is up, so its rows can keep the
+   * no-op. The pinned context row has no such cover and must wire this.
+   */
+  onCorrectionOpenChange?: (open: boolean, correction: Correction) => void
+}) {
   const segments = useMemo(() => segmentTurn(turn), [turn])
   return (
-    <>
+    <span {...translatableProps(turn)}>
       {segments.map((seg) =>
         seg.correction ? (
           <CorrectionMark
             key={seg.key}
             correction={seg.correction}
             active
-            onOpenChange={() => {}}
+            onOpenChange={onCorrectionOpenChange}
           >
             {seg.text}
           </CorrectionMark>
@@ -194,6 +217,6 @@ export function SettledText({ turn }: { turn: Turn }) {
           <span key={seg.key}>{seg.text}</span>
         )
       )}
-    </>
+    </span>
   )
 }

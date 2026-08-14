@@ -17,7 +17,7 @@ import {
   CorrectionMark,
   segmentTurn,
 } from "@/components/session/correction-mark"
-import type { Turn } from "@/lib/session/contract"
+import type { Correction, Turn } from "@/lib/session/contract"
 import { wordsOf } from "@/lib/session/reducer"
 import { cn } from "@/lib/utils"
 
@@ -31,7 +31,8 @@ export function HeroWords({
   /** Still being transcribed — only then is the trailing word "new". */
   live: boolean
   marksActive: boolean
-  onCorrectionOpenChange: (open: boolean) => void
+  /** The correction is passed through so a hold can name what is being read. */
+  onCorrectionOpenChange: (open: boolean, correction: Correction) => void
 }) {
   const segments = useMemo(() => segmentTurn(turn), [turn])
   const wordCount = wordsOf(turn.target).length
@@ -93,12 +94,16 @@ export function HeroWords({
 }
 
 /**
- * The caret. Live: a soft pulsing bar. Held: it becomes a hold glyph in place
- * — the one place the freeze is legible at word resolution, without a label.
+ * The caret. Live: a soft pulsing bar. Held: the same bar, steady.
+ *
+ * The phase-1 design turned it into a two-bar pause glyph while held; live
+ * testing read that as a rendering glitch ("two typing cursors"), not a
+ * state. The dimmed surface and the Aura's breathing ring already carry
+ * "held" — the caret just stops breathing.
  */
 export function Caret({ paused }: { paused: boolean }) {
   return (
-    <span className="ml-1.5 inline-flex h-[1.05em] translate-y-[0.16em] items-stretch gap-[0.1em] align-baseline">
+    <span className="ml-1.5 inline-flex h-[1.05em] translate-y-[0.16em] items-stretch align-baseline">
       <motion.span
         animate={{ opacity: paused ? 0.55 : [0.15, 0.7, 0.15] }}
         transition={
@@ -107,12 +112,6 @@ export function Caret({ paused }: { paused: boolean }) {
             : { duration: 1.4, repeat: Infinity, ease: "easeInOut" }
         }
         className="block w-[3px] rounded-full bg-primary"
-      />
-      <motion.span
-        initial={false}
-        animate={{ opacity: paused ? 0.55 : 0, width: paused ? 3 : 0 }}
-        transition={{ duration: 0.3, ease: "easeOut" }}
-        className="block rounded-full bg-primary"
       />
     </span>
   )
