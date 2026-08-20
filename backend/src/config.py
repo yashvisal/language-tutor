@@ -111,8 +111,13 @@ class TutorConfig:
     # for a learner mid-word-search.
     min_endpointing_s: float = 1.2
     max_endpointing_s: float = 6.0
-    realtime_model: str = "gpt-realtime-2"
+    realtime_model: str = "gpt-realtime-2.1-mini"
     realtime_voice: str = "marin"
+    # Reasoning effort for reasoning-capable realtime models. "low" is what the
+    # mini was validated at (2026-08-20: fast, multilingual switching held up);
+    # anything higher adds reply latency the model papers over with stall
+    # phrases. "minimal" is the floor if latency ever matters more.
+    realtime_reasoning: str = "low"
 
     stt_model: str = "gpt-live-transcribe"
 
@@ -136,7 +141,8 @@ class TutorConfig:
             anchor_lang=_env("TUTOR_ANCHOR_LANG", "en"),
             min_endpointing_s=float(_env("TUTOR_MIN_ENDPOINT_S", "1.2")),
             max_endpointing_s=float(_env("TUTOR_MAX_ENDPOINT_S", "6.0")),
-            realtime_model=_env("TUTOR_REALTIME_MODEL", "gpt-realtime-2"),
+            realtime_model=_env("TUTOR_REALTIME_MODEL", "gpt-realtime-2.1-mini"),
+            realtime_reasoning=_env("TUTOR_REALTIME_REASONING", "low"),
             realtime_voice=_env("TUTOR_REALTIME_VOICE", "marin"),
             stt_model=_env("TUTOR_STT_MODEL", "gpt-live-transcribe"),
             analyzer_model=_env("TUTOR_ANALYZER_MODEL", "gpt-5.6-luna"),
@@ -168,9 +174,9 @@ class TutorConfig:
             "input_audio_transcription": None,
         }
         if self.realtime_model.startswith("gpt-realtime-2"):
-            # Reasoning-capable model in a live conversation: keep thinking to
-            # a minimum. Anything higher adds reply latency the model then
-            # papers over with spoken stall phrases ("déjame pensar…") — the
+            # Reasoning-capable model in a live conversation: keep thinking
+            # low. Anything higher adds reply latency the model then papers
+            # over with spoken stall phrases ("déjame pensar…") — the
             # double-response feel observed live 2026-08-12.
-            kwargs["reasoning"] = RealtimeReasoning(effort="minimal")
+            kwargs["reasoning"] = RealtimeReasoning(effort=self.realtime_reasoning)
         return openai.realtime.RealtimeModel(**kwargs)
