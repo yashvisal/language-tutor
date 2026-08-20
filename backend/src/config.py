@@ -36,6 +36,14 @@ ATTR_PAUSED = "tutor.paused"
 # `tutor.analyzer` tells the frontend whether corrections are coming at all, so
 # it can skip the "analyzing" phase entirely when the analyzer is off.
 ATTR_ANALYZER = "tutor.analyzer"
+# `tutor.minutes_left` is the session clock's public face: whole minutes
+# remaining, as a string, published on session start, every 30s, at the
+# one-minute warning, and at zero. The frontend displays this number and never
+# computes its own — the worker's clock is authoritative (phase 4, WS2).
+ATTR_MINUTES_LEFT = "tutor.minutes_left"
+# `tutor.session_over` is set to "true" once the clock has ended the session and
+# the goodbye has finished playing, immediately before the worker disconnects.
+ATTR_SESSION_OVER = "tutor.session_over"
 
 # Value convention for boolean participant attributes.
 ATTR_TRUE = "true"

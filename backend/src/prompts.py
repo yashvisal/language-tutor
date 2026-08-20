@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from config import TutorConfig
+from plan import SessionPlan
 
 TUTOR_INSTRUCTIONS = """\
 You are a warm, curious conversation partner helping someone practice {target}.
@@ -105,6 +106,80 @@ repeat or re-explain anything from before the hold (it is all still on the \
 learner's screen), do not narrate the pause, and do not apologise for it.\
 """
 
+PLAN_INSTRUCTIONS = """\
+
+THIS SESSION
+The learner set this session up before it started. What they asked for, as \
+facts:
+{lines}
+
+Steer towards it without announcing it. Never read the plan back to them, \
+never name a tense unless they name it first, and never turn the session into \
+a drill or a lesson — this is still a conversation, and every standing rule \
+above (short turns, no verbal correction, follow their interests) still \
+applies. Use the focus forms naturally in your own turns, and ask the kind of \
+question that gives the learner a reason to reach for them. If they take the \
+conversation somewhere else, go with them; come back to the plan when it fits.\
+"""
+
+NO_PLAN_INSTRUCTIONS = """\
+
+THIS SESSION
+The learner set nothing up for this session. Pick something light yourself in \
+your opening turn — an easy everyday subject — and make it easy for them to \
+steer elsewhere if they would rather.\
+"""
+
+WRAPUP_INSTRUCTIONS = """\
+The situation, as facts:
+- there is about one minute of session time left
+- the learner cannot see this and has not been told
+
+Bring the conversation to a natural, warm close over your next turn or two: \
+finish the thread you are on rather than opening a new one, and do not ask \
+anything that needs a long answer. Keep to your standing instructions about \
+language and pacing. Do not mention the time, the clock, minutes, or why the \
+conversation is winding down.\
+"""
+
+# The goodbye is an EXACT-output instruction for the same reason the plain-pause
+# bridge is (see RESUME_EXACT_INSTRUCTIONS): the session closes behind it, so
+# there is no room for a model that decides to ask one more question.
+GOODBYE_INSTRUCTIONS = """\
+The session is over. Your ENTIRE reply is one short goodbye and nothing else: \
+say "{farewell}" in {target}, then say it again in {anchor}. Nothing before \
+it, nothing after it. Do not ask a question, do not continue the conversation, \
+and do not explain why it is ending.\
+"""
+
+# Language-neutral, like BRIDGE_INTENTS: the model renders it in the configured
+# pair.
+FAREWELL_INTENT = "That's our time for today — nice work, see you next time"
+
+GREETING_SCENARIO_INSTRUCTIONS = """\
+Open the session inside this situation: {scenario}. Greet the learner in \
+{target} in one short, warm sentence that plays your side of it lightly — you \
+are the person they would meet there — and ask one easy opening question that \
+belongs in the scene. Do not explain how this works and do not narrate the \
+setup.\
+"""
+
+GREETING_TOPIC_INSTRUCTIONS = """\
+Greet the learner in {target} in one short, warm sentence and ask an easy \
+opening question about {topic}. Do not explain how this works.\
+"""
+
+ANALYZER_FOCUS_INSTRUCTIONS = """\
+
+This session has a declared focus:
+{lines}
+
+Weight your attention towards it: a slip involving those forms or that \
+vocabulary is worth showing even when it is minor. Keep reporting clear errors \
+outside the focus too — the focus changes what you prioritise, not what counts \
+as wrong.\
+"""
+
 GREETING_INSTRUCTIONS = """\
 Greet the learner in {target} in one short, warm sentence and ask an easy \
 opening question about their day. Do not explain how this works.\
@@ -172,24 +247,86 @@ alternatives, no preamble.\
 """
 
 
-def tutor_instructions(cfg: TutorConfig) -> str:
-    return TUTOR_INSTRUCTIONS.format(
+def _plan_lines(plan: SessionPlan) -> list[str]:
+    """The plan as plain facts, in the order a tutor would care about them."""
+    lines: list[str] = []
+    if plan.scenario:
+        lines.append(
+            f"the situation they chose: {plan.scenario} — play your side of it lightly "
+            "and stay in it while it holds"
+        )
+    if plan.topic:
+        lines.append(f"what they want to talk about: {plan.topic}")
+    if plan.tenses:
+        lines.append("the forms they want to practise: " + ", ".join(plan.tenses))
+    if plan.vocab:
+        lines.append("the vocabulary they want to work in: " + ", ".join(plan.vocab))
+    if plan.level:
+        lines.append(f"how they describe their own level: {plan.level}")
+    return lines
+
+
+def _bullets(lines: list[str]) -> str:
+    return "\n".join(f"- {line}" for line in lines)
+
+
+def plan_block(plan: SessionPlan | None) -> str:
+    """The "this session" section appended to the tutor's standing rules."""
+    lines = _plan_lines(plan) if plan is not None else []
+    if not lines:
+        return NO_PLAN_INSTRUCTIONS
+    return PLAN_INSTRUCTIONS.format(lines=_bullets(lines))
+
+
+def tutor_instructions(cfg: TutorConfig, plan: SessionPlan | None = None) -> str:
+    base = TUTOR_INSTRUCTIONS.format(
         target=cfg.target_language_name, anchor=cfg.anchor_language_name
     )
+    return base + "\n" + plan_block(plan)
 
 
-def greeting_instructions(cfg: TutorConfig) -> str:
+def greeting_instructions(cfg: TutorConfig, plan: SessionPlan | None = None) -> str:
+    """Open the session. A scenario is opened *in*, not described."""
+    if plan is not None and plan.scenario:
+        return GREETING_SCENARIO_INSTRUCTIONS.format(
+            scenario=plan.scenario, target=cfg.target_language_name
+        )
+    if plan is not None and plan.topic:
+        return GREETING_TOPIC_INSTRUCTIONS.format(topic=plan.topic, target=cfg.target_language_name)
     return GREETING_INSTRUCTIONS.format(target=cfg.target_language_name)
+
+
+def wrapup_instructions() -> str:
+    """The one-minute situation brief. Facts, not a script — like the resume brief."""
+    return WRAPUP_INSTRUCTIONS
+
+
+def goodbye_instructions(cfg: TutorConfig) -> str:
+    return GOODBYE_INSTRUCTIONS.format(
+        farewell=FAREWELL_INTENT,
+        target=cfg.target_language_name,
+        anchor=cfg.anchor_language_name,
+    )
 
 
 def stt_prompt(cfg: TutorConfig) -> str:
     return STT_PROMPT.format(target=cfg.target_language_name, anchor=cfg.anchor_language_name)
 
 
-def analyzer_instructions(cfg: TutorConfig) -> str:
-    return ANALYZER_INSTRUCTIONS.format(
+def analyzer_instructions(cfg: TutorConfig, plan: SessionPlan | None = None) -> str:
+    base = ANALYZER_INSTRUCTIONS.format(
         target=cfg.target_language_name, anchor=cfg.anchor_language_name
     )
+    # Only the forms and the words: a scenario tells the tutor who to be, but it
+    # does not tell the analyzer what to look at.
+    lines: list[str] = []
+    if plan is not None and plan.tenses:
+        lines.append("the forms the learner is practising: " + ", ".join(plan.tenses))
+    if plan is not None and plan.vocab:
+        lines.append("the vocabulary they are working in: " + ", ".join(plan.vocab))
+    if not lines:
+        return base
+    return base + "\n" + ANALYZER_FOCUS_INSTRUCTIONS.format(lines=_bullets(lines))
 
 
 def translate_instructions(cfg: TutorConfig) -> str:

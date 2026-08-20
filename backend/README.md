@@ -18,6 +18,11 @@ learner audio
 on demand
   ├─ RPC tutor.translate               → one selected span, translated
   └─ RPC tutor.pause / tutor.resume    → hold, then conversational re-entry
+
+the session clock (authoritative)
+  ├─ every 30s                         → tutor.minutes_left
+  ├─ ~60s left                         → wrap-up brief to the tutor
+  └─ zero                              → goodbye, tutor.session_over, disconnect
 ```
 
 Design rules worth keeping:
@@ -45,7 +50,12 @@ Design rules worth keeping:
 - **Facts are stated, never scripted.** Resume briefs say what happened and
   remind the model of its standing instructions. They never contain the line to
   say — that lives in `TUTOR_INSTRUCTIONS` as policy.
-- **No hardcoded Spanish.** Target and anchor languages are parameters.
+- **The worker owns the clock.** Minutes are money; the browser never decides
+  when a session ends. The worker meters wall time, publishes what is left, and
+  ends the session itself. See "The session clock".
+- **No hardcoded Spanish.** Target and anchor languages are parameters. That
+  includes the session plan: tense names and vocab themes are opaque strings
+  from the frontend.
 
 ## Layout
 
@@ -57,6 +67,8 @@ Design rules worth keeping:
 | `src/analyzer.py`  | Background structured-output corrections + shared turn context |
 | `src/translate.py` | `tutor.translate` RPC: one selected span → one translation     |
 | `src/state.py`     | Pause state (+ what it interrupted) and rolling session facts  |
+| `src/plan.py`      | Dispatch metadata: minutes budget, user, and the session plan   |
+| `src/clock.py`     | The authoritative session clock + the minutes-billed seam       |
 
 ## Setup
 
@@ -125,6 +137,8 @@ agent will never join.
 | `tutor.corrections` (text stream)        | One JSON `analysis.complete` payload per settled learner turn   |
 | `tutor.paused` (participant attribute)   | `"true"` / `"false"`                                            |
 | `tutor.analyzer` (participant attribute) | `"on"` / `"off"` — whether corrections are enabled at all       |
+| `tutor.minutes_left` (participant attribute) | Whole minutes remaining, as a string — the balance pill's only source |
+| `tutor.session_over` (participant attribute) | `"true"` once the clock ended the session and the goodbye finished |
 | `lk.agent.state` (participant attribute) | Agent state, published by the SDK                               |
 | RPC `tutor.pause` / `tutor.resume`       | Frontend → worker, one logical call per state change (retries are idempotent) |
 | RPC `tutor.translate`                    | Frontend → worker, one selected span → its anchor translation   |
@@ -170,6 +184,72 @@ logging. The span is target-language text and the translation comes back in the
 anchor language. The worker budgets 4s (the frontend times out at 5s) and every
 worker-side failure is an `error` field. Transport failures (RPC timeout,
 no tutor connected) reject the RPC itself — the frontend handles both.
+
+## Dispatch metadata
+
+The agent is *explicitly dispatched*: the frontend's `/api/token` route attaches
+a `RoomAgentDispatch` for the `tutor` agent, and its `metadata` is one JSON
+string carrying everything the worker needs to know about *this* session:
+
+```json
+{
+  "max_minutes": 15,
+  "user_id": "user_2abc...",
+  "plan": {
+    "topic": "last weekend",
+    "scenario": "ordering at a restaurant",
+    "tenses": ["preterite", "imperfect"],
+    "vocab": ["food", "travel"],
+    "level": "early intermediate"
+  }
+}
+```
+
+Every field is optional and the whole payload is parsed defensively in
+`src/plan.py`: an absent, empty, or unparseable payload runs a 15-minute session
+with no plan, and wrong-typed fields are dropped rather than fatal.
+`max_minutes` is clamped to 1–120; plan strings are whitespace-collapsed,
+length-capped, and deduplicated.
+
+The plan feeds three consumers, and each reads it differently:
+
+| Consumer                | What it does with the plan                                    |
+| ----------------------- | ------------------------------------------------------------- |
+| `tutor_instructions`    | A "this session" block: steer towards the topic/scenario, use and elicit the focus forms, work the vocab in — never announced, never a drill. An empty plan asks the tutor to suggest something light itself. |
+| `greeting_instructions` | With a scenario, the tutor opens *inside* it (it plays its side of the scene lightly); with a topic, it opens on the topic; otherwise the standing greeting. |
+| `analyzer_instructions` | A focus note: weight corrections towards the focus tenses and vocab, still report clear errors elsewhere. The scenario is deliberately excluded — it tells the tutor who to be, not the analyzer what to look at. |
+
+Tense names and vocab themes are opaque strings chosen by the frontend for the
+configured target language and passed straight through. Nothing here is
+Spanish-specific.
+
+## The session clock
+
+The worker's clock is authoritative (phase 4, WS2 — the frontend displays the
+number, it never computes it). `src/clock.py` runs plain wall time from session
+start:
+
+| Moment                          | What happens                                                |
+| ------------------------------- | ----------------------------------------------------------- |
+| session start (greeting requested) | `tutor.minutes_left` published; the clock starts          |
+| every 30s                       | `tutor.minutes_left` republished (whole minutes, rounded up) |
+| ~60s left                       | A situation brief through the same seam as the resume brief: "about one minute of session time left, bring it to a natural close" — facts, not a script, and it never mentions the clock to the learner |
+| ~60s left **while paused**      | The brief is *held* and delivered on `tutor.resume` instead — nobody hears a wrap-up into a muted session |
+| zero                            | `session.interrupt()`, one short bilingual goodbye (exact-output instruction, like the resume bridge), and the worker waits for it to finish playing |
+| after the goodbye               | `tutor.session_over` = `"true"`, `session.aclose()`, then `ctx.shutdown()` — the learner keeps the room and their post-session surface |
+
+**Pause time is billed.** The session is live and the agent is allocated whether
+or not the learner is talking, so the clock never stops (product decision,
+2026-08-20 — say so in the UI, revisit if it feels unfair). Each transition
+fires exactly once: the warning cannot repeat, and the end sequence cannot run
+twice.
+
+At teardown — clock, learner leaving, or a crash — the worker calls
+`report_minutes_billed(user_id, minutes, room)` with the actual minutes used,
+rounded up. Today that only logs `session minutes billed`; it is the seam for
+the signed internal debit endpoint on the Next.js app, which will be the only
+writer of ledger debit rows. Credit pricing and the economics behind
+`max_minutes` live in `plans/phases/phase-4-sellable-sessions.md`.
 
 ## Pause semantics
 

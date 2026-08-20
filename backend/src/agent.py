@@ -13,6 +13,7 @@ Run with `lk agent dev` (or `uv run python src/agent.py dev`).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import random
@@ -35,24 +36,30 @@ from livekit.agents import (
 from livekit.plugins import openai
 
 from analyzer import CorrectionAnalyzer, recent_context
+from clock import SessionClock, report_minutes_billed
 from config import (
     AGENT_NAME,
     ANALYZER_OFF,
     ANALYZER_ON,
     ATTR_ANALYZER,
     ATTR_FALSE,
+    ATTR_MINUTES_LEFT,
     ATTR_PAUSED,
+    ATTR_SESSION_OVER,
     ATTR_TRUE,
     RPC_PAUSE,
     RPC_RESUME,
     TutorConfig,
 )
+from plan import JobMetadata, SessionPlan
 from prompts import (
     BRIDGE_INTENTS,
+    goodbye_instructions,
     greeting_instructions,
     resume_instructions,
     stt_prompt,
     tutor_instructions,
+    wrapup_instructions,
 )
 from state import SessionFacts, SessionState
 from translate import SpanTranslator, register_translate_rpc
@@ -60,6 +67,10 @@ from translate import SpanTranslator, register_translate_rpc
 load_dotenv(".env.local")
 
 logger = logging.getLogger("tutor.agent")
+
+# How long the closing goodbye may take before the worker stops waiting for it.
+# The session is already over; a stuck speech handle must not hold the room.
+GOODBYE_TIMEOUT_S = 20.0
 
 
 class TutorAgent(Agent):
@@ -70,8 +81,9 @@ class TutorAgent(Agent):
         cfg: TutorConfig,
         analyzer: CorrectionAnalyzer | None,
         state: SessionState,
+        plan: SessionPlan | None = None,
     ) -> None:
-        super().__init__(instructions=tutor_instructions(cfg))
+        super().__init__(instructions=tutor_instructions(cfg, plan))
         self._cfg = cfg
         self._analyzer = analyzer
         self._state = state
@@ -110,8 +122,12 @@ server = AgentServer()
 @server.rtc_session(agent_name=AGENT_NAME)
 async def tutor(ctx: JobContext) -> None:
     cfg = TutorConfig.from_env()
+    meta = JobMetadata.parse(ctx.job.metadata)
     state = SessionState()
     facts = SessionFacts()
+    # Assigned once the session exists; the shutdown callback below is
+    # registered before that and reads it late, on purpose.
+    clock: SessionClock | None = None
 
     logger.info(
         "starting tutor session",
@@ -119,6 +135,9 @@ async def tutor(ctx: JobContext) -> None:
             "realtime_model": cfg.realtime_model,
             "target_lang": cfg.target_lang,
             "anchor_lang": cfg.anchor_lang,
+            "max_minutes": meta.max_minutes,
+            "user_id": meta.user_id,
+            **meta.plan.log_fields(),
         },
     )
 
@@ -145,12 +164,20 @@ async def tutor(ctx: JobContext) -> None:
         ),
     )
 
-    analyzer = CorrectionAnalyzer(cfg, ctx.room, facts) if cfg.analyzer_enabled else None
+    analyzer = CorrectionAnalyzer(cfg, ctx.room, facts, meta.plan) if cfg.analyzer_enabled else None
     translator = SpanTranslator(cfg)
 
     async def _shutdown() -> None:
         # Every step is guarded and independent: one failing teardown must not
         # strand the ones behind it.
+        if clock is not None:
+            try:
+                await clock.aclose()
+                # However the session ended — clock, learner leaving, or a
+                # crash — this is the number the ledger owes a debit for.
+                report_minutes_billed(meta.user_id, clock.minutes_billed, ctx.room.name)
+            except Exception:
+                logger.warning("clock shutdown failed", exc_info=True)
         try:
             await translator.aclose()
         except Exception:
@@ -164,7 +191,7 @@ async def tutor(ctx: JobContext) -> None:
     ctx.add_shutdown_callback(_shutdown)
 
     await session.start(
-        agent=TutorAgent(cfg, analyzer, state),
+        agent=TutorAgent(cfg, analyzer, state, meta.plan),
         room=ctx.room,
         room_options=room_io.RoomOptions(
             # Text input is off: this is a voice surface, not a chat box.
@@ -172,7 +199,9 @@ async def tutor(ctx: JobContext) -> None:
         ),
     )
 
-    await _register_pause_rpc(ctx, session, state, facts, cfg)
+    clock = _build_clock(ctx, session, state, cfg, meta)
+
+    await _register_pause_rpc(ctx, session, state, facts, cfg, clock)
     await register_translate_rpc(ctx, session, translator)
 
     # Warm the translate client off the critical path: the first RPC otherwise
@@ -182,10 +211,99 @@ async def tutor(ctx: JobContext) -> None:
     # Tell the frontend whether corrections are coming at all, so it can skip
     # the analyzing phase entirely when the analyzer is off.
     await ctx.room.local_participant.set_attributes(
-        {ATTR_ANALYZER: ANALYZER_ON if cfg.analyzer_enabled else ANALYZER_OFF}
+        {
+            ATTR_ANALYZER: ANALYZER_ON if cfg.analyzer_enabled else ANALYZER_OFF,
+            ATTR_SESSION_OVER: ATTR_FALSE,
+        }
     )
 
-    await session.generate_reply(instructions=greeting_instructions(cfg))
+    # The clock starts with the conversation, not with the job: the greeting is
+    # requested first so the learner's first minute is a minute of tutoring, and
+    # the clock starts without waiting for that greeting to finish playing.
+    session.generate_reply(instructions=greeting_instructions(cfg, meta.plan))
+    await clock.start()
+
+
+def _build_clock(
+    ctx: JobContext,
+    session: AgentSession,
+    state: SessionState,
+    cfg: TutorConfig,
+    meta: JobMetadata,
+) -> SessionClock:
+    """Wire the clock's four callbacks to this session. See `clock.py`."""
+
+    async def _publish_minutes(minutes: int) -> None:
+        await ctx.room.local_participant.set_attributes({ATTR_MINUTES_LEFT: str(minutes)})
+
+    async def _warn() -> None:
+        # The same seam as the resume brief: state the situation, let the tutor
+        # decide how to land it. Fire-and-forget — the wrap-up is a turn in the
+        # conversation, not a barrier in front of it.
+        session.generate_reply(instructions=wrapup_instructions())
+
+    async def _end() -> None:
+        await _end_session(ctx, session, state, cfg)
+
+    return SessionClock(
+        meta.max_minutes,
+        publish=_publish_minutes,
+        on_warning=_warn,
+        on_end=_end,
+        is_paused=lambda: state.paused,
+    )
+
+
+async def _end_session(
+    ctx: JobContext,
+    session: AgentSession,
+    state: SessionState,
+    cfg: TutorConfig,
+) -> None:
+    """Out of minutes: cut whatever is in flight, say goodbye, disconnect.
+
+    Every step is guarded — the disconnect at the end must happen even if the
+    model never says the last line.
+    """
+    try:
+        await session.interrupt()
+    except Exception:
+        logger.warning("interrupt before goodbye failed", exc_info=True)
+
+    if state.paused:
+        # A goodbye into a muted session is a goodbye nobody hears. Output comes
+        # back on; input stays off, because the conversation is over.
+        state.paused = False
+        session.output.set_audio_enabled(True)
+        try:
+            await ctx.room.local_participant.set_attributes({ATTR_PAUSED: ATTR_FALSE})
+        except Exception:
+            logger.warning("failed to clear paused attribute at session end", exc_info=True)
+
+    try:
+        handle = session.generate_reply(instructions=goodbye_instructions(cfg))
+        # Awaiting the handle waits for the audio to finish playing out, which
+        # is the whole point: the attribute below means "it's done", and the
+        # disconnect after it must not cut the last word.
+        await asyncio.wait_for(handle.wait_for_playout(), timeout=GOODBYE_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        logger.warning("goodbye did not finish within %.0fs; closing anyway", GOODBYE_TIMEOUT_S)
+    except Exception:
+        logger.exception("goodbye failed")
+
+    try:
+        await ctx.room.local_participant.set_attributes({ATTR_SESSION_OVER: ATTR_TRUE})
+    except Exception:
+        logger.warning("failed to publish session over", exc_info=True)
+
+    try:
+        await session.aclose()
+    except Exception:
+        logger.warning("session close failed", exc_info=True)
+
+    # Leaves the room to the learner (the summary surface is still theirs) and
+    # runs the shutdown callbacks, which is where the minutes are reported.
+    ctx.shutdown(reason="session minutes exhausted")
 
 
 def _capture_pause_context(session: AgentSession, state: SessionState) -> None:
@@ -317,6 +435,7 @@ async def _register_pause_rpc(
     state: SessionState,
     facts: SessionFacts,
     cfg: TutorConfig,
+    clock: SessionClock,
 ) -> None:
     """Pause/resume, driven by the frontend's client-side set of holds.
 
@@ -386,6 +505,14 @@ async def _register_pause_rpc(
             # A retry of a resume we already handled: same answer, no second
             # re-entry.
             return last_resume_ack
+
+        # A wrap-up brief that came due during the hold is delivered now, before
+        # any re-entry line, so the tutor re-enters already knowing it is
+        # closing. No-op unless the one-minute mark passed while paused.
+        try:
+            await clock.notify_resumed()
+        except Exception:
+            logger.exception("deferred wrap-up brief failed")
 
         try:
             if not brief.present or not state.tutor_owes_reentry:
