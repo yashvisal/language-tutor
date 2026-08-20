@@ -1,6 +1,6 @@
 # Language Tutor: Product Vision
 
-*Last updated: 2026-08-12. This is the source of truth for what we're building and why. Phase-level plans live in `plans/phases/`. Read this before starting work in any new thread.*
+*Last updated: 2026-08-20. This is the source of truth for what we're building and why. Phase-level plans live in `plans/phases/`. Read this before starting work in any new thread.*
 
 ---
 
@@ -89,6 +89,42 @@ From reviewing the phase-1 layout explorations (aura-stage, split-columns, and t
    translation without the realtime socket.
 4. **Pause is non-destructive.** Holding never discards the learner's
    in-flight utterance; input goes deaf but what was said stays in the turn.
+
+---
+
+## Decisions Settled (2026-08-20, product direction after the core interaction)
+
+1. **Consumer product, not institutional.** This is a portfolio project first and
+   a side-income product second. Institutional sales (schools, professors,
+   approvals) are explicitly out. The Market Direction section below is
+   superseded: the answer is consumer; the prototype stops being a research
+   instrument for choosing a market and becomes the product.
+2. **Monetization: credits, pay-as-you-go, then subscription.** A credit buys
+   15 minutes of live conversation. One free credit on signup. Credit packs are
+   the purchase unit; sessions debit a MINUTES balance (actual minutes used,
+   rounded up) so short sessions are not punished. A subscription tier comes
+   later and bundles the tutoring program (assessment, pre/post reviews,
+   quizzes, included minutes).
+3. **Pricing follows cost.** All-in cost of a 15-minute session is ~$1.20–1.40
+   (realtime audio dominated by tutor talk-time at ~4x the learner's per
+   minute; STT ~20%; everything else pennies). Credits are priced at >=3x
+   cost. Tutor brevity is a margin policy as well as a pedagogy policy.
+4. **Pause is the study surface: Transcript / Review / Ask.** "Branching
+   conversations" from Longer-Term Direction resolves to TEXT, not voice —
+   voice is the expensive, metered resource; study is cheap and better as
+   text. Review = material for the session's plan (vocab, scenario phrases,
+   conjugation tables). Ask = a coaching chat (not a ghostwriter) with the
+   transcript-to-pause-point as context, soft invisible limits, anchored to
+   the transcript position it was opened at. What returns to the voice model
+   is a <=2-line brief through the existing resume-brief seam — never the
+   Ask transcript.
+5. **Session pre-configuration.** Before a conversation the learner can pick
+   topic, scenario, focus tenses, vocab themes (or accept a suggestion). The
+   resulting session plan feeds the tutor prompt, the analyzer's focus, and
+   the Review tab. Onboarding is lite for now: a self-declared level plus the
+   free credit; adaptive assessment is subscription-era.
+6. **Auth and payments move into scope now** — credits require identity.
+   Spanish remains the only language until the loop is monetized.
 
 ---
 
@@ -220,6 +256,8 @@ Architecturally, the long-term shape is a **primary speech-to-speech agent with 
 
 ## Market Direction
 
+*Superseded 2026-08-20: settled on consumer — see the decisions above. Kept for the record.*
+
 Deliberately undecided between: consumer app, college language programs, high school, or infrastructure for tutors/teachers. The interaction primitive helps answer this. A polished 60-second experience communicates the thesis better than any pitch.
 
 Once it works, put it in front of learners at different levels, current Spanish students, tutors, and instructors. Watch for: Does transcription help or distract? Do users notice corrections? Do corrections hurt fluency? How often is translation revealed? Which corrections would tutors ignore? Would learners voluntarily talk 10–20 minutes? Would instructors assign this between classes?
@@ -277,7 +315,9 @@ Conversation model, transcription model, and analyzer model are all independentl
 
 **In:** Aura behavior, live transcription, transcript layout, translation interactions, turn completion, correction rendering/animation/explanations, conversation controls, treatment of previous turns.
 
-**Out (for now):** auth, subscriptions, streaks/XP, onboarding, curriculum, long-term memory, planners, teacher/admin dashboards, LMS integrations, marketing pages.
+**In (since 2026-08-20):** auth, credits and minute metering, credit-pack payments, session pre-configuration, onboarding-lite, the pause study surface (Transcript / Review / Ask), deployment.
+
+**Out (for now):** subscriptions and the tutoring program, streaks/XP, curriculum, long-term memory, planners, teacher/admin dashboards, LMS integrations, marketing pages beyond a landing page.
 
 ---
 
