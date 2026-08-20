@@ -57,6 +57,8 @@ import type {
   Correction,
   PauseReason,
   SessionEvent,
+  SessionOutcome,
+  SessionPlan,
   Speaker,
   TranslateFn,
 } from "./contract"
@@ -67,10 +69,11 @@ import {
   RPC_METHODS,
   STREAM_ATTRIBUTES,
   TEXT_STREAM_TOPICS,
-  TUTOR_SESSION_OPTIONS,
+  setPendingSessionPlan,
   tutorTokenSource,
 } from "./livekit"
-import { TRANSLATE_TIMEOUT_MS } from "./protocol"
+import { EMPTY_PLAN } from "./plan"
+import { SESSION_MAX_MINUTES, TRANSLATE_TIMEOUT_MS } from "./protocol"
 import type {
   ResumeCorrectionPayload,
   ResumePayload,
@@ -80,6 +83,7 @@ import type {
 import {
   INITIAL_SESSION_STATE,
   isHeld,
+  sessionCorrections,
   sessionReducer,
   type SessionState,
 } from "./reducer"
@@ -271,8 +275,19 @@ export interface LiveSession {
   connection: LiveConnectionState
   /** Non-null once a connect attempt has failed; cleared by retrying. */
   error: string | null
-  connect: () => void
+  /** Starts a room for this plan. The plan is read when the token is minted. */
+  connect: (plan: SessionPlan) => void
   disconnect: () => void
+  /**
+   * Minutes the worker says remain. Null until the agent publishes the clock —
+   * the surface renders this attribute and never computes it, because the
+   * worker's clock is what actually ends the session.
+   */
+  minutesLeft: number | null
+  /** The session that just ended, until the learner starts another. */
+  outcome: SessionOutcome | null
+  /** Dismiss the summary; the surface returns to the pre-flight. */
+  clearOutcome: () => void
   muted: boolean
   toggleMute: () => void
   /** The agent's audio track, for the Aura. Undefined until the tutor joins. */
@@ -284,7 +299,7 @@ export interface LiveSession {
 }
 
 export function useLiveSession(): LiveSession {
-  const session = useSession(tutorTokenSource, TUTOR_SESSION_OPTIONS)
+  const session = useSession(tutorTokenSource)
   const agent = useAgent(session)
   const room = session.room
 
@@ -318,24 +333,112 @@ export function useLiveSession(): LiveSession {
         ? "connecting"
         : "live"
 
+  /* -- the clock ---------------------------------------------------------- */
+
+  /**
+   * The worker publishes minutes left on start, every 30s, at one minute and at
+   * zero. Anything unparseable is treated as absent: a missing pill is quieter
+   * than a wrong one.
+   */
+  const minutesAttribute =
+    agent.attributes?.[PARTICIPANT_ATTRIBUTES.minutesLeft]
+  const parsedMinutes =
+    minutesAttribute === undefined
+      ? null
+      : Number.parseInt(minutesAttribute, 10)
+  const minutesLeft =
+    parsedMinutes === null || Number.isNaN(parsedMinutes)
+      ? null
+      : Math.max(0, parsedMinutes)
+
+  /**
+   * The last clock reading, kept because the summary is built at the moment the
+   * agent leaves — by which time its attributes have left with it.
+   */
+  const minutesSeen = useRef<number | null>(null)
+  useEffect(() => {
+    if (minutesLeft !== null) minutesSeen.current = minutesLeft
+  }, [minutesLeft])
+
+  /* -- ending, and the session that just ended ---------------------------- */
+
+  const [outcome, setOutcome] = useState<SessionOutcome | null>(null)
+
+  /** The plan this room was started with, for the summary. */
+  const plan = useRef<SessionPlan | null>(null)
+  /** The session state as of the last render, for the end-of-session snapshot. */
+  const latest = useRef(state)
+  useEffect(() => {
+    latest.current = state
+  }, [state])
+  /** Guards the snapshot: the clock and the hang-up path can both fire. */
+  const ended = useRef(false)
+
+  /**
+   * Freeze what the session earned before the room takes it away. Disconnecting
+   * resets the reducer, so the corrections have to be read here, at the moment
+   * of ending, or they are gone.
+   */
+  const finish = useCallback(
+    (endedByClock: boolean) => {
+      if (ended.current) return
+      ended.current = true
+      const left = minutesSeen.current
+      setOutcome({
+        plan: plan.current ?? EMPTY_PLAN,
+        // The worker owns the meter; with no reading there is nothing honest
+        // to show, so the summary says nothing about minutes.
+        minutesUsed:
+          left === null ? null : Math.max(0, SESSION_MAX_MINUTES - left),
+        endedByClock,
+        corrections: sessionCorrections(latest.current),
+      })
+    },
+    [setOutcome]
+  )
+
+  const clearOutcome = useCallback(() => setOutcome(null), [setOutcome])
+
+  // The clock ran out. The worker says its goodbye and disconnects us itself;
+  // ending locally too only guarantees the microphone stops the moment the
+  // session is over rather than whenever the room teardown lands.
+  const sessionOver =
+    agent.attributes?.[PARTICIPANT_ATTRIBUTES.sessionOver] === ATTRIBUTE_TRUE
+  useEffect(() => {
+    if (!sessionOver) return
+    finish(true)
+    void session.end()
+  }, [sessionOver, finish, session])
+
   /* -- connect / disconnect ---------------------------------------------- */
 
   const [error, setError] = useState<string | null>(null)
 
-  const connect = useCallback(() => {
-    setError(null)
-    // The microphone is the whole point of the surface: publish on connect
-    // rather than making the learner find a button.
-    session
-      .start({ tracks: { microphone: { enabled: true } } })
-      .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : String(err))
-      })
-  }, [session])
+  const connect = useCallback(
+    (sessionPlan: SessionPlan) => {
+      setError(null)
+      setOutcome(null)
+      // The plan has to reach the token source before `start()` mints the
+      // token, and the summary needs it after the room is gone.
+      setPendingSessionPlan(sessionPlan)
+      plan.current = sessionPlan
+      ended.current = false
+      minutesSeen.current = null
+      // The microphone is the whole point of the surface: publish on connect
+      // rather than making the learner find a button.
+      session
+        .start({ tracks: { microphone: { enabled: true } } })
+        .catch((err: unknown) => {
+          setError(err instanceof Error ? err.message : String(err))
+        })
+    },
+    [session, setError, setOutcome]
+  )
 
   const disconnect = useCallback(() => {
+    finish(false)
     void session.end()
-  }, [session])
+  }, [finish, session])
 
   /* -- microphone --------------------------------------------------------- */
 
@@ -796,6 +899,9 @@ export function useLiveSession(): LiveSession {
     error,
     connect,
     disconnect,
+    minutesLeft,
+    outcome,
+    clearOutcome,
     muted,
     toggleMute: toggleMuteLocal,
     agentAudioTrack: agent.microphoneTrack,

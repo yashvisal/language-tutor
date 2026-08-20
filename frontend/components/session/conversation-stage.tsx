@@ -32,6 +32,7 @@ import { useCallback, useEffect, useRef, type ReactNode } from "react"
 import { AnimatePresence, motion } from "motion/react"
 
 import { HistoryPeek } from "@/components/session/history-peek"
+import { MinutesPill } from "@/components/session/minutes-pill"
 import { Caret, HeroWords } from "@/components/session/hero-utterance"
 import { SettledText } from "@/components/session/correction-mark"
 import { SessionControls } from "@/components/session/session-controls"
@@ -92,6 +93,11 @@ export interface ConversationStageProps {
    */
   interimSegmentId?: string
   /**
+   * Minutes the worker says remain. Absent (replay, or a worker with no clock)
+   * means no pill at all — see `MinutesPill`.
+   */
+  minutesLeft?: number | null
+  /**
    * Translates a selected span. Omitted where nothing can answer — the overlay
    * simply never opens then, rather than opening onto an error.
    */
@@ -106,6 +112,7 @@ export function ConversationStage({
   onToggleMute,
   onEnd,
   interimSegmentId,
+  minutesLeft,
   translate,
 }: ConversationStageProps) {
   const { phase, holds } = state
@@ -357,6 +364,7 @@ export function ConversationStage({
       )}
 
       <div inert={historyOpen}>
+        <MinutesPill minutesLeft={minutesLeft ?? null} />
         <SessionControls
           paused={paused}
           muted={muted}

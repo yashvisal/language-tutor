@@ -7,26 +7,68 @@
  * two: the reducer is fed by the live LiveKit adapter instead of the scripted
  * mock, and the Aura is driven by the tutor's actual audio track.
  *
- * The page owns only the connection lifecycle around that surface — an idle
- * screen, a connecting state, and the hang-up path.
+ * The page owns only what wraps that surface — the pre-flight where the learner
+ * declares a plan, the connection lifecycle, and the summary the session ends
+ * into. Three states, in the order a learner meets them: plan, talk, look back.
  */
 
+import { useState, useSyncExternalStore } from "react"
 import { RoomAudioRenderer } from "@livekit/components-react"
 
 import { ConversationStage } from "@/components/session/conversation-stage"
+import { SessionPreflight } from "@/components/session/session-preflight"
+import { SessionSummary } from "@/components/session/session-summary"
 import { STAGE_AURA_CLASS, TutorAura } from "@/components/session/tutor-aura"
-import { Button } from "@/components/ui/button"
+import type { SessionPlan } from "@/lib/session/contract"
 import { useLiveSession } from "@/lib/session/live-producer"
+import {
+  planSnapshot,
+  savePlan,
+  serverPlanSnapshot,
+  subscribeToPlan,
+} from "@/lib/session/plan"
 
 export default function SessionPage() {
   const live = useLiveSession()
 
+  /**
+   * The plan. The last session's is the starting point (an external store, so
+   * that a client-only value never contradicts the prerendered markup — see
+   * `plan.ts`); edits layer on top and win from the first keystroke.
+   */
+  const stored = useSyncExternalStore(
+    subscribeToPlan,
+    planSnapshot,
+    serverPlanSnapshot
+  )
+  const [edited, setEdited] = useState<SessionPlan | null>(null)
+  const plan = edited ?? stored
+
+  // The summary outlives the room, so it wins over the connection state: a
+  // session ended by the clock disconnects us, and dropping straight back to
+  // the pre-flight would throw away the corrections the learner just earned.
+  if (live.outcome) {
+    return (
+      <SessionSummary
+        outcome={live.outcome}
+        onStartAnother={live.clearOutcome}
+      />
+    )
+  }
+
   if (live.connection !== "live") {
     return (
-      <Idle
+      <SessionPreflight
+        plan={plan}
+        onChange={setEdited}
         connecting={live.connection === "connecting"}
         error={live.error}
-        onConnect={live.connect}
+        onStart={() => {
+          // Persisted at the moment of use, so a repeat session opens on the
+          // plan that was actually spoken — not on an abandoned edit.
+          savePlan(plan)
+          live.connect(plan)
+        }}
       />
     )
   }
@@ -42,6 +84,7 @@ export default function SessionPage() {
         muted={live.muted}
         onToggleMute={live.toggleMute}
         onEnd={live.disconnect}
+        minutesLeft={live.minutesLeft}
         translate={live.translate}
         renderAura={(auraState) => (
           <TutorAura
@@ -52,37 +95,6 @@ export default function SessionPage() {
           />
         )}
       />
-    </div>
-  )
-}
-
-/**
- * The room before it exists. Deliberately bare: one sentence of orientation
- * and one control, so the first thing the learner does is speak.
- */
-function Idle({
-  connecting,
-  error,
-  onConnect,
-}: {
-  connecting: boolean
-  error: string | null
-  onConnect: () => void
-}) {
-  return (
-    <div className="flex h-svh flex-col items-center justify-center gap-6 bg-background px-8">
-      <p className="max-w-sm text-center text-sm leading-relaxed text-muted-foreground">
-        A Spanish conversation, with corrections when you finish a thought.
-      </p>
-      <Button size="lg" onClick={onConnect} disabled={connecting}>
-        {connecting ? "Connecting…" : "Start talking"}
-      </Button>
-      {error && (
-        <p className="max-w-sm text-center text-xs text-destructive">{error}</p>
-      )}
-      <p className="text-[10px] tracking-[0.14em] text-muted-foreground/50 uppercase">
-        Microphone required
-      </p>
     </div>
   )
 }

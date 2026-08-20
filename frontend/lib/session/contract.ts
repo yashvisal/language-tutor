@@ -99,6 +99,52 @@ export const CATEGORY_LABELS: Record<CorrectionCategory, string> = {
 }
 
 /**
+ * The session's declared intent, chosen (or accepted from a suggestion) before
+ * the room exists. It is the one thing the learner configures, and it has three
+ * consumers: the tutor prompt, the analyzer's focus weighting, and — from phase
+ * 5 — the Review tab.
+ *
+ * Every field is language-neutral: `tenses` holds values from the per-language
+ * catalog in `plan.ts` (keyed by the target language), not Spanish-specific
+ * enums, and `topic`/`vocab` are free text. `null`/empty means "no preference",
+ * which is a real answer — free conversation with no focus is a plan.
+ *
+ * Mirrors `SessionDispatchMetadata["plan"]` in `protocol.ts` one-for-one; that
+ * is the wire shape, this is the frontend's.
+ */
+export interface SessionPlan {
+  /** A curated situation to play out, prompt-ready ("ordering at a restaurant"). */
+  scenario: string | null
+  /** Free text, when the learner wants a subject rather than a situation. */
+  topic: string | null
+  /** Forms to steer toward, as catalog values for the target language. */
+  tenses: string[]
+  /** Free-text vocabulary themes. */
+  vocab: string[]
+  /** Self-declared, one tap. No assessment — see phase 4, workstream 4. */
+  level: string | null
+}
+
+/**
+ * A finished session, snapshotted at the moment it ended — the whole input to
+ * the post-session summary.
+ *
+ * Snapshotted rather than derived, because the session state is cleared when
+ * the room goes away and the corrections the learner earned must outlive it.
+ * `minutesUsed` is null when the worker never published a clock (a session that
+ * ended before the first attribute, or a worker without the clock): the surface
+ * says nothing rather than guessing, since the worker owns the meter.
+ */
+export interface SessionOutcome {
+  plan: SessionPlan
+  minutesUsed: number | null
+  /** True when the clock ended it, false when the learner hung up. */
+  endedByClock: boolean
+  /** Every correction the analyzer produced this session, in the order seen. */
+  corrections: Correction[]
+}
+
+/**
  * Why the session is being held. Multiple sources can hold it at once (the
  * control button is sticky; a correction popover, a translation overlay and a
  * history peek release themselves), so holds are a set, not a boolean. This set

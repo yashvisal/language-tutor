@@ -115,10 +115,15 @@ export interface ResumePayload {
 /** Participant attribute keys, all published by the agent. `paused` is mirrored
  * so pause state survives reconnects; `analyzer` tells the surface whether
  * corrections are coming at all, so a learner turn need not wait on an analyzer
- * that isn't running. */
+ * that isn't running; `minutesLeft`/`sessionOver` are the clock, which the
+ * worker owns outright — the surface renders these and never computes them. */
 export const PARTICIPANT_ATTRIBUTES = {
   paused: "tutor.paused",
   analyzer: "tutor.analyzer",
+  /** Integer string. Published on start, every 30s, at one minute, and at zero. */
+  minutesLeft: "tutor.minutes_left",
+  /** `"true"` once the clock — not the learner — ended the session. */
+  sessionOver: "tutor.session_over",
 } as const
 
 /** Value convention for boolean participant attributes. */
@@ -135,3 +140,30 @@ export const ROOM_NAME_PREFIX = "lesson"
 /** Languages the v0 tutor session is configured for. */
 export const TARGET_LANGUAGE = "es"
 export const ANCHOR_LANGUAGE = "en"
+
+/**
+ * Minutes a session is allowed to run. One credit = 15 minutes (see
+ * plans/product-vision.md, 2026-08-20 #2). The token route embeds this in the
+ * dispatch metadata and the worker's clock enforces it.
+ *
+ * TODO(credits): derive from the learner's ledger balance once auth and the
+ * database land; a constant is correct only while every session is free.
+ */
+export const SESSION_MAX_MINUTES = 15
+
+/**
+ * The dispatch metadata the token route signs into the room config, as the
+ * Python worker parses it. Snake_cased for the same reason as `ResumePayload`:
+ * this is wire JSON, not a frontend type. `user_id` is null until auth lands.
+ */
+export interface SessionDispatchMetadata {
+  max_minutes: number
+  user_id: string | null
+  plan: {
+    topic: string | null
+    scenario: string | null
+    tenses: string[]
+    vocab: string[]
+    level: string | null
+  }
+}

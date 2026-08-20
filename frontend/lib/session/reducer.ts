@@ -16,6 +16,8 @@
 
 import type {
   AgentState,
+  Correction,
+  CorrectionCategory,
   LanguageRole,
   PauseReason,
   SessionEvent,
@@ -110,12 +112,8 @@ function joinTargetFragments(fragments: string[]): string {
 /** Rebuild the rendered texts from the segment list. */
 function joined(turn: Turn): Turn {
   const segments = turn.segments ?? []
-  const targets = segments
-    .map((s) => stripFillers(s.target))
-    .filter(Boolean)
-  const anchors = segments
-    .map((s) => s.anchor.trim())
-    .filter(Boolean)
+  const targets = segments.map((s) => stripFillers(s.target)).filter(Boolean)
+  const anchors = segments.map((s) => s.anchor.trim()).filter(Boolean)
   return {
     ...turn,
     target: joinTargetFragments(targets),
@@ -341,4 +339,48 @@ export function isHeld(state: SessionState): boolean {
 /** Corrections only become visible once the analyzer has answered. */
 export function marksActive(state: SessionState): boolean {
   return state.phase === "settled" && state.current?.speaker === "learner"
+}
+
+/**
+ * Every correction the analyzer produced this session, oldest turn first.
+ *
+ * The session state IS the record — corrections ride on the turns they belong
+ * to and retired turns keep them — so the post-session summary needs no second
+ * store. Deduped by id because a coalesced turn can receive the same correction
+ * attributed to more than one of its segments.
+ */
+export function sessionCorrections(state: SessionState): Correction[] {
+  const all: Correction[] = []
+  const seen = new Set<string>()
+  const turns = state.current ? [...state.turns, state.current] : state.turns
+  for (const turn of turns) {
+    if (turn.speaker !== "learner") continue
+    for (const correction of turn.corrections ?? []) {
+      if (seen.has(correction.id)) continue
+      seen.add(correction.id)
+      all.push(correction)
+    }
+  }
+  return all
+}
+
+/**
+ * Corrections grouped by category, for the summary. Category is the axis the
+ * product has always treated as meaningful (see the vision doc's correction
+ * schema) — "three tense slips" is a pattern a learner can act on, where a flat
+ * list is just a scorecard. Empty categories are dropped.
+ */
+export function groupCorrections(
+  corrections: Correction[]
+): Array<{ category: CorrectionCategory; corrections: Correction[] }> {
+  const groups = new Map<CorrectionCategory, Correction[]>()
+  for (const correction of corrections) {
+    const list = groups.get(correction.category) ?? []
+    list.push(correction)
+    groups.set(correction.category, list)
+  }
+  return [...groups].map(([category, list]) => ({
+    category,
+    corrections: list,
+  }))
 }
