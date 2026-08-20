@@ -35,11 +35,13 @@ context re-reads are cheap only because they're cached, STT is ~20%.
 
 - **Auth**: Clerk (recommended — fastest path on Next 16, good DX, free tier
   covers early volume). Email + Google.
-- **Database**: Postgres on Neon via Drizzle. Tables: `users` (clerk id,
-  declared level, target/anchor language), `credit_ledger` (append-only:
-  grants, purchases, debits — balance is a sum, never a mutable column),
+- **Database**: Convex (Yash's call, 2026-08-20). Tables: `users` (auth id,
+  declared level, target/anchor language), `creditLedger` (append-only:
+  grants, purchases, debits — balance is a sum, never a mutable field),
   `sessions` (plan, started/ended, minutes billed, room name), `purchases`
-  (Stripe session id, pack, status).
+  (Stripe session id, pack, status). The worker's minutes-billed report lands
+  via a Convex HTTP action (signed), replacing the Next.js internal endpoint
+  sketched in workstream 2.
 - *Confirm vendors with Yash before build — these are his accounts.*
 
 ### 2. Credits, metering, and the clock
