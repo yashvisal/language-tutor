@@ -51,8 +51,8 @@ Design rules worth keeping:
   remind the model of its standing instructions. They never contain the line to
   say — that lives in `TUTOR_INSTRUCTIONS` as policy.
 - **The worker owns the clock.** Minutes are money; the browser never decides
-  when a session ends. The worker meters wall time, publishes what is left, and
-  ends the session itself. See "The session clock".
+  when a session ends. The worker meters active (unheld) time, publishes what
+  is left, and ends the session itself. See "The session clock".
 - **No hardcoded Spanish.** Target and anchor languages are parameters. That
   includes the session plan: tense names and vocab themes are opaque strings
   from the frontend.
@@ -92,6 +92,7 @@ TUTOR_TARGET_LANG=es
 TUTOR_ANCHOR_LANG=en
 TUTOR_REALTIME_MODEL=gpt-realtime-2.1-mini
 TUTOR_REALTIME_REASONING=minimal       # minimal | low — see config.py
+TUTOR_REALTIME_SPEED=0.9               # output audio speed multiplier
 TUTOR_REALTIME_VOICE=marin
 TUTOR_MIN_ENDPOINT_S=1.2            # must outlast the STT flush lag (~0.5s)
 TUTOR_MAX_ENDPOINT_S=6.0            # patience for a learner mid-word-search
