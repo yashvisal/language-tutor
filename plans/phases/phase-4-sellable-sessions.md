@@ -106,6 +106,18 @@ natural. Phase transitions ride the clock's active time and land via
 instruction updates (no interruptions). The phase-5 Review tab draws its
 material from the same plan + arc.
 
+### 4c. The pause study surface — pulled forward from phase 5 (2026-08-20)
+
+Yash's call: the tabs are the difference between "pause = blur and wait" and
+pause as the study surface, and they are the bulk of what is left. Built now,
+per the phase-3 doc's "Phase 5 outline": **Transcript / Review / Ask** inside
+the pause overlay; Review material generated once per plan (vocab, phrases)
+plus deterministic conjugation tables; Ask as a Luna coaching chat with the
+transcript-to-pause-point as context, soft invisible limits, each thread
+anchored to its transcript moment; what returns to the voice model is a
+<=2-line brief through the resume seam (tab + questions asked), never the
+Ask transcript.
+
 ### 5. Session surface additions
 
 - Balance pill (minutes left, live from the attribute), one-minute warning
@@ -124,8 +136,7 @@ material from the same plan + arc.
 
 ## Non-goals
 
-Subscriptions, assessment, quizzes, reviews, the Review/Ask tabs (phase 5),
-other languages, mobile, referral/growth mechanics, admin tooling beyond
+Subscriptions, assessment, quizzes, reviews, other languages, mobile, referral/growth mechanics, admin tooling beyond
 reading the ledger in Neon.
 
 ## Exit criteria
