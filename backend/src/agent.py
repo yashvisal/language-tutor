@@ -63,6 +63,7 @@ from prompts import (
 )
 from state import SessionFacts, SessionState
 from translate import SpanTranslator, register_translate_rpc
+from usage import UsageTracker
 
 load_dotenv(".env.local")
 
@@ -166,6 +167,8 @@ async def tutor(ctx: JobContext) -> None:
 
     analyzer = CorrectionAnalyzer(cfg, ctx.room, facts, meta.plan) if cfg.analyzer_enabled else None
     translator = SpanTranslator(cfg)
+    usage = UsageTracker()
+    session.on("session_usage_updated", usage.on_usage)
 
     async def _shutdown() -> None:
         # Every step is guarded and independent: one failing teardown must not
@@ -176,6 +179,9 @@ async def tutor(ctx: JobContext) -> None:
                 # However the session ended — clock, learner leaving, or a
                 # crash — this is the number the ledger owes a debit for.
                 report_minutes_billed(meta.user_id, clock.minutes_billed, ctx.room.name)
+                # What it cost us, for pricing decisions: tokens, talk share,
+                # estimated dollars. Logged, never billed.
+                usage.log_summary(active_minutes=clock.minutes_billed, room=ctx.room.name)
             except Exception:
                 logger.warning("clock shutdown failed", exc_info=True)
         try:
