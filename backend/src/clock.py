@@ -7,15 +7,18 @@ frontend displays that number; it never computes it), asks the tutor to wrap up
 about a minute before the end, and at zero says one short goodbye and closes
 the session.
 
-Two deliberate semantics:
+Three deliberate semantics:
 
-- **Pause time is billed.** The session is live and the agent is allocated
-  whether or not the learner is talking, so the clock is plain wall time from
-  session start. (Product decision, 2026-08-20; revisit if it feels unfair.)
+- **Pause time is not billed.** The clock accrues only while the session is
+  unheld: a learner studying a correction is not spending their minutes
+  (decision 2026-08-20, reversing the earlier 'pause billed' call).
 - **The wrap-up brief waits for a resumed conversation.** If the learner is
   paused when the one-minute mark passes there is nobody to hear it, so the
   brief is deferred and delivered on resume instead — the same seam the
   conversational resume uses.
+- **Active time is the session's heartbeat.** `on_tick` publishes it once per
+  tick, which is what the session arc advances on (see `arc.py`): one clock,
+  one notion of elapsed, and the arc cannot drift from the billing.
 
 The clock talks to the outside world only through the callbacks it is given,
 which is what makes it exercisable with fakes.
@@ -64,6 +67,7 @@ class SessionClock:
         on_warning: Callable[[], Awaitable[None]],
         on_end: Callable[[], Awaitable[None]],
         is_paused: Callable[[], bool],
+        on_tick: Callable[[float], Awaitable[None]] | None = None,
         warning_s: float = WARNING_S,
         publish_interval_s: float = PUBLISH_INTERVAL_S,
         tick_s: float = TICK_S,
@@ -73,6 +77,7 @@ class SessionClock:
         self._on_warning = on_warning
         self._on_end = on_end
         self._is_paused = is_paused
+        self._on_tick = on_tick
         self._warning_s = warning_s
         self._publish_interval_s = publish_interval_s
         self._tick_s = tick_s
@@ -163,6 +168,7 @@ class SessionClock:
                 if self._last_tick_at is not None and not self._is_paused():
                     self._active_s += now - self._last_tick_at
                 self._last_tick_at = now
+                await self._fire_tick()
                 await self._evaluate()
         except asyncio.CancelledError:
             raise
@@ -170,6 +176,19 @@ class SessionClock:
             # A dead clock must not take the conversation with it; the session
             # simply runs unmetered and the shutdown path still bills it.
             logger.exception("session clock stopped unexpectedly")
+
+    async def _fire_tick(self) -> None:
+        """Hand the active elapsed time to whoever rides on it (the arc).
+
+        Guarded like every other callback: a subscriber that raises must not
+        stop the clock, because the clock is what ends the session.
+        """
+        if self._on_tick is None:
+            return
+        try:
+            await self._on_tick(self.elapsed_s)
+        except Exception:
+            logger.exception("clock tick subscriber failed")
 
     async def _evaluate(self) -> None:
         remaining = self.remaining_s

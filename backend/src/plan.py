@@ -5,7 +5,7 @@ token route's `RoomAgentDispatch`:
 
 - the **billing** facts (`max_minutes`, `user_id`) that the clock enforces, and
 - the **session plan** (`plan`) — the learner's declared intent for the next
-  fifteen minutes: a topic or a scenario, focus tenses, vocab themes, a level.
+  ten minutes: a topic or a scenario, focus tenses, vocab themes, a level.
 
 Everything here crosses the wire from another process, so everything is
 optional and every type is checked once, at the boundary. A missing, empty, or
@@ -25,9 +25,10 @@ from dataclasses import dataclass, field
 
 logger = logging.getLogger("tutor.plan")
 
-# The credit unit (see plans/phases/phase-4-sellable-sessions.md): one credit
-# buys fifteen minutes. Used whenever the metadata does not say otherwise.
-DEFAULT_MAX_MINUTES = 15
+# The default session length, used whenever the metadata does not say
+# otherwise. Ten minutes is one arc at comfortable proportions (see `arc.py`);
+# the credit unit itself lives in plans/phases/phase-4-sellable-sessions.md.
+DEFAULT_MAX_MINUTES = 10
 
 # Guard rails on a number that decides how long we pay for an audio model.
 MIN_MAX_MINUTES = 1
@@ -65,9 +66,10 @@ def _text_list(value: object) -> list[str]:
 class SessionPlan:
     """The session's declared intent. Every field is optional by design.
 
-    Three consumers read it, and they read it differently: the tutor prompt
-    steers the conversation, the greeting opens inside the scenario, and the
-    analyzer weights its corrections. The Review tab (phase 5) is the fourth.
+    Four consumers read it, and they read it differently: the tutor prompt
+    steers the conversation, the greeting opens inside the scenario, the arc
+    picks the scene's beats from it, and the analyzer weights its corrections.
+    The Review tab (phase 5) is the fifth.
     """
 
     topic: str | None = None

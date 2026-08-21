@@ -36,6 +36,7 @@ from livekit.agents import (
 from livekit.plugins import openai
 
 from analyzer import CorrectionAnalyzer, recent_context
+from arc import SessionArc
 from clock import SessionClock, report_minutes_billed
 from config import (
     AGENT_NAME,
@@ -83,8 +84,9 @@ class TutorAgent(Agent):
         analyzer: CorrectionAnalyzer | None,
         state: SessionState,
         plan: SessionPlan | None = None,
+        phase_block: str = "",
     ) -> None:
-        super().__init__(instructions=tutor_instructions(cfg, plan))
+        super().__init__(instructions=tutor_instructions(cfg, plan, phase_block))
         self._cfg = cfg
         self._analyzer = analyzer
         self._state = state
@@ -196,8 +198,13 @@ async def tutor(ctx: JobContext) -> None:
 
     ctx.add_shutdown_callback(_shutdown)
 
+    # The arc owns the phase; the model is told which one it is in through the
+    # standing instructions, and never decides for itself. It is built before
+    # the agent because the agent opens *in* the first phase.
+    arc = _build_arc(cfg, session, state, facts, meta)
+
     await session.start(
-        agent=TutorAgent(cfg, analyzer, state, meta.plan),
+        agent=TutorAgent(cfg, analyzer, state, meta.plan, arc.brief(cfg)),
         room=ctx.room,
         room_options=room_io.RoomOptions(
             # Text input is off: this is a voice surface, not a chat box.
@@ -205,9 +212,9 @@ async def tutor(ctx: JobContext) -> None:
         ),
     )
 
-    clock = _build_clock(ctx, session, state, cfg, meta)
+    clock = _build_clock(ctx, session, state, cfg, meta, arc)
 
-    await _register_pause_rpc(ctx, session, state, facts, cfg, clock)
+    await _register_pause_rpc(ctx, session, state, facts, cfg, clock, arc)
     await register_translate_rpc(ctx, session, translator)
 
     # Warm the translate client off the critical path: the first RPC otherwise
@@ -230,14 +237,46 @@ async def tutor(ctx: JobContext) -> None:
     await clock.start()
 
 
+def _build_arc(
+    cfg: TutorConfig,
+    session: AgentSession,
+    state: SessionState,
+    facts: SessionFacts,
+    meta: JobMetadata,
+) -> SessionArc:
+    """Wire the arc to this session. See `arc.py`.
+
+    A phase change rewrites the standing instructions rather than speaking:
+    `update_instructions` never interrupts an in-flight turn, so the model
+    simply picks the new phase up on its next one. The brief is rendered at
+    transition time, not up front, because the debrief's brief carries the
+    session facts as they stand when the debrief actually starts.
+    """
+    arc: SessionArc
+
+    async def _enter_phase() -> None:
+        await session.current_agent.update_instructions(
+            tutor_instructions(cfg, meta.plan, arc.brief(cfg, facts.summary()))
+        )
+
+    arc = SessionArc(
+        meta.max_minutes,
+        meta.plan,
+        on_phase=_enter_phase,
+        is_paused=lambda: state.paused,
+    )
+    return arc
+
+
 def _build_clock(
     ctx: JobContext,
     session: AgentSession,
     state: SessionState,
     cfg: TutorConfig,
     meta: JobMetadata,
+    arc: SessionArc,
 ) -> SessionClock:
-    """Wire the clock's four callbacks to this session. See `clock.py`."""
+    """Wire the clock's callbacks to this session. See `clock.py`."""
 
     async def _publish_minutes(minutes: int) -> None:
         await ctx.room.local_participant.set_attributes({ATTR_MINUTES_LEFT: str(minutes)})
@@ -257,6 +296,8 @@ def _build_clock(
         on_warning=_warn,
         on_end=_end,
         is_paused=lambda: state.paused,
+        # The arc rides on billed (active) time: one elapsed, not two.
+        on_tick=arc.tick,
     )
 
 
@@ -442,6 +483,7 @@ async def _register_pause_rpc(
     facts: SessionFacts,
     cfg: TutorConfig,
     clock: SessionClock,
+    arc: SessionArc,
 ) -> None:
     """Pause/resume, driven by the frontend's client-side set of holds.
 
@@ -519,6 +561,13 @@ async def _register_pause_rpc(
             await clock.notify_resumed()
         except Exception:
             logger.exception("deferred wrap-up brief failed")
+
+        # Same deferral, same reason: a phase change that came due during the
+        # hold is applied now, before any re-entry line is generated.
+        try:
+            await arc.notify_resumed()
+        except Exception:
+            logger.exception("deferred arc phase change failed")
 
         try:
             if not brief.present or not state.tutor_owes_reentry:
