@@ -404,8 +404,10 @@ wrap-up brief and the exact-output goodbye close the session.
 ## The session clock
 
 The worker's clock is authoritative (phase 4, WS2 — the frontend displays the
-number, it never computes it). `src/clock.py` runs plain wall time from session
-start:
+number, it never computes it). `src/clock.py` ticks on an interval and adds each
+elapsed interval to its active time only while the session is unheld — paused
+time is not billed. `minutes_billed` and the session arc's phases both ride that
+accumulated active time:
 
 | Moment                          | What happens                                                |
 | ------------------------------- | ----------------------------------------------------------- |
@@ -505,7 +507,7 @@ fire-and-forget; completion is not awaited or reported.
 ```shell
 uv run python -m compileall -q src
 uv run ruff check src tests
-uv run ruff format src tests
+uv run ruff format --check src tests   # drop --check to let it do the fixing
 
 # the conjugation engine — pytest if it is installed, a plain script otherwise
 uv run python tests/test_conjugation.py

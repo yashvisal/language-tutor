@@ -45,7 +45,9 @@ _ENGINES: dict[str, Engine] = {}
 
 
 def _engine(language: str) -> Engine | None:
-    code = language.strip().lower()
+    # A locale-shaped target language ("es-ES", "es_MX") is still Spanish: the
+    # registry is keyed by the base subtag.
+    code = language.strip().lower().replace("_", "-").split("-", 1)[0]
     if code not in _ENGINES:
         if code == "es":
             from conjugation import es

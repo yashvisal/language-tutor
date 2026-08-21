@@ -14,12 +14,15 @@ provider-agnostic.
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 
 from livekit.agents import llm
 from livekit.plugins import openai
 from openai.types.realtime import RealtimeReasoning
+
+logger = logging.getLogger("tutor.config")
 
 # --- Wire protocol -------------------------------------------------------
 #
@@ -80,6 +83,37 @@ def _env_bool(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+# The only reasoning efforts a realtime model accepts, and OpenAI's supported
+# range for output audio speed. Both are checked at load time so a typo in the
+# worker's environment is loud once at start, not at every session.
+REASONING_EFFORTS = ("minimal", "low")
+SPEED_MIN = 0.25
+SPEED_MAX = 1.5
+
+
+def _env_reasoning(name: str, default: str) -> str:
+    value = _env(name, default).strip().lower()
+    if value not in REASONING_EFFORTS:
+        logger.warning("%s=%r is not one of %s; using %r", name, value, REASONING_EFFORTS, default)
+        return default
+    return value
+
+
+def _env_speed(name: str, default: float) -> float:
+    raw = _env(name, str(default))
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("%s=%r is not a number; using %s", name, raw, default)
+        return default
+    clamped = min(max(value, SPEED_MIN), SPEED_MAX)
+    if clamped != value:
+        logger.warning(
+            "%s=%s is outside %s-%s; using %s", name, value, SPEED_MIN, SPEED_MAX, clamped
+        )
+    return clamped
 
 
 # ISO-639-1 -> display name, used only to render prompts. Extend as needed; an
@@ -150,8 +184,8 @@ class TutorConfig:
             min_endpointing_s=float(_env("TUTOR_MIN_ENDPOINT_S", "1.2")),
             max_endpointing_s=float(_env("TUTOR_MAX_ENDPOINT_S", "6.0")),
             realtime_model=_env("TUTOR_REALTIME_MODEL", "gpt-realtime-2.1"),
-            realtime_reasoning=_env("TUTOR_REALTIME_REASONING", "minimal"),
-            realtime_speed=float(_env("TUTOR_REALTIME_SPEED", "1.0")),
+            realtime_reasoning=_env_reasoning("TUTOR_REALTIME_REASONING", "minimal"),
+            realtime_speed=_env_speed("TUTOR_REALTIME_SPEED", 1.0),
             realtime_voice=_env("TUTOR_REALTIME_VOICE", "marin"),
             stt_model=_env("TUTOR_STT_MODEL", "gpt-live-transcribe"),
             analyzer_model=_env("TUTOR_ANALYZER_MODEL", "gpt-5.6-luna"),

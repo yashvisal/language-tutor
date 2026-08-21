@@ -16,15 +16,15 @@ Two weeks head-down. Everything that isn't on the path from "stranger" to
 
 ## The economics this phase is built against
 
-All-in cost of a 15-minute session (2026-08-20 estimate, see vision doc #3):
-**~$1.20–1.40**, dominated by realtime audio — tutor output audio is ~4x the
-learner's input per minute (1,200 vs 600 tokens/min at $64 vs $32 per 1M),
-context re-reads are cheap only because they're cached, STT is ~20%.
+Measured cost of a 10-minute session on `gpt-realtime-2.1` (2026-08-21, see
+vision doc #3): **~$0.85–0.95** (≈$0.08–0.09 per active minute; paused time
+costs nothing). Audio is ~94% of it, split about evenly between uncached input
+audio (learner speech + room silence, billed once per turn) and output audio
+(tutor speech, ~35–50% talk share).
 
 - Credit = 10 minutes (settled 2026-08-20). Pricing re-bases on the measured
-  mini cost (~$0.35–0.55/session); defaults TBD with Yash — the >= 3x-cost rule
-  stands.
-- Free trial: 1 credit per signup (~$1.25 exposure per account, behind auth).
+  cost above; defaults TBD with Yash — the >= 3x-cost rule stands.
+- Free trial: 1 credit per signup (~$0.90 exposure per account, behind auth).
   `gpt-realtime-mini` (~1/3 cost) is the lever for trial credits if abuse
   appears — model per session is already an env-level choice; make it a
   per-session parameter.
@@ -58,8 +58,8 @@ context re-reads are cheap only because they're cached, STT is ~20%.
   ("about one minute left — bring the conversation to a natural close"). At
   zero: `session.interrupt()`, a short spoken goodbye, disconnect.
 - **Debit on session end** (actual minutes, rounded up), written by the worker
-  via a signed internal endpoint on the Next.js app — the only writer of
-  debit rows. Reserve-at-start is not needed if the balance check gates the
+  via the signed Convex HTTP action — the only writer of debit rows.
+  Reserve-at-start is not needed if the balance check gates the
   token and the clock is enforced worker-side.
 - Pause time is **not** billed (reversed 2026-08-20 after live use): the clock
   accrues only while the session is unheld. Study is free; speech is metered.
@@ -127,7 +127,7 @@ Ask transcript.
 
 ### 6. Deployment
 
-- Frontend on Vercel (env: Clerk, Neon, Stripe, LiveKit).
+- Frontend on Vercel (env: Clerk, Convex, Stripe, LiveKit).
 - Worker on LiveKit Cloud via `lk agent create` (secrets as LiveKit agent
   secrets). This also removes the local-CPU half of the "heavy session"
   problem found in phase 3.
@@ -137,7 +137,7 @@ Ask transcript.
 ## Non-goals
 
 Subscriptions, assessment, quizzes, reviews, other languages, mobile, referral/growth mechanics, admin tooling beyond
-reading the ledger in Neon.
+reading the ledger in Convex.
 
 ## Exit criteria
 

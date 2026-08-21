@@ -196,14 +196,20 @@ async def tutor(ctx: JobContext) -> None:
         if clock is not None:
             try:
                 await clock.aclose()
+            except Exception:
+                logger.warning("clock shutdown failed", exc_info=True)
+            try:
                 # However the session ended — clock, learner leaving, or a
                 # crash — this is the number the ledger owes a debit for.
                 report_minutes_billed(meta.user_id, clock.minutes_billed, ctx.room.name)
+            except Exception:
+                logger.warning("billing report failed", exc_info=True)
+            try:
                 # What it cost us, for pricing decisions: tokens, talk share,
                 # estimated dollars. Logged, never billed.
                 usage.log_summary(active_minutes=clock.minutes_billed, room=ctx.room.name)
             except Exception:
-                logger.warning("clock shutdown failed", exc_info=True)
+                logger.warning("usage summary failed", exc_info=True)
         try:
             await translator.aclose()
         except Exception:
@@ -558,7 +564,7 @@ def _coerce_correction(value: object) -> tuple[str, str, str | None] | None:
 
 
 def _coerce_tab(value: object) -> str | None:
-    return value if value in STUDY_TABS else None
+    return value if isinstance(value, str) and value in STUDY_TABS else None
 
 
 def _coerce_asks(value: object) -> list[str]:

@@ -106,12 +106,17 @@ From reviewing the phase-1 layout explorations (aura-stage, split-columns, and t
    rounded up) so short sessions are not punished. A subscription tier comes
    later and bundles the tutoring program (assessment, pre/post reviews,
    quizzes, included minutes).
-3. **Pricing follows cost.** All-in cost of a 10-minute session on the mini
-   realtime model is roughly $0.35–0.55 (was ~$1.20–1.40 for 15 minutes on the
-   full model)
-   (realtime audio dominated by tutor talk-time at ~4x the learner's per
-   minute; STT ~20%; everything else pennies). Credits are priced at >=3x
-   cost. Tutor brevity is a margin policy as well as a pedagogy policy.
+3. **Pricing follows cost.** Measured 2026-08-21 on `gpt-realtime-2.1` with
+   OpenAI's audio prices ($32/M input, $0.40/M cached input, $64/M output), a
+   10-minute session of live conversation costs roughly **$0.85–0.95**
+   (≈$0.08–0.09 per active minute; paused time costs nothing). Audio is ~94% of
+   that, split about evenly between uncached input audio (learner speech + room
+   silence, billed once per turn) and output audio (tutor speech, ~35–50% talk
+   share). The mini is 3.2× cheaper on audio (~$0.30 per 10 minutes) but was
+   dropped for instruction-following. Text-token prices for this model are
+   unverified; the separate Luna calls (analyzer, Review, Ask) are not yet in
+   the measurement. Credits are priced at >=3x cost. Tutor brevity is a margin
+   policy as well as a pedagogy policy.
 4. **Pause is the study surface: Transcript / Review / Ask.** "Branching
    conversations" from Longer-Term Direction resolves to TEXT, not voice —
    voice is the expensive, metered resource; study is cheap and better as

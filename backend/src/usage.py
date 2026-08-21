@@ -11,7 +11,6 @@ ledger bills minutes, never tokens.
 from __future__ import annotations
 
 import logging
-import math
 from typing import Any
 
 logger = logging.getLogger("tutor.usage")
@@ -93,7 +92,3 @@ class UsageTracker:
             )
         except Exception:
             logger.warning("usage summary failed", exc_info=True)
-
-
-def ceil_minutes(seconds: float) -> int:
-    return max(0, math.ceil(seconds / 60.0))
