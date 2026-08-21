@@ -37,6 +37,7 @@ from livekit.plugins import openai
 
 from analyzer import CorrectionAnalyzer, recent_context
 from arc import SessionArc
+from ask import AskCoach, register_ask_rpc
 from clock import SessionClock, report_minutes_billed
 from config import (
     AGENT_NAME,
@@ -62,6 +63,7 @@ from prompts import (
     tutor_instructions,
     wrapup_instructions,
 )
+from review import ReviewMaterial, register_review_rpc
 from state import SessionFacts, SessionState
 from translate import SpanTranslator, register_translate_rpc
 from usage import UsageTracker
@@ -73,6 +75,16 @@ logger = logging.getLogger("tutor.agent")
 # How long the closing goodbye may take before the worker stops waiting for it.
 # The session is already over; a stuck speech handle must not hold the room.
 GOODBYE_TIMEOUT_S = 20.0
+
+# The pause surface's tabs, wire value -> how the brief names it. Must match the
+# `tab` union in `frontend/lib/session/protocol.ts`.
+STUDY_TABS = {"transcript": "Transcript", "review": "Review", "ask": "Ask"}
+
+# How many of a hold's questions ride back on the resume payload, and how long
+# each may be. Mirrors `MAX_RESUME_ASKS` in the frontend's protocol module; the
+# cap is re-applied here because this is untrusted input on its way to a prompt.
+MAX_RESUME_ASKS = 5
+MAX_ASK_CHARS = 200
 
 
 class TutorAgent(Agent):
@@ -169,6 +181,11 @@ async def tutor(ctx: JobContext) -> None:
 
     analyzer = CorrectionAnalyzer(cfg, ctx.room, facts, meta.plan) if cfg.analyzer_enabled else None
     translator = SpanTranslator(cfg)
+    # The study surface (phase 4, WS4c). Both are text-only and run while the
+    # session is held, which is exactly when the voice model costs nothing.
+    # `phase` is read late, on purpose: the arc below is assigned after this.
+    coach = AskCoach(cfg, meta.plan, facts, phase=lambda: arc.phase)
+    review = ReviewMaterial(cfg, meta.plan)
     usage = UsageTracker()
     session.on("session_usage_updated", usage.on_usage)
 
@@ -190,6 +207,14 @@ async def tutor(ctx: JobContext) -> None:
             await translator.aclose()
         except Exception:
             logger.warning("translator shutdown failed", exc_info=True)
+        try:
+            await coach.aclose()
+        except Exception:
+            logger.warning("ask shutdown failed", exc_info=True)
+        try:
+            await review.aclose()
+        except Exception:
+            logger.warning("review shutdown failed", exc_info=True)
         if analyzer is not None:
             try:
                 await analyzer.aclose()
@@ -216,10 +241,18 @@ async def tutor(ctx: JobContext) -> None:
 
     await _register_pause_rpc(ctx, session, state, facts, cfg, clock, arc)
     await register_translate_rpc(ctx, session, translator)
+    await register_ask_rpc(ctx, session, coach)
+    await register_review_rpc(ctx, review)
 
     # Warm the translate client off the critical path: the first RPC otherwise
-    # pays TLS + CA-bundle setup on the learner's first card.
+    # pays TLS + CA-bundle setup on the learner's first card. Same for the
+    # coach's client, whose first question is a learner sitting on a spinner.
     translator.warm_in_background()
+    coach.warm_in_background()
+    # The Review tab's material is made once per session and never changes, so
+    # it is made NOW rather than on the first open — by the time anyone pauses
+    # to study, it is already sitting there.
+    review.generate_in_background()
 
     # Tell the frontend whether corrections are coming at all, so it can skip
     # the analyzing phase entirely when the analyzer is off.
@@ -390,6 +423,13 @@ class ResumeBrief:
     reasons: list[str]
     # (original, replacement, category | None)
     correction: tuple[str, str, str | None] | None
+    # The study surface (phase 4, WS4c): which tab was open when the hold
+    # released, and what they asked while it was. Both optional — a hold with no
+    # overlay has no tab, and a client that predates the study surface sends
+    # neither. The ANSWERS never travel: what returns to the voice model is a
+    # brief, never the Ask transcript (vision doc, 2026-08-20 #4).
+    tab: str | None
+    asks: list[str]
 
     def __init__(self, raw: dict | None = None) -> None:
         raw = raw if isinstance(raw, dict) else {}
@@ -397,6 +437,18 @@ class ResumeBrief:
         self.held_ms = _coerce_number(raw.get("held_ms"))
         self.reasons = _coerce_reasons(raw.get("reasons"))
         self.correction = _coerce_correction(raw.get("correction"))
+        self.tab = _coerce_tab(raw.get("tab"))
+        self.asks = _coerce_asks(raw.get("asks"))
+
+    @property
+    def studied(self) -> bool:
+        """Whether the hold was spent learning something nameable.
+
+        An inspected correction and a question asked are the same thing to the
+        re-entry template: both mean the learner has a specific thing in their
+        head that a comprehension check can land on.
+        """
+        return self.correction is not None or bool(self.asks)
 
 
 def _coerce_number(value: object) -> float | None:
@@ -425,6 +477,29 @@ def _coerce_correction(value: object) -> tuple[str, str, str | None] | None:
     return original, replacement, category if isinstance(category, str) and category else None
 
 
+def _coerce_tab(value: object) -> str | None:
+    return value if value in STUDY_TABS else None
+
+
+def _coerce_asks(value: object) -> list[str]:
+    """The questions asked during the hold, oldest first, capped.
+
+    Whitespace-collapsed and length-capped like every other string that crosses
+    into a prompt: this is learner-typed text on its way into the tutor's
+    context, and the brief is meant to be two lines, not a transcript.
+    """
+    if not isinstance(value, (list, tuple)):
+        return []
+    asks: list[str] = []
+    for entry in value:
+        if not isinstance(entry, str):
+            continue
+        cleaned = " ".join(entry.split())[:MAX_ASK_CHARS]
+        if cleaned:
+            asks.append(cleaned)
+    return asks[-MAX_RESUME_ASKS:]
+
+
 def _resume_facts(state: SessionState, facts: SessionFacts, brief: ResumeBrief) -> list[str]:
     """Turn the resume payload plus the pause snapshot into plain statements."""
     lines: list[str] = []
@@ -445,12 +520,21 @@ def _resume_facts(state: SessionState, facts: SessionFacts, brief: ResumeBrief) 
     if brief.reasons:
         lines.append("the learner was looking at: " + ", ".join(brief.reasons))
 
+    # The study surface, at most two lines: where they were and what they asked.
+    # Never the answers — the brief is the cost-containment rule for the voice
+    # model (vision doc, 2026-08-20 #4).
+    if brief.tab is not None:
+        lines.append(f"they were in the {STUDY_TABS[brief.tab]} tab")
+
     if brief.correction is not None:
         original, replacement, category = brief.correction
         suffix = f" (a {category} correction)" if category else ""
         lines.append(
             f'they read a correction on their last turn: "{original}" -> "{replacement}"{suffix}'
         )
+
+    if brief.asks:
+        lines.append("they asked: " + ", ".join(f'"{ask}"' for ask in brief.asks))
 
     if state.tutor_was_speaking:
         lines.append("you were mid-sentence when the hold began")
@@ -589,7 +673,10 @@ async def _register_pause_rpc(
                         # interrupted delivery gets a one-line bridge, never a
                         # replay (the message is still on screen).
                         owes_answer=state.reply_was_pending,
-                        studied=brief.correction is not None,
+                        # A hold spent asking questions is a hold spent
+                        # studying: the re-entry has something specific to
+                        # check on, exactly as an inspected correction does.
+                        studied=brief.studied,
                         intent=intent,
                     )
                 )

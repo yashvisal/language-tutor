@@ -17,7 +17,13 @@ learner audio
 
 on demand
   ├─ RPC tutor.translate               → one selected span, translated
+  ├─ RPC tutor.ask                     → one question, one coaching answer
+  ├─ RPC tutor.review                  → this session's study material
   └─ RPC tutor.pause / tutor.resume    → hold, then conversational re-entry
+
+the study surface (while held — voice is idle and unbilled)
+  ├─ at session start                  → review material generated once
+  └─ per question                      → Luna, coaching persona, invisible cap
 
 the session clock (authoritative)
   ├─ every tick                        → active seconds → the session arc
@@ -61,6 +67,13 @@ Design rules worth keeping:
 - **The worker owns the clock.** Minutes are money; the browser never decides
   when a session ends. The worker meters active (unheld) time, publishes what
   is left, and ends the session itself. See "The session clock".
+- **Study is text; speech is metered.** The pause tabs (Transcript / Review /
+  Ask) run entirely on the cheap text model while the realtime model sits idle
+  and the clock is stopped. What returns to the voice model on resume is a
+  ≤2-line brief — never the Ask thread, never the material.
+- **Conjugation tables are shipped, never generated.** A model that invents a
+  paradigm teaches a wrong ending and nobody in the loop would catch it. See
+  "The Review tab".
 - **No hardcoded Spanish.** Target and anchor languages are parameters. That
   includes the session plan: tense names and vocab themes are opaque strings
   from the frontend.
@@ -74,6 +87,9 @@ Design rules worth keeping:
 | `src/prompts.py`   | Tutor / STT / analyzer / translate / resume prompts            |
 | `src/analyzer.py`  | Background structured-output corrections + shared turn context |
 | `src/translate.py` | `tutor.translate` RPC: one selected span → one translation     |
+| `src/ask.py`       | `tutor.ask` RPC: the Ask tab's coaching chat + its invisible cap |
+| `src/review.py`    | `tutor.review` RPC: the Review tab's material, made once       |
+| `src/conjugation/` | The deterministic conjugation engine (registry + `es`)         |
 | `src/state.py`     | Pause state (+ what it interrupted) and rolling session facts  |
 | `src/plan.py`      | Dispatch metadata: minutes budget, user, and the session plan   |
 | `src/clock.py`     | The authoritative session clock + the minutes-billed seam       |
@@ -153,6 +169,8 @@ agent will never join.
 | `lk.agent.state` (participant attribute) | Agent state, published by the SDK                               |
 | RPC `tutor.pause` / `tutor.resume`       | Frontend → worker, one logical call per state change (retries are idempotent) |
 | RPC `tutor.translate`                    | Frontend → worker, one selected span → its anchor translation   |
+| RPC `tutor.ask`                          | Frontend → worker, one learner question → one coaching answer   |
+| RPC `tutor.review`                       | Frontend → worker, a poll for this session's study material     |
 
 Corrections payload:
 
@@ -195,6 +213,106 @@ logging. The span is target-language text and the translation comes back in the
 anchor language. The worker budgets 4s (the frontend times out at 5s) and every
 worker-side failure is an `error` field. Transport failures (RPC timeout,
 no tutor connected) reject the RPC itself — the frontend handles both.
+
+## The study surface: Ask and Review
+
+The pause overlay's tabs (phase 4, WS4c). Both are text-only and both run while
+the session is held — the realtime model is idle and the clock is stopped, so
+studying costs the learner nothing and costs us pennies. Neither ever speaks:
+what reaches the voice model is the resume brief, and only the resume brief.
+
+### `tutor.ask` — the coach
+
+```json
+// request — the CLIENT owns the thread; the worker keeps nothing
+{
+  "question": "why is it fui and not fue?",
+  "turn_id": "item_...",
+  "history": [
+    { "role": "learner", "text": "how do I say I went?" },
+    { "role": "coach", "text": "..." }
+  ]
+}
+// response — one shape, plus the cap flag
+{ "answer": "..." }
+{ "answer": "...", "limit": true }
+{ "error": "ask timed out" }
+```
+
+Luna answers through the Responses API at `reasoning.effort: none`, in the
+anchor language, with short target-language examples. Its context is the session
+plan, the current arc phase, `SessionFacts.summary()`, the last ~10 turns of the
+spoken conversation, and the client-sent thread (last 16 messages, re-trimmed
+worker-side because it is untrusted input on its way into a prompt).
+
+**The coaching rule** — the whole reason the tab is its own module and its own
+prompt (`ASK_INSTRUCTIONS`): the coach explains and scaffolds, it does not
+ghostwrite.
+
+- Explain the pattern or the distinction, then at most one short example — and
+  a different sentence from the one the learner is about to say.
+- Make them try first: most answers end in a small, concrete invitation ("how
+  would you start it?", "what would the yo form be?").
+- Hand over a whole finished sentence only when they ask outright, or when they
+  have already tried and want to compare. Otherwise: the verb, the tense, the
+  frame with the gap left in it.
+- Push back on "just tell me" once, warmly, then give it and move on — this is a
+  study surface, not a standoff.
+- **Never write the learner's next spoken turn.** They are about to say it out
+  loud; that is the session.
+- ≤ ~120 words, plain prose, no markdown.
+
+**Invisible caps.** 25 answered questions per session. Past that the tab does
+not error and does not grey out: it returns a warm one-line redirect back to
+speaking with `"limit": true`, and the client renders it as the answer it is.
+The redirect is picked from a static list rather than generated — the point of a
+cap is not paying for the request — and never repeats twice running. Only a real
+answer spends one of the 25; a timeout or a failure does not.
+
+The worker budgets 4.5s (the frontend times out at 5s, `ASK_TIMEOUT_MS`) and
+every worker-side failure is an `error` field, never a raise.
+
+### `tutor.review` — the material
+
+```json
+// request
+{}
+// response — poll until ready; a session's material is made once and never changes
+{ "ready": false }
+{
+  "ready": true,
+  "vocab":   [{ "target": "la cuenta", "anchor": "the bill" }],
+  "phrases": [{ "target": "¿Qué me recomienda?", "anchor": "What do you recommend?" }],
+  "tables":  [{ "verb": "querer", "tense": "Preterite · pretérito",
+                "rows": [{ "person": "yo", "form": "quise" }] }]
+}
+```
+
+Generation starts in the background immediately after session start, so the
+first Review open is usually instant. `ready: false` always means "poll again",
+never an error.
+
+`vocab` (~12) and `phrases` (~8) are generated once by Luna as strict JSON for
+the plan's scenario, topic and vocab themes. **`tables` are not generated at
+all** — they come from `src/conjugation/`, a shipped engine:
+
+- A registry keyed by language code (`conjugation/tables_for`); only `es` is
+  implemented, and nothing above the engine module knows a word of Spanish.
+- Regular -ar/-er/-ir paradigms for present, preterite, imperfect, future,
+  conditional, present subjunctive and present perfect, plus the orthographic
+  fixes an -ar verb needs before a front vowel (`llegar` → `llegué`).
+- Hand-written overrides for the 25 highest-frequency irregular verbs, each
+  supplying only the cells that are actually irregular.
+- Tables returned = the plan's focus tenses × 3–4 verbs chosen from a small
+  scenario→verbs map (generic fallback: ser/estar/tener/hacer), with the width
+  shrinking as the focus widens so every form the learner picked is represented.
+  `commands` has a different person set and is dropped rather than guessed at.
+
+If the generated half fails or times out, the material still resolves — with the
+tables alone, which cannot fail. A tab that polls forever is the worse outcome.
+
+The engine is checked in `tests/test_conjugation.py`: every regular paradigm and
+every irregular override, spot-checked against reference forms.
 
 ## Dispatch metadata
 
@@ -328,9 +446,21 @@ mid-utterance must not discard what the learner already said.
 {
   "held_ms": 12400,
   "reasons": ["correction"],
-  "correction": { "original": "yo fue", "replacement": "yo fui", "category": "tense" }
+  "correction": { "original": "yo fue", "replacement": "yo fui", "category": "tense" },
+  "tab": "ask",
+  "asks": ["why is it fui and not fue?"]
 }
 ```
+
+`tab` (`"transcript"` | `"review"` | `"ask"` | null) and `asks` are the study
+surface's contribution, and they are the whole of it: the tab that was open when
+the hold released, and the questions asked during *this* hold, oldest first,
+capped at 5 and length-capped worker-side. **The answers never travel** — what
+returns to the voice model is a brief, never the Ask transcript (vision doc,
+2026-08-20 #4). They render as at most two extra fact lines ("they were in the
+Review tab"; `they asked: "…", "…"`), and a hold with questions counts as
+*studied* for template selection, exactly as an inspected correction does: both
+mean there is a specific thing a comprehension check can land on.
 
 Every field is optional and the whole payload is parsed defensively; an empty,
 absent, or unparseable payload simply resumes with no brief. With a brief, the
@@ -345,9 +475,9 @@ off the session at pause time:
 | `agent_state == "thinking"`              | Re-enters: a committed turn's reply was killed |
 | anything else                            | Silent                                         |
 
-The brief states facts only — hold duration, hold reasons, the inspected
-correction, whether the tutor was mid-reply, and one line of rolling session
-facts ("corrections shown to them so far this session: 3 tense, 1 word-order").
+The brief states facts only — hold duration, hold reasons, the study tab, the
+inspected correction, the questions asked, whether the tutor was mid-reply, and
+one line of rolling session facts ("corrections shown to them so far this session: 3 tense, 1 word-order").
 It never scripts a line; how to re-enter is `TUTOR_INSTRUCTIONS`' job.
 
 `SessionFacts` (`src/state.py`) is the seam for that last line: the analyzer
@@ -364,6 +494,9 @@ fire-and-forget; completion is not awaited or reported.
 
 ```shell
 uv run python -m compileall -q src
-uv run ruff check src
-uv run ruff format src
+uv run ruff check src tests
+uv run ruff format src tests
+
+# the conjugation engine — pytest if it is installed, a plain script otherwise
+uv run python tests/test_conjugation.py
 ```

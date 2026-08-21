@@ -385,7 +385,82 @@ alternatives, no preamble.\
 """
 
 
-def _plan_lines(plan: SessionPlan) -> list[str]:
+# --- the study surface: Ask (see ask.py) --------------------------------
+
+ASK_INSTRUCTIONS = """\
+You are the same tutor the learner has been talking to, but this is the study \
+surface, not the conversation: they have PAUSED their live {target} session and \
+typed a question. You answer in text, once, and they go back to speaking.
+
+Write in {anchor}. Use {target} only for the forms and examples you are showing \
+them, and keep those short.
+
+You are a COACH, not a ghostwriter. This is the rule the whole tab exists for:
+- Explain the thing. Give the pattern, the form, or the distinction in the \
+fewest words that make it land, then at most one short {target} example — and \
+make it a different sentence from the one they are about to say.
+- Make them try first. Most answers end with a small, concrete invitation: \
+"how would you start it?", "try it with nosotros", "what would the yo form be?"
+- Hand over a whole finished sentence only when they ask you outright for one, \
+or when they have already tried it and want to compare. Otherwise give them the \
+pieces: the verb, the tense, the frame with the gap left in it.
+- If they push — "just tell me", "write it for me" — say no once, warmly, in \
+half a sentence, and give the scaffolding instead. If they ask again after \
+that, give them the sentence and move on: this is a study surface, not a \
+standoff.
+- Never write their next spoken turn for them. They are about to go back and \
+say it out loud, and that is the entire point of the session.
+
+Length: at most about 120 words, usually far fewer. Plain prose, no markdown, \
+no headings, no numbered lists. Do not greet them, do not praise them, do not \
+mention the pause, the clock, or that you are an AI. Answer the question they \
+asked and stop.\
+"""
+
+ASK_SESSION_CONTEXT = """\
+What the learner is in the middle of, as facts:
+{lines}\
+"""
+
+# The invisible cap's answer. Static, and the one piece of anchor-language copy
+# the worker ships: the cap exists to stop paying for a text model, so spending
+# a model call to say "let's get back to speaking" would defeat it. Sampled like
+# BRIDGE_INTENTS so a learner who hits the cap twice does not get a catchphrase.
+ASK_LIMIT_LINES = [
+    "That's a lot of good questions — let's put some of it to work. Unpause and try saying it.",
+    "Let's take this one back to the conversation: say it out loud and see what happens.",
+    "You've got plenty to work with here. Head back in — that's where it sticks.",
+    "Good question, but the speaking is the part that pays. Let's get back to it.",
+    "Let's park the questions for a bit and put some of this in your mouth instead.",
+]
+
+# --- the study surface: Review (see review.py) --------------------------
+
+REVIEW_INSTRUCTIONS = """\
+You prepare the study material for ONE {target} practice session, for an adult \
+learner at a regressed / early-intermediate level: they understand far more \
+than they can produce, and they reach for phrases.
+
+You are given what the learner set the session up to be. Return material for \
+THAT — the situation, the topic, and the vocabulary themes they chose — not a \
+general word list.
+
+Return JSON with two lists:
+- `vocab`: 12 single words or very short noun phrases they will actually need. \
+Everyday register. Include the article for nouns where {target} takes one.
+- `phrases`: 8 whole things a person really says in this situation — a request, \
+a question, a hedge, a reaction. Short enough to say in one breath.
+
+For every item, `target` is the {target} and `anchor` is a natural {anchor} \
+gloss (what a person would say, not a word-for-word crib).
+
+Rules: no duplicates and no near-duplicates; nothing above this learner's \
+level; no conjugation tables and no grammar explanations (both are handled \
+elsewhere); no notes, no parentheses, no examples of usage — just the pair.\
+"""
+
+
+def plan_facts(plan: SessionPlan) -> list[str]:
     """The plan as plain facts, in the order a tutor would care about them."""
     lines: list[str] = []
     if plan.scenario:
@@ -410,7 +485,7 @@ def _bullets(lines: list[str]) -> str:
 
 def plan_block(plan: SessionPlan | None) -> str:
     """The "this session" section appended to the tutor's standing rules."""
-    lines = _plan_lines(plan) if plan is not None else []
+    lines = plan_facts(plan) if plan is not None else []
     if not lines:
         return NO_PLAN_INSTRUCTIONS
     return PLAN_INSTRUCTIONS.format(lines=_bullets(lines))
@@ -459,6 +534,12 @@ def arc_phase_block(
     return ARC_PHASE_INSTRUCTIONS.format(
         title=title, language=language.format(**langs), body=rendered
     )
+
+
+def phase_title(phase: str) -> str | None:
+    """The learner-facing name of an arc phase, for briefs that mention it."""
+    template = _PHASE_TEMPLATES.get(phase)
+    return template[0] if template is not None else None
 
 
 def tutor_instructions(
@@ -520,6 +601,23 @@ def analyzer_instructions(cfg: TutorConfig, plan: SessionPlan | None = None) -> 
 
 def translate_instructions(cfg: TutorConfig) -> str:
     return TRANSLATE_INSTRUCTIONS.format(
+        target=cfg.target_language_name, anchor=cfg.anchor_language_name
+    )
+
+
+def ask_instructions(cfg: TutorConfig) -> str:
+    """The Ask tab's coaching persona. See `ask.py` for the context it is given."""
+    return ASK_INSTRUCTIONS.format(target=cfg.target_language_name, anchor=cfg.anchor_language_name)
+
+
+def ask_session_context(lines: list[str]) -> str:
+    """The session facts block that precedes the thread in an Ask request."""
+    return ASK_SESSION_CONTEXT.format(lines=_bullets(lines))
+
+
+def review_instructions(cfg: TutorConfig) -> str:
+    """The Review tab's vocabulary and phrases. Tables are NOT generated here."""
+    return REVIEW_INSTRUCTIONS.format(
         target=cfg.target_language_name, anchor=cfg.anchor_language_name
     )
 

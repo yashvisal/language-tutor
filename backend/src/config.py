@@ -57,6 +57,11 @@ RPC_RESUME = "tutor.resume"
 # Select-to-translate: one span in, one translation out. Request/response only —
 # there is no translation stream any more (phase 3, WS1/WS3).
 RPC_TRANSLATE = "tutor.translate"
+# The study surface (phase 4, WS4c). Ask is one question in, one coaching answer
+# out; Review is a poll for this session's study material, which is generated
+# once and then never changes.
+RPC_ASK = "tutor.ask"
+RPC_REVIEW = "tutor.review"
 
 # Text stream attributes on `tutor.corrections`.
 ATTR_TURN_ID = "tutor.turn_id"
