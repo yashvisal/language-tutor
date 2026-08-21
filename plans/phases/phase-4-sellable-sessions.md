@@ -33,6 +33,10 @@ speech, ~35–50% talk share).
 
 ## Workstreams
 
+*Workstreams 1, 2, 3, 5 and 6 — everything around the session — are designed
+and sequenced in `phase-4-product-shell.md` (2026-08-21). Session follow-ups
+deferred from live testing are in `../backlog.md`.*
+
 ### 1. Identity and data
 
 - **Auth**: Clerk (recommended — fastest path on Next 16, good DX, free tier
