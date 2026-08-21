@@ -152,6 +152,7 @@ export function StudyOverlay({
                   variant="ghost"
                   size="icon-sm"
                   onClick={onClose}
+                  aria-label="Close and resume"
                   className="absolute top-3 right-4 rounded-full text-muted-foreground/60 hover:text-foreground"
                 >
                   <X />

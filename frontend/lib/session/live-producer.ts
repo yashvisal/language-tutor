@@ -84,6 +84,7 @@ import { EMPTY_PLAN } from "./plan"
 import {
   ASK_TIMEOUT_MS,
   MAX_RESUME_ASKS,
+  REVIEW_TIMEOUT_MS,
   SESSION_MAX_MINUTES,
   TRANSLATE_TIMEOUT_MS,
 } from "./protocol"
@@ -929,6 +930,7 @@ export function useLiveSession(): LiveSession {
           // No request: the material is the session's, and the worker knows
           // which session it is in.
           payload: "{}",
+          responseTimeout: REVIEW_TIMEOUT_MS,
         })
         return JSON.parse(raw) as ReviewResponse
       },

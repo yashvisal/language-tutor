@@ -4,8 +4,9 @@
  * Imported from both sides: the pre-flight screen renders the catalogs, and
  * `app/api/token/route.ts` normalizes an incoming plan with `boundPlan` before
  * signing it into dispatch metadata. So this module stays dependency-free and
- * free of browser-only APIs at module scope — `loadPlan`/`savePlan` guard on
- * `window` themselves.
+ * free of browser-only APIs at module scope — `subscribeToPlan`/`savePlan`
+ * guard on `window` themselves, and `planSnapshot` is only ever reached from
+ * the browser half of `useSyncExternalStore`.
  *
  * Nothing here is Spanish-specific by construction: the tense catalog is keyed
  * by target language code, and a second language adds an entry rather than an
@@ -224,6 +225,7 @@ function notify() {
 }
 
 export function subscribeToPlan(listener: () => void): () => void {
+  if (typeof window === "undefined") return () => {}
   listeners.add(listener)
   // Another tab writing the same key is the same event as this one writing it.
   window.addEventListener("storage", notify)

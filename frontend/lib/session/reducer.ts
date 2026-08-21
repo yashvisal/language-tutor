@@ -366,8 +366,7 @@ export function marksActive(state: SessionState): boolean {
 export function sessionCorrections(state: SessionState): Correction[] {
   const all: Correction[] = []
   const seen = new Set<string>()
-  const turns = state.current ? [...state.turns, state.current] : state.turns
-  for (const turn of turns) {
+  for (const turn of transcriptTurns(state)) {
     if (turn.speaker !== "learner") continue
     for (const correction of turn.corrections ?? []) {
       if (seen.has(correction.id)) continue

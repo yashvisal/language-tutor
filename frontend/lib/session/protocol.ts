@@ -185,6 +185,13 @@ export const REVIEW_POLL_MS = 1500
 export const REVIEW_MAX_POLLS = 20
 
 /**
+ * How long a single review poll waits. Comfortably past the worker's ~3s
+ * first-material latency, and bounded so an unresponsive worker costs
+ * `REVIEW_MAX_POLLS` of this rather than the SDK default multiplied by it.
+ */
+export const REVIEW_TIMEOUT_MS = 5000
+
+/**
  * The correction the learner inspected during a hold, as it travels on the
  * wire. Deliberately snake_cased and stringly-typed: this is the JSON the
  * Python worker parses, not the frontend's `Correction`.

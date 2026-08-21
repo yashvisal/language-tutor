@@ -142,7 +142,13 @@ export function SessionPreflight({
               autoFocus
               value={plan.topic ?? ""}
               maxLength={PLAN_LIMITS.topicChars}
-              onChange={(e) => patch({ topic: e.target.value || null })}
+              onChange={(e) => {
+                // Typing is itself the toggle: without this, clearing the last
+                // character would drop `topic` to null and unmount the input
+                // under the learner's cursor.
+                setTopicToggled(true)
+                patch({ topic: e.target.value || null })
+              }}
               placeholder="Anything — my trip to Oaxaca, why I quit my job…"
               aria-label="Topic"
               className="mt-3 h-9"
@@ -226,11 +232,14 @@ export function SessionPreflight({
             {connecting ? "Connecting…" : "Start talking"}
           </Button>
           <p className="text-xs text-muted-foreground/70">
-            Microphone required. Time you spend paused counts toward your
-            minutes.
+            Microphone required. Pausing to study doesn’t use your minutes.
           </p>
         </div>
-        {error && <p className="mt-4 text-xs text-destructive">{error}</p>}
+        {error && (
+          <p role="alert" className="mt-4 text-xs text-destructive">
+            {error}
+          </p>
+        )}
       </div>
     </div>
   )

@@ -47,7 +47,7 @@ export function SessionSummary({
         <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
           {minutesUsed === null
             ? "Nice work."
-            : "Minutes are counted while the session is live — time spent paused counts too."}
+            : "Minutes are counted while you're talking — time spent paused is free."}
         </p>
 
         <section className="mt-10 border-t border-border/50 pt-8">
