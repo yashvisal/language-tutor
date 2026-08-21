@@ -437,8 +437,17 @@ empties. Holds that open and close within ~400ms are debounced client-side and
 never reach the worker at all.
 
 Pause is non-destructive: the worker interrupts the tutor and disables audio in
-and out, but deliberately does not `clear_user_turn()` — a hold opened
-mid-utterance must not discard what the learner already said.
+and out, but never `clear_user_turn()` — a hold opened mid-utterance must not
+discard what the learner already said. It does *close* that turn, though: once
+the input is detached the STT gets no audio to endpoint on, so an open segment
+would still be open when the learner speaks again and their next words would be
+appended to it (one utterance, two transcript messages — live, 2026-08-21). So
+the worker calls `commit_user_turn(skip_reply=True)` right after detaching,
+which flushes the STT with silence and finalizes the segment; anything said
+after resume starts a fresh one. A turn closed this way is analyzed and counts
+as a reply the tutor owes, but it does not take the floor away from a learner
+who was mid-sentence. The flush is bounded (~1s, 2s ceiling): a hold that hangs
+is worse than a split transcript.
 
 `tutor.resume` carries an optional brief:
 
@@ -473,6 +482,7 @@ off the session at pause time:
 | `user_state == "speaking"`               | Silent — the learner keeps the floor           |
 | `agent_state == "speaking"` (or a live `current_speech`) | Re-enters: the tutor was mid-sentence |
 | `agent_state == "thinking"`              | Re-enters: a committed turn's reply was killed |
+| pending learner text, closed by the flush | Re-enters: that turn is owed an answer (unless the learner was still speaking — they keep the floor) |
 | anything else                            | Silent                                         |
 
 The brief states facts only — hold duration, hold reasons, the study tab, the

@@ -32,6 +32,7 @@ from livekit.agents import (
     inference,
     llm,
     room_io,
+    utils,
 )
 from livekit.plugins import openai
 
@@ -239,7 +240,7 @@ async def tutor(ctx: JobContext) -> None:
 
     clock = _build_clock(ctx, session, state, cfg, meta, arc)
 
-    await _register_pause_rpc(ctx, session, state, facts, cfg, clock, arc)
+    await _register_pause_rpc(ctx, session, state, facts, cfg, clock, arc, analyzer)
     await register_translate_rpc(ctx, session, translator)
     await register_ask_rpc(ctx, session, coach)
     await register_review_rpc(ctx, review)
@@ -408,6 +409,85 @@ def _capture_pause_context(session: AgentSession, state: SessionState) -> None:
     state.learner_was_speaking = session.user_state == "speaking"
 
 
+# A hold must never block on the STT, so the flush below is bounded twice: the
+# silence pushed into the STT and the wait for the final it produces, then a
+# hard ceiling around the whole thing.
+HOLD_FLUSH_S = 1.0
+HOLD_FLUSH_CEILING_S = 2.0
+
+
+async def _flush_open_user_turn(
+    session: AgentSession, state: SessionState, analyzer: CorrectionAnalyzer | None
+) -> None:
+    """Close the learner's open transcript segment before the hold goes quiet.
+
+    The STT endpoints on audio, and a held session sends it none — not even
+    silence, since the room input is detached. So whatever the learner said in
+    the moment before the hold sits in an un-finalized segment for as long as
+    the hold lasts, and the first words after resume are appended to *that*
+    segment: one utterance split across two transcript messages (live,
+    2026-08-21). `commit_user_turn` pushes the silence the STT needs to
+    endpoint, which finalizes the pending text and flushes the segment, so the
+    next word after resume starts a fresh one.
+
+    With a realtime model the framework forces `skip_reply` down this path
+    (`agent_activity.commit_user_turn`), so `TutorAgent.on_user_turn_completed`
+    never sees the turn we just closed — what it would have done for a turn that
+    commits during a hold is done here instead.
+    """
+    started = time.monotonic()
+    logger.info("hold: flushing open user turn", extra={"user_state": session.user_state})
+
+    text = ""
+    result = "empty"
+    try:
+        text = await asyncio.wait_for(
+            session.commit_user_turn(
+                skip_reply=True,
+                transcript_timeout=HOLD_FLUSH_S,
+                stt_flush_duration=HOLD_FLUSH_S,
+            ),
+            timeout=HOLD_FLUSH_CEILING_S,
+        )
+        result = "committed" if text else "empty"
+    except asyncio.TimeoutError:
+        # A hold that hangs is worse than a split transcript. The flush itself
+        # keeps running; we just stop waiting on it.
+        result = "timeout"
+    except Exception:
+        result = "error"
+        logger.warning("hold: user turn flush failed", exc_info=True)
+
+    if text:
+        # The turn is owed an answer, which the conversational re-entry gives on
+        # resume — unless a resume raced this flush, in which case it has already
+        # decided how to re-enter and the flag would only leak into the next
+        # hold. `learner_was_speaking` is deliberately left as captured: unlike a
+        # real end-of-turn commit, this one was forced by the hold and says
+        # nothing about whether the learner had finished — if they were
+        # mid-sentence they still keep the floor.
+        if state.paused:
+            state.reply_was_pending = True
+        if analyzer is not None:
+            # The committed message reaches the chat context a moment later (the
+            # framework's end-of-turn task), so the context here excludes it
+            # already and needs no `exclude_id`.
+            analyzer.analyze_in_background(
+                turn_id=utils.shortuuid("item_"),
+                text=text,
+                context=recent_context(session.history),
+            )
+
+    logger.info(
+        "hold: open user turn flushed",
+        extra={
+            "result": result,
+            "transcript_chars": len(text),
+            "elapsed_ms": round((time.monotonic() - started) * 1000),
+        },
+    )
+
+
 @dataclass(init=False)
 class ResumeBrief:
     """The advisory `tutor.resume` payload, coerced once at the boundary.
@@ -568,6 +648,7 @@ async def _register_pause_rpc(
     cfg: TutorConfig,
     clock: SessionClock,
     arc: SessionArc,
+    analyzer: CorrectionAnalyzer | None,
 ) -> None:
     """Pause/resume, driven by the frontend's client-side set of holds.
 
@@ -600,12 +681,14 @@ async def _register_pause_rpc(
             _capture_pause_context(session, state)
             # Stop the tutor mid-sentence, then go deaf and mute.
             #
-            # Deliberately *not* `clear_user_turn()`: a hold is often opened
-            # mid-utterance (the learner taps a correction, or scrolls back,
-            # while still speaking), and discarding the buffered turn would
-            # throw away what they had just said. Disabling the audio input
-            # already stops new audio from arriving; what was already said stays
-            # in the turn and settles normally on resume.
+            # Never `clear_user_turn()`: a hold is often opened mid-utterance
+            # (the learner taps a correction, or scrolls back, while still
+            # speaking), and discarding the buffered turn would throw away what
+            # they had just said. But it cannot simply be left open either — a
+            # deaf session starves the STT of the audio it endpoints on, so the
+            # turn would still be open when the learner speaks again. So: keep
+            # it, and close it. The flush runs *after* the input is detached,
+            # which is what lets the framework substitute silence for it.
             await session.interrupt()
             session.input.set_audio_enabled(False)
             session.output.set_audio_enabled(False)
@@ -613,10 +696,15 @@ async def _register_pause_rpc(
             session.input.set_audio_enabled(True)
             session.output.set_audio_enabled(True)
 
+        # Acknowledge before the flush below: it costs ~1s even when nothing is
+        # pending (live, 2026-08-21: eight holds, all empty, all ~1005ms), and
+        # the frontend keeps re-sending `tutor.pause` until it sees this.
         await ctx.room.local_participant.set_attributes(
             {ATTR_PAUSED: ATTR_TRUE if paused else ATTR_FALSE}
         )
         logger.info("session %s", "paused" if paused else "resumed")
+        if paused:
+            await _flush_open_user_turn(session, state, analyzer)
         return True
 
     async def _pause(_data: rtc.RpcInvocationData) -> str:
