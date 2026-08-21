@@ -39,14 +39,20 @@ class UsageTracker:
         stt_seconds = 0.0
         usage = self._usage
         if usage is not None:
-            for llm in getattr(usage, "_llm_usage", {}).values():
-                audio_in += llm.input_audio_tokens - llm.input_cached_audio_tokens
-                audio_in_cached += llm.input_cached_audio_tokens
-                audio_out += llm.output_audio_tokens
-                text_in += llm.input_text_tokens
-                text_out += llm.output_text_tokens
-            for stt in getattr(usage, "_stt_usage", {}).values():
-                stt_seconds += stt.audio_duration
+            # `AgentSessionUsage.model_usage` is a flat list of per-model usage
+            # objects (LLM / STT / TTS / ...); discriminate by the fields each
+            # kind carries rather than by class, so plugin churn can't break it.
+            for mu in getattr(usage, "model_usage", []) or []:
+                if hasattr(mu, "output_audio_tokens"):
+                    audio_in += getattr(mu, "input_audio_tokens", 0) - getattr(
+                        mu, "input_cached_audio_tokens", 0
+                    )
+                    audio_in_cached += getattr(mu, "input_cached_audio_tokens", 0)
+                    audio_out += getattr(mu, "output_audio_tokens", 0)
+                    text_in += getattr(mu, "input_text_tokens", 0)
+                    text_out += getattr(mu, "output_text_tokens", 0)
+                elif hasattr(mu, "audio_duration") and not hasattr(mu, "characters_count"):
+                    stt_seconds += getattr(mu, "audio_duration", 0.0)
 
         cost = (
             audio_in * AUDIO_IN_PER_M

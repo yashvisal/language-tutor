@@ -37,8 +37,13 @@ to {target} as soon as you can.
 
 When to use {anchor} — principles, not scripts. Judge each moment; never recite \
 these lines:
-- {anchor} is a short bridge, never a destination. Cross it, then come straight \
-back to {target} in the same turn or the next one.
+- Talk ABOUT the session — setting it up, asking if they are ready, explaining \
+what you are about to do, checking in — is said in {anchor}. The learner may \
+not have much {target} yet, and logistics are not practice. If any {target} \
+appears in those moments it must be extremely simple. {target} is for the \
+conversation itself.
+- Inside the conversation, {anchor} is a short bridge, never a destination. \
+Cross it, then come straight back to {target} in the same turn or the next one.
 - Coming back from a pause: the learner has been reading something on screen — \
 a correction, a translation, earlier conversation. A brief {anchor} check-in \
 lands better than resuming in {target} as if nothing happened (think "ready to \
@@ -168,19 +173,22 @@ and do not explain why it is ending.\
 FAREWELL_INTENT = "That's our time for today — nice work, see you next time"
 
 GREETING_SCENARIO_INSTRUCTIONS = """\
-You speak first — never wait for the learner to open. In {target}, greet them \
-warmly in one sentence, say in one plain sentence that you two will practice \
-this situation: {scenario}, and ask whether they are ready to step into it. \
-Then STOP and wait. Do not start playing the scene yet — the role-play begins \
-only after they say they are ready. Do not explain how the app works.\
+You speak first — never wait for the learner to open. This is talk ABOUT the \
+session, so say it in {anchor}: greet them warmly in one sentence (a single \
+very simple {target} hello is fine), say in one plain sentence that you two \
+will practice this situation: {scenario}, and ask whether they are ready to \
+step into it. Then STOP and wait. Do not start playing the scene yet — the \
+role-play, in {target}, begins only after they say they are ready. Do not \
+explain how the app works.\
 """
 
 GREETING_TOPIC_INSTRUCTIONS = """\
-You speak first — never wait for the learner to open. In {target}, greet them \
-warmly in one sentence, say in one plain sentence that you will talk about \
-{topic} today, and ask whether they are ready to begin. Then STOP and wait for \
-their answer before asking anything about the topic. Do not explain how the \
-app works.\
+You speak first — never wait for the learner to open. This is talk ABOUT the \
+session, so say it in {anchor}: greet them warmly in one sentence (a single \
+very simple {target} hello is fine), say in one plain sentence that you will \
+talk about {topic} today, and ask whether they are ready to begin. Then STOP \
+and wait. The conversation itself, in {target}, starts only after they say \
+yes. Do not explain how the app works.\
 """
 
 ANALYZER_FOCUS_INSTRUCTIONS = """\
@@ -195,11 +203,12 @@ as wrong.\
 """
 
 GREETING_INSTRUCTIONS = """\
-You speak first — never wait for the learner to open. In {target}, greet them \
-warmly in one sentence, suggest one light everyday subject to talk about in a \
+You speak first — never wait for the learner to open. This is talk ABOUT the \
+session, so say it in {anchor}: greet them warmly in one sentence (a single \
+very simple {target} hello is fine), suggest one light everyday subject in a \
 second sentence, and ask whether that sounds good or they would rather pick \
-something else. Then STOP and wait for their answer. Do not explain how the \
-app works.\
+something else. Then STOP and wait. The conversation itself, in {target}, \
+starts only after they answer. Do not explain how the app works.\
 """
 
 STT_PROMPT = """\
@@ -303,14 +312,18 @@ def tutor_instructions(cfg: TutorConfig, plan: SessionPlan | None = None) -> str
 
 
 def greeting_instructions(cfg: TutorConfig, plan: SessionPlan | None = None) -> str:
-    """Open the session. A scenario is opened *in*, not described."""
+    """Open the session: an anchor-language intro and a consent check, then wait.
+
+    Talk ABOUT the session is in the anchor language (the learner may have little
+    of the target yet); the scene or conversation itself starts, in the target
+    language, only after they say they are ready.
+    """
+    langs = {"target": cfg.target_language_name, "anchor": cfg.anchor_language_name}
     if plan is not None and plan.scenario:
-        return GREETING_SCENARIO_INSTRUCTIONS.format(
-            scenario=plan.scenario, target=cfg.target_language_name
-        )
+        return GREETING_SCENARIO_INSTRUCTIONS.format(scenario=plan.scenario, **langs)
     if plan is not None and plan.topic:
-        return GREETING_TOPIC_INSTRUCTIONS.format(topic=plan.topic, target=cfg.target_language_name)
-    return GREETING_INSTRUCTIONS.format(target=cfg.target_language_name)
+        return GREETING_TOPIC_INSTRUCTIONS.format(topic=plan.topic, **langs)
+    return GREETING_INSTRUCTIONS.format(**langs)
 
 
 def wrapup_instructions() -> str:
