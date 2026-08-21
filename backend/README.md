@@ -239,11 +239,9 @@ start:
 | zero                            | `session.interrupt()`, one short bilingual goodbye (exact-output instruction, like the resume bridge), and the worker waits for it to finish playing |
 | after the goodbye               | `tutor.session_over` = `"true"`, `session.aclose()`, then `ctx.shutdown()` — the learner keeps the room and their post-session surface |
 
-**Pause time is billed.** The session is live and the agent is allocated whether
-or not the learner is talking, so the clock never stops (product decision,
-2026-08-20 — say so in the UI, revisit if it feels unfair). Each transition
-fires exactly once: the warning cannot repeat, and the end sequence cannot run
-twice.
+**Pause time is not billed.** The clock accrues only while the session is not
+held — a learner studying a correction is not spending minutes (decision
+2026-08-20, reversing the earlier 'pause billed' call).
 
 At teardown — clock, learner leaving, or a crash — the worker calls
 `report_minutes_billed(user_id, minutes, room)` with the actual minutes used,

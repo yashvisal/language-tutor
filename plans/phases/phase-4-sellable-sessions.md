@@ -59,8 +59,8 @@ context re-reads are cheap only because they're cached, STT is ~20%.
   via a signed internal endpoint on the Next.js app — the only writer of
   debit rows. Reserve-at-start is not needed if the balance check gates the
   token and the clock is enforced worker-side.
-- Pause time **is** billed (the session is live and the agent is allocated);
-  say so in the UI. Revisit if it feels unfair in practice.
+- Pause time is **not** billed (reversed 2026-08-20 after live use): the clock
+  accrues only while the session is unheld. Study is free; speech is metered.
 
 ### 3. Payments
 

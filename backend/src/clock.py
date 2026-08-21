@@ -78,6 +78,11 @@ class SessionClock:
         self._tick_s = tick_s
 
         self._started_at: float | None = None
+        # Billed time is ACTIVE time: the clock accrues between ticks only while
+        # the session is not held. A learner studying a correction is not
+        # spending their minutes (decision 2026-08-20, reversing 'pause billed').
+        self._active_s = 0.0
+        self._last_tick_at: float | None = None
         self._last_publish_at = 0.0
         self._warned = False
         self._warning_held = False
@@ -96,9 +101,8 @@ class SessionClock:
 
     @property
     def elapsed_s(self) -> float:
-        if self._started_at is None:
-            return 0.0
-        return time.monotonic() - self._started_at
+        """Active (unpaused) seconds — what the learner is billed for."""
+        return self._active_s
 
     @property
     def remaining_s(self) -> float:
@@ -126,6 +130,7 @@ class SessionClock:
         if self._started_at is not None:
             return
         self._started_at = time.monotonic()
+        self._last_tick_at = self._started_at
         await self._publish_now()
         self._task = asyncio.create_task(self._run(), name="tutor-session-clock")
 
@@ -154,6 +159,10 @@ class SessionClock:
         try:
             while not self._ended:
                 await asyncio.sleep(self._tick_s)
+                now = time.monotonic()
+                if self._last_tick_at is not None and not self._is_paused():
+                    self._active_s += now - self._last_tick_at
+                self._last_tick_at = now
                 await self._evaluate()
         except asyncio.CancelledError:
             raise
