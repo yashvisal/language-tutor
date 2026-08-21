@@ -17,14 +17,15 @@ Two weeks head-down. Everything that isn't on the path from "stranger" to
 ## The economics this phase is built against
 
 Measured cost of a 10-minute session on `gpt-realtime-2.1` (2026-08-21, see
-vision doc #3): **~$0.85–0.95** (≈$0.08–0.09 per active minute; paused time
-costs nothing). Audio is ~94% of it, split about evenly between uncached input
-audio (learner speech + room silence, billed once per turn) and output audio
-(tutor speech, ~35–50% talk share).
+vision doc #3): **~$0.85–0.95** (≈$0.09 per active minute of talk; a paused
+minute costs no realtime audio — only the text-only study calls, not yet
+measured). Audio is ~94% of it, split about evenly between uncached input audio
+(learner speech + room silence, billed once per turn) and output audio (tutor
+speech, ~35–50% talk share).
 
 - Credit = 10 minutes (settled 2026-08-20). Pricing re-bases on the measured
   cost above; defaults TBD with Yash — the >= 3x-cost rule stands.
-- Free trial: 1 credit per signup (~$0.90 exposure per account, behind auth).
+- Free trial: 1 credit per signup (~$0.90 realtime-audio exposure per account, behind auth).
   `gpt-realtime-mini` (~1/3 cost) is the lever for trial credits if abuse
   appears — model per session is already an env-level choice; make it a
   per-session parameter.

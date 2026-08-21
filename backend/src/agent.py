@@ -681,33 +681,42 @@ async def _register_pause_rpc(
         if state.paused == paused:
             return False
         state.paused = paused
-        if paused:
-            # Read the session's state *before* interrupting it — afterwards
-            # there is nothing left to observe.
-            _capture_pause_context(session, state)
-            # Stop the tutor mid-sentence, then go deaf and mute.
-            #
-            # Never `clear_user_turn()`: a hold is often opened mid-utterance
-            # (the learner taps a correction, or scrolls back, while still
-            # speaking), and discarding the buffered turn would throw away what
-            # they had just said. But it cannot simply be left open either — a
-            # deaf session starves the STT of the audio it endpoints on, so the
-            # turn would still be open when the learner speaks again. So: keep
-            # it, and close it. The flush runs *after* the input is detached,
-            # which is what lets the framework substitute silence for it.
-            await session.interrupt()
-            session.input.set_audio_enabled(False)
-            session.output.set_audio_enabled(False)
-        else:
-            session.input.set_audio_enabled(True)
-            session.output.set_audio_enabled(True)
+        try:
+            if paused:
+                # Read the session's state *before* interrupting it — afterwards
+                # there is nothing left to observe.
+                _capture_pause_context(session, state)
+                # Stop the tutor mid-sentence, then go deaf and mute.
+                #
+                # Never `clear_user_turn()`: a hold is often opened mid-utterance
+                # (the learner taps a correction, or scrolls back, while still
+                # speaking), and discarding the buffered turn would throw away what
+                # they had just said. But it cannot simply be left open either — a
+                # deaf session starves the STT of the audio it endpoints on, so the
+                # turn would still be open when the learner speaks again. So: keep
+                # it, and close it. The flush runs *after* the input is detached,
+                # which is what lets the framework substitute silence for it.
+                await session.interrupt()
+                session.input.set_audio_enabled(False)
+                session.output.set_audio_enabled(False)
+            else:
+                session.input.set_audio_enabled(True)
+                session.output.set_audio_enabled(True)
 
-        # Acknowledge before the flush below: it costs ~1s even when nothing is
-        # pending (live, 2026-08-21: eight holds, all empty, all ~1005ms), and
-        # the frontend keeps re-sending `tutor.pause` until it sees this.
-        await ctx.room.local_participant.set_attributes(
-            {ATTR_PAUSED: ATTR_TRUE if paused else ATTR_FALSE}
-        )
+            # Acknowledge before the flush below: it costs ~1s even when nothing is
+            # pending (live, 2026-08-21: eight holds, all empty, all ~1005ms), and
+            # the frontend keeps re-sending `tutor.pause` until it sees this.
+            await ctx.room.local_participant.set_attributes(
+                {ATTR_PAUSED: ATTR_TRUE if paused else ATTR_FALSE}
+            )
+        except Exception:
+            # A transition that failed halfway must not look finished: the
+            # frontend retries, and `state.paused` is what makes the retry a
+            # no-op. Put state and audio back the way they were, then surface it.
+            state.paused = not paused
+            session.input.set_audio_enabled(not paused)
+            session.output.set_audio_enabled(not paused)
+            raise
         logger.info("session %s", "paused" if paused else "resumed")
         if paused:
             await _flush_open_user_turn(session, state, analyzer)
