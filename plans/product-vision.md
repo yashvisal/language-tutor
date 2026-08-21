@@ -100,12 +100,15 @@ From reviewing the phase-1 layout explorations (aura-stage, split-columns, and t
    superseded: the answer is consumer; the prototype stops being a research
    instrument for choosing a market and becomes the product.
 2. **Monetization: credits, pay-as-you-go, then subscription.** A credit buys
-   15 minutes of live conversation. One free credit on signup. Credit packs are
+   10 minutes of live conversation (settled 2026-08-20 — a session is a short
+   1/4/4/1 arc, and ten minutes is the right length for it). One free credit on signup. Credit packs are
    the purchase unit; sessions debit a MINUTES balance (actual minutes used,
    rounded up) so short sessions are not punished. A subscription tier comes
    later and bundles the tutoring program (assessment, pre/post reviews,
    quizzes, included minutes).
-3. **Pricing follows cost.** All-in cost of a 15-minute session is ~$1.20–1.40
+3. **Pricing follows cost.** All-in cost of a 10-minute session on the mini
+   realtime model is roughly $0.35–0.55 (was ~$1.20–1.40 for 15 minutes on the
+   full model)
    (realtime audio dominated by tutor talk-time at ~4x the learner's per
    minute; STT ~20%; everything else pennies). Credits are priced at >=3x
    cost. Tutor brevity is a margin policy as well as a pedagogy policy.

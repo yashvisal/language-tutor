@@ -149,7 +149,7 @@ export const ANCHOR_LANGUAGE = "en"
  * TODO(credits): derive from the learner's ledger balance once auth and the
  * database land; a constant is correct only while every session is free.
  */
-export const SESSION_MAX_MINUTES = 15
+export const SESSION_MAX_MINUTES = 10
 
 /**
  * The dispatch metadata the token route signs into the room config, as the

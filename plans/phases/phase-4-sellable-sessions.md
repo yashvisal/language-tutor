@@ -8,7 +8,7 @@ phase's seams are built knowing what plugs into them.*
 
 **Turn the conversation primitive into a product someone can sign up for, pay
 for, and use without us in the room.** A learner signs up, gets one free
-15-minute credit, configures a session (or accepts a suggestion), talks, sees
+10-minute credit, configures a session (or accepts a suggestion), talks, sees
 their minutes tick down, and can buy more. Deployed, not local.
 
 Two weeks head-down. Everything that isn't on the path from "stranger" to
@@ -21,8 +21,9 @@ All-in cost of a 15-minute session (2026-08-20 estimate, see vision doc #3):
 learner's input per minute (1,200 vs 600 tokens/min at $64 vs $32 per 1M),
 context re-reads are cheap only because they're cached, STT is ~20%.
 
-- Credit = 15 minutes. Price >= 3x cost: **$3.99 single, 5 for $15.99, 12 for
-  $34.99** (tune after the first real cost data from production).
+- Credit = 10 minutes (settled 2026-08-20). Pricing re-bases on the measured
+  mini cost (~$0.35–0.55/session); defaults TBD with Yash — the >= 3x-cost rule
+  stands.
 - Free trial: 1 credit per signup (~$1.25 exposure per account, behind auth).
   `gpt-realtime-mini` (~1/3 cost) is the lever for trial credits if abuse
   appears — model per session is already an env-level choice; make it a
@@ -46,7 +47,8 @@ context re-reads are cheap only because they're cached, STT is ~20%.
 
 ### 2. Credits, metering, and the clock
 
-- **Minutes balance** derived from the ledger; credits are the purchase unit.
+- **Minutes balance** derived from the ledger; credits (10 min) are the purchase
+  unit.
 - **The worker's clock is authoritative.** At session start the frontend's
   token request carries the user; the token route checks balance > 0 and
   embeds `user_id` + `max_minutes` in the dispatch metadata. The worker runs
@@ -82,6 +84,27 @@ context re-reads are cheap only because they're cached, STT is ~20%.
   forms), the analyzer (weight corrections toward the focus), and — in phase
   5 — the Review tab. Build the plan object and its prompt/analyzer wiring now;
   the Review consumer arrives with phase 5.
+
+### 4b. The session arc (added 2026-08-20, after live testing)
+
+Straight role-play for a whole session is bad pedagogy and the tutor fills the
+dead space by rambling. A session is a gradual-release ARC owned by the worker,
+proportioned 1 / 4 / 4 / 1 of the budget:
+
+1. **Frame** (anchor language): name the situation and focus form, model one
+   example, invite one try. Tiny and applied.
+2. **Guided bits** (bilingual): intent in the anchor language, production in the
+   target, in-character response, next intent. "Doing bits together."
+3. **Scene** (target language): the role-play, as BEATS with natural ends
+   (arrive → order → a small problem → pay). Entry by consent.
+4. **Debrief** (anchor language): two things that went well, one to remember,
+   from `SessionFacts` — then the wrap-up/goodbye.
+
+The arc is a guide, never a lock: every gate is skippable, and the learner may
+ask anything or steer at any moment; the tutor follows and returns when
+natural. Phase transitions ride the clock's active time and land via
+instruction updates (no interruptions). The phase-5 Review tab draws its
+material from the same plan + arc.
 
 ### 5. Session surface additions
 
