@@ -1,8 +1,7 @@
-# Phase 4, the product shell: landing, auth, minutes, packs
+# Phase 5: the product shell — landing, auth, minutes, packs
 
-*Status: proposed 2026-08-21, pending Yash's review. This is the design and
-build plan for workstreams 1, 2, 3, 5 and 6 of
-`phase-4-sellable-sessions.md` — everything around the session that turns the
+*Status: proposed 2026-08-21, pending Yash's review. Phase 5 by Yash's call (2026-08-21): the product shell around the session.
+It takes over workstreams 1, 2, 3, 5 and 6 of `phase-4-sellable-sessions.md` — everything around the session that turns the
 playground into a product. Vendors are settled there: Clerk (email + Google),
 Convex, Stripe Checkout. Read `product-vision.md` first; the taste rules
 ("Notion-like restraint", no SaaS dashboard, no gamification) apply to every

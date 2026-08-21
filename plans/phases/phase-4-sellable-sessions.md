@@ -33,8 +33,8 @@ speech, ~35–50% talk share).
 
 ## Workstreams
 
-*Workstreams 1, 2, 3, 5 and 6 — everything around the session — are designed
-and sequenced in `phase-4-product-shell.md` (2026-08-21). Session follow-ups
+*Workstreams 1, 2, 3, 5 and 6 — everything around the session — moved to phase 5:
+designed and sequenced in `phase-5-product-shell.md` (2026-08-21). Session follow-ups
 deferred from live testing are in `../backlog.md`.*
 
 ### 1. Identity and data
