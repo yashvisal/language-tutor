@@ -173,22 +173,26 @@ and do not explain why it is ending.\
 FAREWELL_INTENT = "That's our time for today — nice work, see you next time"
 
 GREETING_SCENARIO_INSTRUCTIONS = """\
-You speak first — never wait for the learner to open. This is talk ABOUT the \
-session, so say it in {anchor}: greet them warmly in one sentence (a single \
-very simple {target} hello is fine), say in one plain sentence that you two \
-will practice this situation: {scenario}, and ask whether they are ready to \
-step into it. Then STOP and wait. Do not start playing the scene yet — the \
-role-play, in {target}, begins only after they say they are ready. Do not \
-explain how the app works.\
+You speak first — never wait for the learner to open. LANGUAGE RULE FOR THIS \
+MESSAGE, overriding your default: your ENTIRE message is in {anchor}. The only \
+{target} allowed is a single one-word hello at the very start. This is talk \
+ABOUT the session, not practice — the learner may have very little {target}. \
+Say, in {anchor}: a warm one-sentence greeting, one plain sentence that you \
+two will practice this situation — {scenario} — and a question asking whether \
+they are ready to step into it. Then STOP and wait. The role-play, in \
+{target}, begins only after they say they are ready. Do not explain how the \
+app works.\
 """
 
 GREETING_TOPIC_INSTRUCTIONS = """\
-You speak first — never wait for the learner to open. This is talk ABOUT the \
-session, so say it in {anchor}: greet them warmly in one sentence (a single \
-very simple {target} hello is fine), say in one plain sentence that you will \
-talk about {topic} today, and ask whether they are ready to begin. Then STOP \
-and wait. The conversation itself, in {target}, starts only after they say \
-yes. Do not explain how the app works.\
+You speak first — never wait for the learner to open. LANGUAGE RULE FOR THIS \
+MESSAGE, overriding your default: your ENTIRE message is in {anchor}. The only \
+{target} allowed is a single one-word hello at the very start. This is talk \
+ABOUT the session, not practice — the learner may have very little {target}. \
+Say, in {anchor}: a warm one-sentence greeting, one plain sentence that you \
+will talk about {topic} today, and a question asking whether they are ready \
+to begin. Then STOP and wait. The conversation, in {target}, starts only after \
+they say yes. Do not explain how the app works.\
 """
 
 ANALYZER_FOCUS_INSTRUCTIONS = """\
@@ -203,12 +207,14 @@ as wrong.\
 """
 
 GREETING_INSTRUCTIONS = """\
-You speak first — never wait for the learner to open. This is talk ABOUT the \
-session, so say it in {anchor}: greet them warmly in one sentence (a single \
-very simple {target} hello is fine), suggest one light everyday subject in a \
-second sentence, and ask whether that sounds good or they would rather pick \
-something else. Then STOP and wait. The conversation itself, in {target}, \
-starts only after they answer. Do not explain how the app works.\
+You speak first — never wait for the learner to open. LANGUAGE RULE FOR THIS \
+MESSAGE, overriding your default: your ENTIRE message is in {anchor}. The only \
+{target} allowed is a single one-word hello at the very start. This is talk \
+ABOUT the session, not practice — the learner may have very little {target}. \
+Say, in {anchor}: a warm one-sentence greeting, one light everyday subject you \
+suggest talking about, and a question asking whether that sounds good or they \
+would rather pick something else. Then STOP and wait. The conversation, in \
+{target}, starts only after they answer. Do not explain how the app works.\
 """
 
 STT_PROMPT = """\
