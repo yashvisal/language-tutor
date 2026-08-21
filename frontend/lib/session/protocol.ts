@@ -50,6 +50,10 @@ export const RPC_METHODS = {
   resume: "tutor.resume",
   /** Select-to-translate: one settled span in, one translation out. */
   translate: "tutor.translate",
+  /** The Ask tab: one learner question in, one coaching answer out. */
+  ask: "tutor.ask",
+  /** The Review tab: this session's study material, once it exists. */
+  review: "tutor.review",
 } as const
 
 /**
@@ -86,6 +90,100 @@ export interface TranslateResponse {
   error?: string
 }
 
+/* -------------------------------------------------------------------------- */
+/*  The study surface: Ask                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One message of the Ask thread as the worker reads it. The CLIENT owns the
+ * thread — the worker answers one question at a time and keeps nothing — so
+ * every request carries the recent exchanges as context.
+ */
+export interface AskMessage {
+  role: "learner" | "coach"
+  text: string
+}
+
+/** The `tutor.ask` request. Snake_cased for the same reason as `ResumePayload`. */
+export interface AskRequest {
+  question: string
+  /** The turn that was on stage when the question was asked, for the worker's logs. */
+  turn_id: string | null
+  /** The last few exchanges, oldest first. See `ASK_HISTORY_MESSAGES`. */
+  history: AskMessage[]
+}
+
+/**
+ * The `tutor.ask` reply. `limit` marks the worker's invisible cap: it still
+ * answers — with a gentle redirect back to speaking — and the client renders
+ * that answer like any other. The redirect IS the UX; there is no error state
+ * for hitting the cap.
+ */
+export interface AskResponse {
+  answer?: string
+  limit?: true
+  error?: string
+}
+
+/** How much of the thread travels with each question (messages, not exchanges). */
+export const ASK_HISTORY_MESSAGES = 16
+
+/**
+ * How long the Ask tab waits for a coaching answer. Same budget as translate:
+ * the worker self-limits and answers failures with an error string, so
+ * reaching this ceiling is the transport, not the model.
+ */
+export const ASK_TIMEOUT_MS = 5000
+
+/** Longest question the surface will send. A paragraph is not a question. */
+export const MAX_QUESTION_CHARS = 400
+
+/* -------------------------------------------------------------------------- */
+/*  The study surface: Review                                                 */
+/* -------------------------------------------------------------------------- */
+
+/** A study pair: the target-language item and its anchor-language gloss. */
+export interface ReviewItem {
+  target: string
+  anchor: string
+}
+
+/**
+ * One verb in one tense. Deterministic material (see the phase-5 outline:
+ * tables are shipped, never LLM-generated), so the rows arrive in the order
+ * they should be read and the UI does not sort them.
+ */
+export interface ConjugationTable {
+  verb: string
+  tense: string
+  rows: Array<{ person: string; form: string }>
+}
+
+/** Everything the Review tab renders, generated once per session. */
+export interface ReviewMaterial {
+  vocab: ReviewItem[]
+  phrases: ReviewItem[]
+  tables: ConjugationTable[]
+}
+
+/**
+ * The `tutor.review` reply. `ready: false` means the material is still being
+ * generated — the only correct response is to poll again, not to show an
+ * error, because a session's material is generated once and then never changes.
+ */
+export type ReviewResponse =
+  ({ ready: true } & ReviewMaterial) | { ready: false }
+
+/** Gap between review polls while the worker says the material is not ready. */
+export const REVIEW_POLL_MS = 1500
+
+/**
+ * How many times to ask before giving up. At ~1.5s a poll this is half a
+ * minute — well past any honest generation, and the failure it describes ("not
+ * available") is quiet rather than retryable.
+ */
+export const REVIEW_MAX_POLLS = 20
+
 /**
  * The correction the learner inspected during a hold, as it travels on the
  * wire. Deliberately snake_cased and stringly-typed: this is the JSON the
@@ -110,7 +208,26 @@ export interface ResumePayload {
   reasons: string[]
   /** The most recently inspected correction, if the hold included one. */
   correction: ResumeCorrectionPayload | null
+  /**
+   * The study tab that was open when the hold released. Optional because a
+   * worker that predates the study surface must still parse these payloads —
+   * and because a hold with no overlay (the pause button, a correction) has no
+   * tab to report.
+   */
+  tab?: ResumeTab | null
+  /**
+   * The questions asked during THIS hold, oldest first, capped at
+   * `MAX_RESUME_ASKS`. The answers never travel: what returns to the voice
+   * model is a brief, never the Ask transcript (vision doc, 2026-08-20 #4).
+   */
+  asks?: string[]
 }
+
+/** The study tabs, as the worker reads them. Mirrors `StudyTab` in contract.ts. */
+export type ResumeTab = "transcript" | "review" | "ask"
+
+/** How many of a hold's questions ride back on the resume payload. */
+export const MAX_RESUME_ASKS = 5
 
 /** Participant attribute keys, all published by the agent. `paused` is mirrored
  * so pause state survives reconnects; `analyzer` tells the surface whether
@@ -142,7 +259,7 @@ export const TARGET_LANGUAGE = "es"
 export const ANCHOR_LANGUAGE = "en"
 
 /**
- * Minutes a session is allowed to run. One credit = 15 minutes (see
+ * Minutes a session is allowed to run. One credit = 10 minutes (see
  * plans/product-vision.md, 2026-08-20 #2). The token route embeds this in the
  * dispatch metadata and the worker's clock enforces it.
  *

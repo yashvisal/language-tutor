@@ -24,16 +24,18 @@
  * React driver (`useMockSession`), so any page can host it.
  */
 
-import { useEffect, useReducer } from "react"
+import { useEffect, useMemo, useReducer } from "react"
 
 import { CONVERSATION, INTERIM } from "@/lib/design/mock-conversation"
-import type { SessionEvent, TranslateFn, Turn } from "./contract"
+import type { SessionEvent, StudySession, TranslateFn, Turn } from "./contract"
+import type { AskResponse, ReviewItem, ReviewResponse } from "./protocol"
 import {
   INITIAL_SESSION_STATE,
   sessionReducer,
   wordsOf,
   type SessionState,
 } from "./reducer"
+import { useStudy, type StudyBackend } from "./study"
 
 /* -------------------------------------------------------------------------- */
 /*  Script                                                                    */
@@ -218,6 +220,101 @@ export const mockTranslate: TranslateFn = (text, _speaker, turnId) =>
   )
 
 /* -------------------------------------------------------------------------- */
+/*  The study surface                                                         */
+/* -------------------------------------------------------------------------- */
+
+/** Roughly what a coaching answer costs on the wire. */
+const MOCK_ASK_MS = 500
+
+/**
+ * Replay's coach. Canned, and deliberately in the persona the worker owns —
+ * push back, make the learner try first, never hand over the sentence — so the
+ * design playground shows the shape of an answer rather than an answer. Cycled
+ * so a demo of several questions doesn't read as one stuck response.
+ */
+const MOCK_ANSWERS = [
+  "Try it yourself first: you already used the preterite once in this conversation. What would the “yo” form be?",
+  "Close. Think about which past you mean — a finished event (pretérito) or a scene you're describing (imperfecto)?",
+  "That one's a fixed expression, so don't translate it word by word. Say it out loud once and it'll stick.",
+]
+
+export const mockAsk: StudyBackend["ask"] = (_question, _turnId, history) =>
+  new Promise<AskResponse>((resolve) =>
+    setTimeout(() => {
+      const asked = Math.floor(history.length / 2)
+      resolve({ answer: MOCK_ANSWERS[asked % MOCK_ANSWERS.length]! })
+    }, MOCK_ASK_MS)
+  )
+
+/** The focus forms the scripted conversation drills. Stands in for a plan. */
+export const MOCK_FOCUS_TENSES = ["preterite"]
+
+/** Vocabulary the scripted conversation actually uses. */
+const MOCK_VOCAB: ReviewItem[] = [
+  { target: "el supermercado", anchor: "the supermarket" },
+  { target: "las fresas", anchor: "strawberries" },
+  { target: "la sandía", anchor: "the watermelon" },
+  { target: "el batido", anchor: "the smoothie" },
+  { target: "la cocina", anchor: "the kitchen" },
+]
+
+/**
+ * A tiny hardcoded table, standing in for the deterministic conjugation data
+ * the worker ships (phase-5 outline: tables are data, never model-generated).
+ */
+const MOCK_TABLES = [
+  {
+    verb: "ir",
+    tense: "preterite",
+    rows: [
+      { person: "yo", form: "fui" },
+      { person: "tú", form: "fuiste" },
+      { person: "él / ella / usted", form: "fue" },
+      { person: "nosotros", form: "fuimos" },
+      { person: "ellos / ustedes", form: "fueron" },
+    ],
+  },
+  {
+    verb: "comprar",
+    tense: "preterite",
+    rows: [
+      { person: "yo", form: "compré" },
+      { person: "tú", form: "compraste" },
+      { person: "él / ella / usted", form: "compró" },
+      { person: "nosotros", form: "compramos" },
+      { person: "ellos / ustedes", form: "compraron" },
+    ],
+  },
+]
+
+/** How long replay pretends the worker is still generating the material. */
+const MOCK_REVIEW_DELAY_MS = 1200
+
+/** When the material was first asked for; the shimmer is worth showing once. */
+let reviewAskedAt: number | null = null
+
+/**
+ * Replay's review material: the script's own tutor lines as phrases, the words
+ * the conversation turns on as vocabulary, and the shipped tables. The first
+ * poll answers "not ready" so the playground exercises the loading state the
+ * live surface will actually spend time in.
+ */
+export const mockReview: StudyBackend["review"] = () => {
+  reviewAskedAt ??= Date.now()
+  if (Date.now() - reviewAskedAt < MOCK_REVIEW_DELAY_MS) {
+    return Promise.resolve<ReviewResponse>({ ready: false })
+  }
+  return Promise.resolve<ReviewResponse>({
+    ready: true,
+    vocab: MOCK_VOCAB,
+    phrases: CONVERSATION.filter((turn) => turn.speaker === "tutor")
+      .slice(0, 4)
+      .map((turn) => ({ target: turn.es, anchor: turn.en })),
+    tables: MOCK_TABLES,
+  })
+}
+
+/* -------------------------------------------------------------------------- */
 /*  React driver                                                              */
 /* -------------------------------------------------------------------------- */
 
@@ -225,10 +322,17 @@ export interface MockSession {
   state: SessionState
   /** For client-originated events — the hold set, mainly. */
   dispatch: (event: SessionEvent) => void
+  /** The pause overlay's back end, canned. */
+  study: StudySession
 }
 
 export function useMockSession(): MockSession {
   const [state, dispatch] = useReducer(sessionReducer, MOCK_INITIAL_STATE)
+  const backend = useMemo<StudyBackend>(
+    () => ({ ask: mockAsk, review: mockReview }),
+    []
+  )
+  const study = useStudy(backend)
 
   useEffect(() => {
     if (state.holds.length > 0) return
@@ -237,5 +341,5 @@ export function useMockSession(): MockSession {
     return () => clearTimeout(id)
   }, [state])
 
-  return { state, dispatch }
+  return { state, dispatch, study }
 }

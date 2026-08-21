@@ -332,6 +332,20 @@ export function historyTurns(state: SessionState): Turn[] {
   return state.turns
 }
 
+/**
+ * The whole conversation, the turn on stage included — what the study surface's
+ * Transcript tab reads.
+ *
+ * Deliberately wider than `historyTurns`: the stage's escape hatch showed what
+ * was BEHIND the stage, but a study surface is the document, and the moment a
+ * learner most often pauses to study is the one they just lived. It is also
+ * what makes an Ask anchor always resolvable — a question is stamped to the
+ * hero, which `historyTurns` by definition does not contain.
+ */
+export function transcriptTurns(state: SessionState): Turn[] {
+  return state.current ? [...state.turns, state.current] : state.turns
+}
+
 export function isHeld(state: SessionState): boolean {
   return state.holds.length > 0
 }

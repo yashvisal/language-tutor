@@ -24,7 +24,21 @@
 
 import type { AgentState } from "@livekit/components-react"
 
+import type {
+  AskMessage,
+  ConjugationTable,
+  ReviewItem,
+  ReviewMaterial,
+} from "./protocol"
+
 export type { AgentState }
+
+/**
+ * The wire's study shapes are the frontend's too — `target`/`anchor`/`verb`/
+ * `rows` read identically on both sides, so re-exporting beats maintaining a
+ * parallel set of interfaces that would only ever be copies.
+ */
+export type { AskMessage, ConjugationTable, ReviewItem, ReviewMaterial }
 
 /* -------------------------------------------------------------------------- */
 /*  Domain types                                                              */
@@ -165,6 +179,57 @@ export type TranslateFn = (
   speaker: Speaker,
   turnId?: string
 ) => Promise<string>
+
+/* -------------------------------------------------------------------------- */
+/*  The study surface                                                         */
+/* -------------------------------------------------------------------------- */
+
+/** The pause overlay's three faces. See plans/product-vision.md, 2026-08-20 #4. */
+export type StudyTab = "transcript" | "review" | "ask"
+
+/**
+ * One question and its answer.
+ *
+ * ANCHORED, not floating: `turnId` is the turn that was on stage when the
+ * learner asked, which is what lets the Transcript tab mark the moment the
+ * question belongs to. Null only when the stage was empty.
+ *
+ * `answer === null` is the pending state; `failed` is a transport failure, and
+ * is a different fact from `limit` — the worker's invisible cap still produces
+ * a real answer (a redirect back to speaking) that renders like any other.
+ */
+export interface AskExchange {
+  id: string
+  question: string
+  answer: string | null
+  turnId: string | null
+  limit?: boolean
+  failed?: boolean
+}
+
+/**
+ * The study surface's back end, session-scoped and owned by the producer.
+ *
+ * The thread lives here rather than in the overlay because the overlay unmounts
+ * every time the learner resumes, and a question asked two pauses ago is still
+ * part of this session's study. It is deliberately NOT persisted: a new session
+ * starts with an empty thread.
+ */
+export interface StudySession {
+  /** The Ask thread, oldest first. */
+  thread: AskExchange[]
+  /** Asks a question and files it under the turn on stage. Never rejects. */
+  ask: (question: string, turnId: string | null) => void
+  /**
+   * This session's review material, awaited by the Review tab. Polls while the
+   * worker is still generating and resolves null when it never arrives —
+   * "not available" is a quiet line, not an error.
+   */
+  fetchReview: () => Promise<ReviewMaterial | null>
+  /** The tab the learner last had open. Remembered for the session. */
+  tab: StudyTab
+  setTab: (tab: StudyTab) => void
+}
 
 /* -------------------------------------------------------------------------- */
 /*  Events                                                                    */

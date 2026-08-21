@@ -86,6 +86,8 @@ export default function SessionPage() {
         onEnd={live.disconnect}
         minutesLeft={live.minutesLeft}
         translate={live.translate}
+        study={live.study}
+        focusTenses={live.plan?.tenses}
         renderAura={(auraState) => (
           <TutorAura
             state={auraState}

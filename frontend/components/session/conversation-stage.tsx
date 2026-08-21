@@ -31,7 +31,7 @@
 import { useCallback, useEffect, useRef, type ReactNode } from "react"
 import { AnimatePresence, motion } from "motion/react"
 
-import { HistoryPeek } from "@/components/session/history-peek"
+import { StudyOverlay } from "@/components/session/study-overlay"
 import { MinutesPill } from "@/components/session/minutes-pill"
 import { Caret, HeroWords } from "@/components/session/hero-utterance"
 import { SettledText } from "@/components/session/correction-mark"
@@ -50,17 +50,19 @@ import {
 } from "@/components/session/translate-overlay"
 import type {
   AgentState,
+  AskExchange,
   Correction,
   PauseReason,
   SessionEvent,
+  StudySession,
   TranslateFn,
 } from "@/lib/session/contract"
 import {
   heroTurn,
-  historyTurns,
   isHeld,
   marksActive,
   pinnedTurn,
+  transcriptTurns,
   type SessionState,
 } from "@/lib/session/reducer"
 import { cn } from "@/lib/utils"
@@ -102,7 +104,22 @@ export interface ConversationStageProps {
    * simply never opens then, rather than opening onto an error.
    */
   translate?: TranslateFn
+  /**
+   * The pause overlay's back end — the Ask thread, the review material, and the
+   * tab the learner last had open, all owned by the producer for the length of
+   * the session. Omitted where nothing can answer: the overlay then opens on
+   * the transcript alone, which is exactly what it was before phase 5.
+   */
+  study?: StudySession
+  /** The plan's focus forms, so Review leads with what is being practiced. */
+  focusTenses?: readonly string[]
 }
+
+/** Stable no-study fallbacks, so the overlay's props never change identity. */
+const EMPTY_THREAD: AskExchange[] = []
+const NO_TAB = () => {}
+const NO_ASK = () => {}
+const NO_REVIEW = () => Promise.resolve(null)
 
 export function ConversationStage({
   state,
@@ -114,6 +131,8 @@ export function ConversationStage({
   interimSegmentId,
   minutesLeft,
   translate,
+  study,
+  focusTenses,
 }: ConversationStageProps) {
   const { phase, holds } = state
 
@@ -338,11 +357,22 @@ export function ConversationStage({
         </motion.div>
       </div>
 
-      {/* History peek — auto-holds while open. */}
+      {/* The study surface — auto-holds while open. One hold covers all three
+          tabs: switching tabs is not a new kind of pause. */}
       <AnimatePresence>
         {historyOpen && (
-          <HistoryPeek
-            turns={historyTurns(state)}
+          <StudyOverlay
+            turns={transcriptTurns(state)}
+            thread={study?.thread ?? EMPTY_THREAD}
+            tab={study?.tab ?? "transcript"}
+            onTabChange={study?.setTab ?? NO_TAB}
+            onAsk={study?.ask ?? NO_ASK}
+            fetchReview={study?.fetchReview ?? NO_REVIEW}
+            focusTenses={focusTenses}
+            // A question is stamped to the turn that was on stage when it was
+            // asked — the moment the learner stopped at, not the tab they typed
+            // it in.
+            heroTurnId={turn?.id ?? null}
             onClose={() => release("history")}
             restoreFocusTo={historyTrigger}
           />

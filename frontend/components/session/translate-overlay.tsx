@@ -30,6 +30,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { AnimatePresence, motion } from "motion/react"
 
 import type { Speaker, TranslateFn, Turn } from "@/lib/session/contract"
+import { cn } from "@/lib/utils"
 import {
   ANCHOR_LANGUAGE,
   MAX_SPAN_CHARS,
@@ -65,6 +66,9 @@ export function translatableProps(turn: Pick<Turn, "id" | "speaker">) {
  * ("es") is still a legitimate ask, so the floor is characters, not words.
  */
 const MIN_SPAN_CHARS = 2
+
+/** Bar widths for `Shimmer`, cycled. */
+const WIDTHS = ["100%", "58%", "82%", "44%"]
 
 const CARD_W = 300
 /** Assumed card height for the flip decision — cheaper than measuring, and the
@@ -260,7 +264,10 @@ export function SelectionTranslator({
               {anchor.text}
             </div>
             {result?.translation ? (
-              <p lang={ANCHOR_LANGUAGE} className="mt-2 leading-relaxed text-balance">
+              <p
+                lang={ANCHOR_LANGUAGE}
+                className="mt-2 leading-relaxed text-balance"
+              >
                 {result.translation}
               </p>
             ) : result?.failed ? (
@@ -277,11 +284,22 @@ export function SelectionTranslator({
   )
 }
 
-/** The wait, made quiet: two breathing bars where the sentence will land. */
-function Shimmer() {
+/**
+ * The wait, made quiet: breathing bars where the sentence will land. Exported
+ * because every on-demand answer on this surface waits the same way — the Ask
+ * tab and the Review tab borrow it rather than inventing a second idiom for
+ * "the model is thinking".
+ */
+export function Shimmer({
+  lines = 2,
+  className,
+}: {
+  lines?: number
+  className?: string
+}) {
   return (
-    <div aria-hidden className="mt-3 flex flex-col gap-2">
-      {[0, 1].map((i) => (
+    <div aria-hidden className={cn("mt-3 flex flex-col gap-2", className)}>
+      {Array.from({ length: lines }, (_, i) => i).map((i) => (
         <motion.span
           key={i}
           animate={{ opacity: [0.25, 0.6, 0.25] }}
@@ -292,7 +310,8 @@ function Shimmer() {
             delay: i * 0.18,
           }}
           className="block h-2.5 rounded-full bg-muted-foreground/40"
-          style={{ width: i === 0 ? "100%" : "58%" }}
+          // Ragged, like the line lengths of a real answer.
+          style={{ width: WIDTHS[i % WIDTHS.length] }}
         />
       ))}
     </div>
