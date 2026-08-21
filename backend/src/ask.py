@@ -287,7 +287,7 @@ async def register_ask_rpc(ctx: JobContext, session: AgentSession, coach: AskCoa
             extra={
                 "turn_id": turn_id,
                 "asked": coach.asked,
-                "thread": len(thread),
+                "thread_turns": len(thread),
                 "chars": len(answer),
                 "latency_ms": int((time.monotonic() - started) * 1000),
             },
