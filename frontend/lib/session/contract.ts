@@ -159,11 +159,17 @@ export interface SessionOutcome {
 }
 
 /**
- * Why the session is being held. Multiple sources can hold it at once (the
- * control button is sticky; a correction popover, a translation overlay and a
- * history peek release themselves), so holds are a set, not a boolean. This set
+ * Why the session is being held. Multiple sources can hold it at once (a
+ * correction popover and a translation overlay release themselves; the study
+ * surface is released by resuming), so holds are a set, not a boolean. This set
  * is client-side state: the live adapter collapses "any hold" into a single
  * pause RPC and "no holds left" into a resume.
+ *
+ * `"history"` is every deliberate stop — the hold button and Space as much as
+ * the transcript button — because all of them land on the study surface, and
+ * the worker is told which tab a hold ended on only for holds that had one.
+ * `"control"` is left for the sticky hold with no surface behind it: the one
+ * the live producer adopts from an agent that reconnects already paused.
  */
 export type PauseReason = "control" | "correction" | "history" | "translation"
 

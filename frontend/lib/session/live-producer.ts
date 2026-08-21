@@ -1035,8 +1035,10 @@ function resumePayload(
     held_ms: Math.max(0, Math.round(heldMs)),
     reasons: [...reasons],
     correction: reasons.includes("correction") ? inspected : null,
-    // Only meaningful when the study surface was actually open: a hold that
-    // came from the pause button was not spent on a tab.
+    // Only meaningful when the study surface was actually open — which is
+    // every deliberate stop, the pause button included, but not a correction,
+    // a translation, or a `control` hold adopted from an agent that
+    // reconnected paused.
     tab: reasons.includes("history") ? tab : null,
     asks: [...asks],
   }

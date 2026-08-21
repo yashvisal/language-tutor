@@ -19,6 +19,7 @@ import { cn } from "@/lib/utils"
 
 export function SessionControls({
   paused,
+  studyOpen,
   muted,
   onReview,
   onToggleMute,
@@ -26,6 +27,12 @@ export function SessionControls({
   onEnd,
 }: {
   paused: boolean
+  /**
+   * Whether the study surface is up. Both stopping gestures open it, so both
+   * buttons read as pressed while it is — the hold button is not the only one
+   * that did something.
+   */
+  studyOpen: boolean
   muted: boolean
   onReview: () => void
   onToggleMute: () => void
@@ -44,7 +51,11 @@ export function SessionControls({
                 size="icon-lg"
                 onClick={onReview}
                 aria-label="Review — holds the session"
-                className="rounded-full text-muted-foreground/70 hover:text-foreground"
+                aria-pressed={studyOpen}
+                className={cn(
+                  "rounded-full text-muted-foreground/70 hover:text-foreground",
+                  studyOpen && "bg-primary/10 text-primary hover:text-primary"
+                )}
               >
                 <History />
               </Button>
@@ -82,7 +93,8 @@ export function SessionControls({
                 variant="ghost"
                 size="icon-lg"
                 onClick={onTogglePause}
-                aria-label={paused ? "Resume" : "Hold"}
+                aria-label={paused ? "Resume" : "Hold — opens the study surface"}
+                aria-pressed={paused}
                 className={cn(
                   "rounded-full text-muted-foreground hover:text-foreground",
                   paused && "bg-primary/10 text-primary hover:text-primary"
@@ -92,7 +104,9 @@ export function SessionControls({
               </Button>
             }
           />
-          <TooltipContent>{paused ? "Resume" : "Hold"} · space</TooltipContent>
+          <TooltipContent>
+            {paused ? "Resume" : "Hold · study"} · space
+          </TooltipContent>
         </Tooltip>
 
         {onEnd && (
