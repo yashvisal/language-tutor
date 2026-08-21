@@ -668,6 +668,11 @@ async def _register_pause_rpc(
     # The last answer each side gave, so a retry gets the same answer back.
     last_resume_ack = json.dumps({"paused": False, "resumed": False})
 
+    async def _publish_paused(paused: bool) -> None:
+        await ctx.room.local_participant.set_attributes(
+            {ATTR_PAUSED: ATTR_TRUE if paused else ATTR_FALSE}
+        )
+
     async def _apply(paused: bool) -> bool:
         """Edge-triggered. Returns False when the session was already there.
 
@@ -679,6 +684,11 @@ async def _register_pause_rpc(
         a second `generate_reply`.
         """
         if state.paused == paused:
+            # A retry of a transition that already ran. Re-publish the
+            # acknowledgement, idempotently: the frontend keeps re-sending until
+            # it sees the attribute, and the only way a retry reaches here with
+            # the attribute unseen is that the publish itself failed last time.
+            await _publish_paused(paused)
             return False
         state.paused = paused
         try:
@@ -702,13 +712,6 @@ async def _register_pause_rpc(
             else:
                 session.input.set_audio_enabled(True)
                 session.output.set_audio_enabled(True)
-
-            # Acknowledge before the flush below: it costs ~1s even when nothing is
-            # pending (live, 2026-08-21: eight holds, all empty, all ~1005ms), and
-            # the frontend keeps re-sending `tutor.pause` until it sees this.
-            await ctx.room.local_participant.set_attributes(
-                {ATTR_PAUSED: ATTR_TRUE if paused else ATTR_FALSE}
-            )
         except Exception:
             # A transition that failed halfway must not look finished: the
             # frontend retries, and `state.paused` is what makes the retry a
@@ -717,6 +720,14 @@ async def _register_pause_rpc(
             session.input.set_audio_enabled(not paused)
             session.output.set_audio_enabled(not paused)
             raise
+
+        # The transition is complete; only the acknowledgement remains, and it
+        # is outside the rollback on purpose — a failed publish must not undo
+        # the interrupt or re-run the snapshot on retry (the retry path above
+        # re-publishes instead). It goes before the flush below because the
+        # flush costs ~1s even when nothing is pending (live, 2026-08-21: eight
+        # holds, all empty, all ~1005ms).
+        await _publish_paused(paused)
         logger.info("session %s", "paused" if paused else "resumed")
         if paused:
             await _flush_open_user_turn(session, state, analyzer)
