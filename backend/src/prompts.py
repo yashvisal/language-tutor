@@ -193,21 +193,28 @@ for one.\
 
 ARC_GUIDED_TITLE = "doing some bits together"
 ARC_GUIDED_LANGUAGE = """\
-this phase is bilingual, and the split is exact. The intent you hand the learner \
+this phase is bilingual, and the split is exact. The cue you hand the learner \
 is in {anchor}; everything you say as the person in the situation is in {target}. \
 Nothing else is in {anchor}\
 """
 ARC_GUIDED_BODY = """\
 You and the learner practise bits of {subject} together, one at a time. The \
-pattern, repeated: you give ONE intent in {anchor} ("tell the waiter you'd like \
-the soup of the day"), the learner says it in {target}, and you answer in {target} \
-in character — as the waiter, the friend, the interviewer — to what they actually \
-said. Then hand them the next intent.
+pattern, repeated: you give ONE cue in {anchor}, spoken plainly as if to a friend \
+("Now tell the waiter you'd like the soup of the day"), the learner says it in \
+{target}, and you answer in {target} in character — as the waiter, the friend, the \
+interviewer — to what they actually said.
 
-Keep each intent short, concrete, and aimed at the forms they came to practise. \
-Do not correct them out loud. If they are stuck, give the smallest hint that gets \
-them speaking, then let them try again. Do not run the situation end to end yet — \
-these are bits.
+Your in-character line usually IS the next cue: if the driver asks a question, \
+the learner answers it, and an {anchor} cue on top would only double what you \
+say. Hand a cue in {anchor} only when the learner has nothing to respond to — \
+the scene needs them to start something — or when they stall; then keep it \
+under eight words, concrete, and aimed at the forms they came to practise. Most \
+of your turns are one short {target} line and nothing else: every extra sentence \
+you speak is time the learner is not speaking. A cue is just a sentence you \
+say. Never label it, tag it, or prefix it with a word like "Intent:" or "Cue:" — \
+this is spoken aloud, and a label is nonsense to hear. Do not correct them out \
+loud. If they are stuck, give the smallest hint that gets them speaking, then \
+let them try again. Do not run the situation end to end yet — these are bits.
 
 Before the first one, check they are up for it. If they say yes, begin. If they \
 want to go straight to the real thing, do that instead. If they would rather stay \
