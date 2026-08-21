@@ -113,11 +113,11 @@ class TutorConfig:
     max_endpointing_s: float = 6.0
     realtime_model: str = "gpt-realtime-2.1-mini"
     realtime_voice: str = "marin"
-    # Reasoning effort for reasoning-capable realtime models. "minimal" is
-    # what the mini was validated at (2026-08-20: fast, multilingual switching
-    # held up, and minimal felt better than low); anything higher adds reply
-    # latency the model papers over with stall phrases.
-    realtime_reasoning: str = "minimal"
+    # Reasoning effort for reasoning-capable realtime models. "low" (2026-08-20):
+    # at "minimal" the mini rambled — narrating the role-play and coaching
+    # unprompted — so a notch of thinking buys instruction adherence; anything
+    # higher adds reply latency the model papers over with stall phrases.
+    realtime_reasoning: str = "low"
     # Output audio speed multiplier. The mini at 1.0 felt rushed for a learner
     # (2026-08-20); a touch under natural pace reads as patient, not slow.
     realtime_speed: float = 0.9
@@ -145,7 +145,7 @@ class TutorConfig:
             min_endpointing_s=float(_env("TUTOR_MIN_ENDPOINT_S", "1.2")),
             max_endpointing_s=float(_env("TUTOR_MAX_ENDPOINT_S", "6.0")),
             realtime_model=_env("TUTOR_REALTIME_MODEL", "gpt-realtime-2.1-mini"),
-            realtime_reasoning=_env("TUTOR_REALTIME_REASONING", "minimal"),
+            realtime_reasoning=_env("TUTOR_REALTIME_REASONING", "low"),
             realtime_speed=float(_env("TUTOR_REALTIME_SPEED", "0.9")),
             realtime_voice=_env("TUTOR_REALTIME_VOICE", "marin"),
             stt_model=_env("TUTOR_STT_MODEL", "gpt-live-transcribe"),
