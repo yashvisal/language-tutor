@@ -115,9 +115,9 @@ OPENAI_API_KEY=...          # realtime model, STT, analyzer, translate
 # optional — defaults shown
 TUTOR_TARGET_LANG=es
 TUTOR_ANCHOR_LANG=en
-TUTOR_REALTIME_MODEL=gpt-realtime-2.1-mini
-TUTOR_REALTIME_REASONING=low           # minimal | low — see config.py
-TUTOR_REALTIME_SPEED=0.9               # output audio speed multiplier
+TUTOR_REALTIME_MODEL=gpt-realtime-2.1
+TUTOR_REALTIME_REASONING=minimal           # minimal | low — see config.py
+TUTOR_REALTIME_SPEED=1.0               # output audio speed multiplier
 TUTOR_REALTIME_VOICE=marin
 TUTOR_MIN_ENDPOINT_S=1.2            # must outlast the STT flush lag (~0.5s)
 TUTOR_MAX_ENDPOINT_S=6.0            # patience for a learner mid-word-search

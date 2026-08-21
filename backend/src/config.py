@@ -116,16 +116,16 @@ class TutorConfig:
     # for a learner mid-word-search.
     min_endpointing_s: float = 1.2
     max_endpointing_s: float = 6.0
-    realtime_model: str = "gpt-realtime-2.1-mini"
+    realtime_model: str = "gpt-realtime-2.1"
     realtime_voice: str = "marin"
-    # Reasoning effort for reasoning-capable realtime models. "low" (2026-08-20):
-    # at "minimal" the mini rambled — narrating the role-play and coaching
-    # unprompted — so a notch of thinking buys instruction adherence; anything
-    # higher adds reply latency the model papers over with stall phrases.
-    realtime_reasoning: str = "low"
-    # Output audio speed multiplier. The mini at 1.0 felt rushed for a learner
-    # (2026-08-20); a touch under natural pace reads as patient, not slow.
-    realtime_speed: float = 0.9
+    # Reasoning effort for reasoning-capable realtime models. "minimal"
+    # (2026-08-20): the full model follows instructions at minimal, and the
+    # mini at "low" started talking to itself mid-session; with the larger
+    # model, any extra thinking only adds reply latency.
+    realtime_reasoning: str = "minimal"
+    # Output audio speed multiplier. 1.0 with the full model (2026-08-20);
+    # the mini needed 0.9 to not feel rushed, the full model's pacing doesn't.
+    realtime_speed: float = 1.0
 
     stt_model: str = "gpt-live-transcribe"
 
@@ -149,9 +149,9 @@ class TutorConfig:
             anchor_lang=_env("TUTOR_ANCHOR_LANG", "en"),
             min_endpointing_s=float(_env("TUTOR_MIN_ENDPOINT_S", "1.2")),
             max_endpointing_s=float(_env("TUTOR_MAX_ENDPOINT_S", "6.0")),
-            realtime_model=_env("TUTOR_REALTIME_MODEL", "gpt-realtime-2.1-mini"),
-            realtime_reasoning=_env("TUTOR_REALTIME_REASONING", "low"),
-            realtime_speed=float(_env("TUTOR_REALTIME_SPEED", "0.9")),
+            realtime_model=_env("TUTOR_REALTIME_MODEL", "gpt-realtime-2.1"),
+            realtime_reasoning=_env("TUTOR_REALTIME_REASONING", "minimal"),
+            realtime_speed=float(_env("TUTOR_REALTIME_SPEED", "1.0")),
             realtime_voice=_env("TUTOR_REALTIME_VOICE", "marin"),
             stt_model=_env("TUTOR_STT_MODEL", "gpt-live-transcribe"),
             analyzer_model=_env("TUTOR_ANALYZER_MODEL", "gpt-5.6-luna"),

@@ -1,8 +1,10 @@
 """Per-session usage accounting: what the session cost, in tokens and dollars.
 
-Output audio is ~97% of the bill (measured 2026-08-20), so the one number this
-exists to surface is the tutor's talk share. Everything else is context for the
-ledger and for pricing decisions. Prices are estimates for logging only — the
+Audio is ~94% of the bill, split about evenly between uncached input (the
+learner's speech and the room's silence, billed once per turn) and output (the
+tutor's speech) — measured 2026-08-21 on gpt-realtime-2.1. The tutor's talk
+share is the half we control. Everything else is context for the ledger and
+for pricing decisions. Prices are estimates for logging only — the
 ledger bills minutes, never tokens.
 """
 
@@ -15,9 +17,11 @@ from typing import Any
 logger = logging.getLogger("tutor.usage")
 
 # USD per 1M tokens / per minute. Update when pricing or models change.
-AUDIO_IN_PER_M = 10.0
-AUDIO_IN_CACHED_PER_M = 0.30
-AUDIO_OUT_PER_M = 20.0
+# Audio prices are gpt-realtime-2.1 (OpenAI sheet, 2026-08-21); the mini is
+# 3.2x cheaper. Text prices are unverified for this model.
+AUDIO_IN_PER_M = 32.0
+AUDIO_IN_CACHED_PER_M = 0.40
+AUDIO_OUT_PER_M = 64.0
 TEXT_IN_PER_M = 0.60
 TEXT_OUT_PER_M = 2.40
 STT_PER_MIN = 0.017
