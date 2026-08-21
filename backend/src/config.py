@@ -14,12 +14,15 @@ provider-agnostic.
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 
 from livekit.agents import llm
 from livekit.plugins import openai
 from openai.types.realtime import RealtimeReasoning
+
+logger = logging.getLogger("tutor.config")
 
 # --- Wire protocol -------------------------------------------------------
 #
@@ -36,6 +39,14 @@ ATTR_PAUSED = "tutor.paused"
 # `tutor.analyzer` tells the frontend whether corrections are coming at all, so
 # it can skip the "analyzing" phase entirely when the analyzer is off.
 ATTR_ANALYZER = "tutor.analyzer"
+# `tutor.minutes_left` is the session clock's public face: whole minutes
+# remaining, as a string, published on session start, every 30s, at the
+# one-minute warning, and at zero. The frontend displays this number and never
+# computes its own — the worker's clock is authoritative (phase 4, WS2).
+ATTR_MINUTES_LEFT = "tutor.minutes_left"
+# `tutor.session_over` is set to "true" once the clock has ended the session and
+# the goodbye has finished playing, immediately before the worker disconnects.
+ATTR_SESSION_OVER = "tutor.session_over"
 
 # Value convention for boolean participant attributes.
 ATTR_TRUE = "true"
@@ -49,6 +60,11 @@ RPC_RESUME = "tutor.resume"
 # Select-to-translate: one span in, one translation out. Request/response only —
 # there is no translation stream any more (phase 3, WS1/WS3).
 RPC_TRANSLATE = "tutor.translate"
+# The study surface (phase 4, WS4c). Ask is one question in, one coaching answer
+# out; Review is a poll for this session's study material, which is generated
+# once and then never changes.
+RPC_ASK = "tutor.ask"
+RPC_REVIEW = "tutor.review"
 
 # Text stream attributes on `tutor.corrections`.
 ATTR_TURN_ID = "tutor.turn_id"
@@ -67,6 +83,37 @@ def _env_bool(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+# The only reasoning efforts a realtime model accepts, and OpenAI's supported
+# range for output audio speed. Both are checked at load time so a typo in the
+# worker's environment is loud once at start, not at every session.
+REASONING_EFFORTS = ("minimal", "low")
+SPEED_MIN = 0.25
+SPEED_MAX = 1.5
+
+
+def _env_reasoning(name: str, default: str) -> str:
+    value = _env(name, default).strip().lower()
+    if value not in REASONING_EFFORTS:
+        logger.warning("%s=%r is not one of %s; using %r", name, value, REASONING_EFFORTS, default)
+        return default
+    return value
+
+
+def _env_speed(name: str, default: float) -> float:
+    raw = _env(name, str(default))
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("%s=%r is not a number; using %s", name, raw, default)
+        return default
+    clamped = min(max(value, SPEED_MIN), SPEED_MAX)
+    if clamped != value:
+        logger.warning(
+            "%s=%s is outside %s-%s; using %s", name, value, SPEED_MIN, SPEED_MAX, clamped
+        )
+    return clamped
 
 
 # ISO-639-1 -> display name, used only to render prompts. Extend as needed; an
@@ -103,8 +150,16 @@ class TutorConfig:
     # for a learner mid-word-search.
     min_endpointing_s: float = 1.2
     max_endpointing_s: float = 6.0
-    realtime_model: str = "gpt-realtime-2"
+    realtime_model: str = "gpt-realtime-2.1"
     realtime_voice: str = "marin"
+    # Reasoning effort for reasoning-capable realtime models. "minimal"
+    # (2026-08-20): the full model follows instructions at minimal, and the
+    # mini at "low" started talking to itself mid-session; with the larger
+    # model, any extra thinking only adds reply latency.
+    realtime_reasoning: str = "minimal"
+    # Output audio speed multiplier. 1.0 with the full model (2026-08-20);
+    # the mini needed 0.9 to not feel rushed, the full model's pacing doesn't.
+    realtime_speed: float = 1.0
 
     stt_model: str = "gpt-live-transcribe"
 
@@ -128,7 +183,9 @@ class TutorConfig:
             anchor_lang=_env("TUTOR_ANCHOR_LANG", "en"),
             min_endpointing_s=float(_env("TUTOR_MIN_ENDPOINT_S", "1.2")),
             max_endpointing_s=float(_env("TUTOR_MAX_ENDPOINT_S", "6.0")),
-            realtime_model=_env("TUTOR_REALTIME_MODEL", "gpt-realtime-2"),
+            realtime_model=_env("TUTOR_REALTIME_MODEL", "gpt-realtime-2.1"),
+            realtime_reasoning=_env_reasoning("TUTOR_REALTIME_REASONING", "minimal"),
+            realtime_speed=_env_speed("TUTOR_REALTIME_SPEED", 1.0),
             realtime_voice=_env("TUTOR_REALTIME_VOICE", "marin"),
             stt_model=_env("TUTOR_STT_MODEL", "gpt-live-transcribe"),
             analyzer_model=_env("TUTOR_ANALYZER_MODEL", "gpt-5.6-luna"),
@@ -158,11 +215,12 @@ class TutorConfig:
             "voice": self.realtime_voice,
             "turn_detection": None,
             "input_audio_transcription": None,
+            "speed": self.realtime_speed,
         }
         if self.realtime_model.startswith("gpt-realtime-2"):
-            # Reasoning-capable model in a live conversation: keep thinking to
-            # a minimum. Anything higher adds reply latency the model then
-            # papers over with spoken stall phrases ("déjame pensar…") — the
+            # Reasoning-capable model in a live conversation: keep thinking
+            # low. Anything higher adds reply latency the model then papers
+            # over with spoken stall phrases ("déjame pensar…") — the
             # double-response feel observed live 2026-08-12.
-            kwargs["reasoning"] = RealtimeReasoning(effort="minimal")
+            kwargs["reasoning"] = RealtimeReasoning(effort=self.realtime_reasoning)
         return openai.realtime.RealtimeModel(**kwargs)

@@ -26,6 +26,7 @@ from config import (
     TOPIC_CORRECTIONS,
     TutorConfig,
 )
+from plan import SessionPlan
 from prompts import analyzer_instructions
 from state import SessionFacts
 
@@ -129,11 +130,19 @@ class CorrectionAnalyzer:
     path this sits in.
     """
 
-    def __init__(self, cfg: TutorConfig, room: rtc.Room, facts: SessionFacts | None = None) -> None:
+    def __init__(
+        self,
+        cfg: TutorConfig,
+        room: rtc.Room,
+        facts: SessionFacts | None = None,
+        plan: SessionPlan | None = None,
+    ) -> None:
         self._cfg = cfg
         self._room = room
         self._facts = facts
-        self._instructions = analyzer_instructions(cfg)
+        # The session plan only tilts the weighting; the instructions are built
+        # once here, exactly as before, because the plan cannot change mid-session.
+        self._instructions = analyzer_instructions(cfg, plan)
         self._client = openai.AsyncOpenAI(api_key=cfg.openai_api_key or None, max_retries=0)
         self._tasks: set[asyncio.Task[None]] = set()
 

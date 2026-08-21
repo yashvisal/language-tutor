@@ -24,7 +24,21 @@
 
 import type { AgentState } from "@livekit/components-react"
 
+import type {
+  AskMessage,
+  ConjugationTable,
+  ReviewItem,
+  ReviewMaterial,
+} from "./protocol"
+
 export type { AgentState }
+
+/**
+ * The wire's study shapes are the frontend's too — `target`/`anchor`/`verb`/
+ * `rows` read identically on both sides, so re-exporting beats maintaining a
+ * parallel set of interfaces that would only ever be copies.
+ */
+export type { AskMessage, ConjugationTable, ReviewItem, ReviewMaterial }
 
 /* -------------------------------------------------------------------------- */
 /*  Domain types                                                              */
@@ -99,11 +113,63 @@ export const CATEGORY_LABELS: Record<CorrectionCategory, string> = {
 }
 
 /**
- * Why the session is being held. Multiple sources can hold it at once (the
- * control button is sticky; a correction popover, a translation overlay and a
- * history peek release themselves), so holds are a set, not a boolean. This set
+ * The session's declared intent, chosen (or accepted from a suggestion) before
+ * the room exists. It is the one thing the learner configures, and it has three
+ * consumers: the tutor prompt, the analyzer's focus weighting, and — from phase
+ * 5 — the Review tab.
+ *
+ * Every field is language-neutral: `tenses` holds values from the per-language
+ * catalog in `plan.ts` (keyed by the target language), not Spanish-specific
+ * enums, and `topic`/`vocab` are free text. `null`/empty means "no preference",
+ * which is a real answer — free conversation with no focus is a plan.
+ *
+ * Mirrors `SessionDispatchMetadata["plan"]` in `protocol.ts` one-for-one; that
+ * is the wire shape, this is the frontend's.
+ */
+export interface SessionPlan {
+  /** A curated situation to play out, prompt-ready ("ordering at a restaurant"). */
+  scenario: string | null
+  /** Free text, when the learner wants a subject rather than a situation. */
+  topic: string | null
+  /** Forms to steer toward, as catalog values for the target language. */
+  tenses: string[]
+  /** Free-text vocabulary themes. */
+  vocab: string[]
+  /** Self-declared, one tap. No assessment — see phase 4, workstream 4. */
+  level: string | null
+}
+
+/**
+ * A finished session, snapshotted at the moment it ended — the whole input to
+ * the post-session summary.
+ *
+ * Snapshotted rather than derived, because the session state is cleared when
+ * the room goes away and the corrections the learner earned must outlive it.
+ * `minutesUsed` is null when the worker never published a clock (a session that
+ * ended before the first attribute, or a worker without the clock): the surface
+ * says nothing rather than guessing, since the worker owns the meter.
+ */
+export interface SessionOutcome {
+  plan: SessionPlan
+  minutesUsed: number | null
+  /** True when the clock ended it, false when the learner hung up. */
+  endedByClock: boolean
+  /** Every correction the analyzer produced this session, in the order seen. */
+  corrections: Correction[]
+}
+
+/**
+ * Why the session is being held. Multiple sources can hold it at once (a
+ * correction popover and a translation overlay release themselves; the study
+ * surface is released by resuming), so holds are a set, not a boolean. This set
  * is client-side state: the live adapter collapses "any hold" into a single
  * pause RPC and "no holds left" into a resume.
+ *
+ * `"history"` is every deliberate stop — the hold button and Space as much as
+ * the transcript button — because all of them land on the study surface, and
+ * the worker is told which tab a hold ended on only for holds that had one.
+ * `"control"` is left for the sticky hold with no surface behind it: the one
+ * the live producer adopts from an agent that reconnects already paused.
  */
 export type PauseReason = "control" | "correction" | "history" | "translation"
 
@@ -119,6 +185,57 @@ export type TranslateFn = (
   speaker: Speaker,
   turnId?: string
 ) => Promise<string>
+
+/* -------------------------------------------------------------------------- */
+/*  The study surface                                                         */
+/* -------------------------------------------------------------------------- */
+
+/** The pause overlay's three faces. See plans/product-vision.md, 2026-08-20 #4. */
+export type StudyTab = "transcript" | "review" | "ask"
+
+/**
+ * One question and its answer.
+ *
+ * ANCHORED, not floating: `turnId` is the turn that was on stage when the
+ * learner asked, which is what lets the Transcript tab mark the moment the
+ * question belongs to. Null only when the stage was empty.
+ *
+ * `answer === null` is the pending state; `failed` is a transport failure, and
+ * is a different fact from `limit` — the worker's invisible cap still produces
+ * a real answer (a redirect back to speaking) that renders like any other.
+ */
+export interface AskExchange {
+  id: string
+  question: string
+  answer: string | null
+  turnId: string | null
+  limit?: boolean
+  failed?: boolean
+}
+
+/**
+ * The study surface's back end, session-scoped and owned by the producer.
+ *
+ * The thread lives here rather than in the overlay because the overlay unmounts
+ * every time the learner resumes, and a question asked two pauses ago is still
+ * part of this session's study. It is deliberately NOT persisted: a new session
+ * starts with an empty thread.
+ */
+export interface StudySession {
+  /** The Ask thread, oldest first. */
+  thread: AskExchange[]
+  /** Asks a question and files it under the turn on stage. Never rejects. */
+  ask: (question: string, turnId: string | null) => void
+  /**
+   * This session's review material, awaited by the Review tab. Polls while the
+   * worker is still generating and resolves null when it never arrives —
+   * "not available" is a quiet line, not an error.
+   */
+  fetchReview: () => Promise<ReviewMaterial | null>
+  /** The tab the learner last had open. Remembered for the session. */
+  tab: StudyTab
+  setTab: (tab: StudyTab) => void
+}
 
 /* -------------------------------------------------------------------------- */
 /*  Events                                                                    */

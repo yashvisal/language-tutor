@@ -5,7 +5,14 @@ import {
   RoomConfiguration,
 } from "livekit-server-sdk"
 
-import { ROOM_NAME_PREFIX, TUTOR_AGENT_NAME } from "@/lib/session/protocol"
+import type { SessionPlan } from "@/lib/session/contract"
+import { boundPlan } from "@/lib/session/plan"
+import {
+  ROOM_NAME_PREFIX,
+  SESSION_MAX_MINUTES,
+  TUTOR_AGENT_NAME,
+  type SessionDispatchMetadata,
+} from "@/lib/session/protocol"
 
 /**
  * LiveKit standardized token endpoint.
@@ -23,6 +30,9 @@ import { ROOM_NAME_PREFIX, TUTOR_AGENT_NAME } from "@/lib/session/protocol"
  *   room config, so exactly one agent joins the room
  * - `room_config` from the request is ignored: it is signed into the token, so
  *   accepting it would let a caller set egress, participant limits or timeouts
+ * - one non-standard body field, `session_plan`: the learner's declared intent
+ *   for this session, bounded here and embedded in the dispatch metadata the
+ *   worker reads (see `SessionDispatchMetadata`)
  *
  * TODO(auth): there is no auth on this endpoint yet. Add a bearer/session check
  * here before this is exposed anywhere public.
@@ -38,6 +48,8 @@ type TokenRequestBody = {
   participant_name?: string
   participant_metadata?: string
   participant_attributes?: Record<string, string>
+  /** Non-standard, ours. Untrusted: normalized by `boundPlan` before use. */
+  session_plan?: unknown
 }
 
 function slugify(value: string) {
@@ -58,17 +70,41 @@ function generateRoomName(identity: string) {
 }
 
 /**
- * Builds the room config carrying explicit agent dispatch.
+ * Builds the room config carrying explicit agent dispatch, with the session's
+ * marching orders as dispatch metadata.
  *
- * Constructed entirely server-side: the room config is signed into the token,
- * so anything read off the request body here would let a caller dictate
- * egress, participant limits or room timeouts. The client's `room_config` is
- * therefore ignored outright, and dispatch metadata is empty because the
- * worker does not consume it.
+ * The room config is signed into the token, so anything read off the request
+ * body here would let a caller dictate egress, participant limits or room
+ * timeouts: the client's `room_config` is ignored outright and every field
+ * below is constructed server-side. The plan is the one exception, and it is
+ * bounded first — it is free text a learner typed, and it ends up in a model
+ * prompt.
+ *
+ * `max_minutes` is what the worker's clock counts down; it is authoritative
+ * because it is signed, not because the client asked nicely.
  */
-function buildRoomConfig() {
+function buildRoomConfig(plan: SessionPlan) {
+  const metadata: SessionDispatchMetadata = {
+    // TODO(credits): read the learner's remaining minutes from the ledger once
+    // auth and the database land, and refuse the token at a zero balance.
+    max_minutes: SESSION_MAX_MINUTES,
+    // TODO(auth): the authenticated user id, once there is one.
+    user_id: null,
+    plan: {
+      topic: plan.topic,
+      scenario: plan.scenario,
+      tenses: plan.tenses,
+      vocab: plan.vocab,
+      level: plan.level,
+    },
+  }
   return new RoomConfiguration({
-    agents: [new RoomAgentDispatch({ agentName: TUTOR_AGENT_NAME })],
+    agents: [
+      new RoomAgentDispatch({
+        agentName: TUTOR_AGENT_NAME,
+        metadata: JSON.stringify(metadata),
+      }),
+    ],
   })
 }
 
@@ -124,7 +160,7 @@ export async function POST(request: NextRequest) {
       canSubscribe: true,
     })
 
-    at.roomConfig = buildRoomConfig()
+    at.roomConfig = buildRoomConfig(boundPlan(body.session_plan))
 
     const participantToken = await at.toJwt()
 

@@ -16,13 +16,14 @@ import { ConversationStage } from "@/components/session/conversation-stage"
 import { MockAura } from "@/components/design/mock-aura"
 import { STAGE_AURA_CLASS } from "@/components/session/tutor-aura"
 import {
+  MOCK_FOCUS_TENSES,
   MOCK_INTERIM_SEGMENT_ID,
   mockTranslate,
   useMockSession,
 } from "@/lib/session/mock-producer"
 
 export default function StageSplitPage() {
-  const { state, dispatch } = useMockSession()
+  const { state, dispatch, study } = useMockSession()
   const [muted, toggleMute] = useReducer((v: boolean) => !v, false)
 
   return (
@@ -33,6 +34,10 @@ export default function StageSplitPage() {
       onToggleMute={toggleMute}
       interimSegmentId={MOCK_INTERIM_SEGMENT_ID}
       translate={mockTranslate}
+      study={study}
+      // The scripted conversation is a preterite drill; the mock tables lead
+      // with it, exactly as a real plan's focus forms would.
+      focusTenses={MOCK_FOCUS_TENSES}
       // Replay has no connection to hang up; the control stays for layout
       // fidelity with the live surface.
       onEnd={() => {}}

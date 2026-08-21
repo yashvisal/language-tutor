@@ -39,3 +39,7 @@ __pycache__/
 .venv/
 *.egg-info/
 .ruff_cache/
+
+# local dev logs
+.agent-dev.log
+.frontend-dev.log

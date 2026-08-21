@@ -28,7 +28,9 @@ import {
 } from "@/lib/session/contract"
 import { cn } from "@/lib/utils"
 
-const CATEGORY_STYLES: Record<
+/** Exported so the post-session summary reads corrections in the same colors
+ * the stage marked them in. One palette, two surfaces. */
+export const CATEGORY_STYLES: Record<
   CorrectionCategory,
   { mark: string; accent: string }
 > = {

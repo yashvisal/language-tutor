@@ -14,12 +14,18 @@
  *    learner cannot read while speaking, so the screen carries the minimum
  *    text the current moment needs. Everything older is an escape hatch.
  *
- * 2. PAUSE IS FIRST-CLASS. The conversation must never run away from a learner
- *    who has stopped to study. Three entry points hold the session — the
- *    control bar, opening a correction, and peeking at history — and the Aura
+ * 2. PAUSE IS FIRST-CLASS, AND PAUSE IS THE STUDY SURFACE. The conversation
+ *    must never run away from a learner who has stopped to study. The Aura
  *    settles, the surface dims, and the word ticker freezes mid-utterance (the
  *    caret becomes a hold glyph). No text label says "paused"; the surface says
  *    it. Resuming continues exactly where it stopped.
+ *
+ *    Deliberately stopping — the Hold button, Space, the transcript button, or
+ *    scrolling up — lands on the study surface, because that is what a pause is
+ *    for; all four take the same `"history"` hold, so a learner who never
+ *    switches tabs reports the same pause whichever one they reached for.
+ *    Opening a correction or a translation is not a deliberate stop: those hold
+ *    the session too, but only blur the stage.
  *
  * This component is UI only. Everything it renders comes from the session
  * reducer folding contract events — produced by the scripted mock in the design
@@ -31,7 +37,8 @@
 import { useCallback, useEffect, useRef, type ReactNode } from "react"
 import { AnimatePresence, motion } from "motion/react"
 
-import { HistoryPeek } from "@/components/session/history-peek"
+import { StudyOverlay } from "@/components/session/study-overlay"
+import { MinutesPill } from "@/components/session/minutes-pill"
 import { Caret, HeroWords } from "@/components/session/hero-utterance"
 import { SettledText } from "@/components/session/correction-mark"
 import { SessionControls } from "@/components/session/session-controls"
@@ -49,17 +56,19 @@ import {
 } from "@/components/session/translate-overlay"
 import type {
   AgentState,
+  AskExchange,
   Correction,
   PauseReason,
   SessionEvent,
+  StudySession,
   TranslateFn,
 } from "@/lib/session/contract"
 import {
   heroTurn,
-  historyTurns,
   isHeld,
   marksActive,
   pinnedTurn,
+  transcriptTurns,
   type SessionState,
 } from "@/lib/session/reducer"
 import { cn } from "@/lib/utils"
@@ -92,11 +101,31 @@ export interface ConversationStageProps {
    */
   interimSegmentId?: string
   /**
+   * Minutes the worker says remain. Absent (replay, or a worker with no clock)
+   * means no pill at all — see `MinutesPill`.
+   */
+  minutesLeft?: number | null
+  /**
    * Translates a selected span. Omitted where nothing can answer — the overlay
    * simply never opens then, rather than opening onto an error.
    */
   translate?: TranslateFn
+  /**
+   * The pause overlay's back end — the Ask thread, the review material, and the
+   * tab the learner last had open, all owned by the producer for the length of
+   * the session. Omitted where nothing can answer: the overlay then opens on
+   * the transcript alone, which is exactly what it was before phase 5.
+   */
+  study?: StudySession
+  /** The plan's focus forms, so Review leads with what is being practiced. */
+  focusTenses?: readonly string[]
 }
+
+/** Stable no-study fallbacks, so the overlay's props never change identity. */
+const EMPTY_THREAD: AskExchange[] = []
+const NO_TAB = () => {}
+const NO_ASK = () => {}
+const NO_REVIEW = () => Promise.resolve(null)
 
 export function ConversationStage({
   state,
@@ -106,12 +135,15 @@ export function ConversationStage({
   onToggleMute,
   onEnd,
   interimSegmentId,
+  minutesLeft,
   translate,
+  study,
+  focusTenses,
 }: ConversationStageProps) {
   const { phase, holds } = state
 
   const paused = isHeld(state)
-  const historyOpen = holds.includes("history")
+  const studyOpen = holds.includes("history")
 
   // `correction` rides along on the hold so the producer can tell the tutor
   // what the learner stopped to study. Nothing on this side reads it.
@@ -143,15 +175,18 @@ export function ConversationStage({
    * commit it mounts in — by the time its effects run, focus has already been
    * blurred to `<body>` and the trigger is unrecoverable.
    */
-  const historyTrigger = useRef<HTMLElement | null>(null)
-  const openHistory = useCallback(() => {
+  const studyTrigger = useRef<HTMLElement | null>(null)
+  /** Every deliberate stop, whatever gesture asked for it. */
+  const openStudy = useCallback(() => {
     const active = document.activeElement
-    historyTrigger.current =
+    studyTrigger.current =
       active instanceof HTMLElement && active !== document.body ? active : null
     hold("history")
   }, [hold])
 
-  // Space toggles the hold — a quiet keyboard affordance for resuming.
+  // Space toggles the stop — a quiet keyboard affordance for the same pair of
+  // gestures the control bar offers: study on the way in, resume on the way out
+  // (and out means every hold, whatever put it there).
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== " " || e.metaKey || e.ctrlKey || e.altKey) return
@@ -162,11 +197,11 @@ export function ConversationStage({
       if (target?.closest?.(FOCUSED_TAKES_SPACE)) return
       e.preventDefault()
       if (holds.length > 0) holds.forEach(release)
-      else hold("control")
+      else openStudy()
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [holds, hold, release])
+  }, [holds, openStudy, release])
 
   // --- Derived view -------------------------------------------------------
   const turn = heroTurn(state)
@@ -189,7 +224,7 @@ export function ConversationStage({
           e.target.closest(`[${OVERLAY_ATTR}="${OVERLAY_OPEN}"]`)
         )
           return
-        if (e.deltaY < -6 && !historyOpen) openHistory()
+        if (e.deltaY < -6 && !studyOpen) openStudy()
       }}
     >
       {/* The peek is a modal overlay: while it is up, the stage beneath it is
@@ -198,10 +233,10 @@ export function ConversationStage({
           known AnimatePresence popLayout quirk), so a merely-dimmed stage
           bleeds ghost text through the review surface. */}
       <div
-        inert={historyOpen}
+        inert={studyOpen}
         className={cn(
           "flex h-full flex-col items-center justify-center px-8 pb-24 transition-opacity duration-200",
-          historyOpen && "opacity-0"
+          studyOpen && "opacity-0"
         )}
       >
         {/* Aura — viewport-centered, and deliberately outside the text grid:
@@ -331,13 +366,27 @@ export function ConversationStage({
         </motion.div>
       </div>
 
-      {/* History peek — auto-holds while open. */}
+      {/* The study surface — auto-holds while open. One hold covers all three
+          tabs: switching tabs is not a new kind of pause. */}
       <AnimatePresence>
-        {historyOpen && (
-          <HistoryPeek
-            turns={historyTurns(state)}
-            onClose={() => release("history")}
-            restoreFocusTo={historyTrigger}
+        {studyOpen && (
+          <StudyOverlay
+            turns={transcriptTurns(state)}
+            thread={study?.thread ?? EMPTY_THREAD}
+            tab={study?.tab ?? "transcript"}
+            onTabChange={study?.setTab ?? NO_TAB}
+            onAsk={study?.ask ?? NO_ASK}
+            fetchReview={study?.fetchReview ?? NO_REVIEW}
+            focusTenses={focusTenses}
+            // A question is stamped to the turn that was on stage when it was
+            // asked — the moment the learner stopped at, not the tab they typed
+            // it in.
+            heroTurnId={turn?.id ?? null}
+            // Closing is resuming ("close and resume"), so it drops every hold,
+            // not just this one — the surface must never close onto a session
+            // that is still held by something the learner can no longer see.
+            onClose={() => holds.forEach(release)}
+            restoreFocusTo={studyTrigger}
           />
         )}
       </AnimatePresence>
@@ -356,15 +405,20 @@ export function ConversationStage({
         />
       )}
 
-      <div inert={historyOpen}>
+      <div inert={studyOpen}>
+        <MinutesPill minutesLeft={minutesLeft ?? null} />
         <SessionControls
           paused={paused}
+          studyOpen={studyOpen}
           muted={muted}
-          onReview={openHistory}
+          onReview={openStudy}
           onToggleMute={onToggleMute}
-          onTogglePause={() =>
-            paused ? holds.forEach(release) : hold("control")
-          }
+          // Holding IS studying: the button opens the same surface the
+          // transcript button does, under the same hold, so the worker hears
+          // the same thing about either pause. Resuming drops every hold —
+          // including a `control` hold the producer adopted from an agent that
+          // reconnected paused, which has no surface of its own.
+          onTogglePause={() => (paused ? holds.forEach(release) : openStudy())}
           onEnd={onEnd}
         />
       </div>
