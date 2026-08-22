@@ -177,6 +177,14 @@ async def tutor(ctx: JobContext) -> None:
                 "min_delay": cfg.min_endpointing_s,
                 "max_delay": cfg.max_endpointing_s,
             },
+            # Plain VAD, not the adaptive detector: the learner speaking is the
+            # interruption, every time. The ML detector guesses whether
+            # overlapping speech is "real" and, when it guesses wrong, resumes
+            # the tutor over the learner — three times in one session (live,
+            # 2026-08-22), which is the one thing this product promises never
+            # happens. A real interruption that VAD misses costs far less than
+            # a tutor that talks over someone.
+            interruption={"mode": "vad"},
         ),
     )
 
