@@ -174,6 +174,10 @@ function CorrectedWord({ revealed }: { revealed: boolean }) {
             ? "text-muted-foreground line-through decoration-muted-foreground/30"
             : "decoration-blue-500/50"
         )}
+        // Once struck through, the wrong word is a visual before-and-after.
+        // Read aloud it would just be a second, contradictory sentence — so
+        // exactly one of the two words is ever in the accessibility tree.
+        aria-hidden={revealed}
       >
         fue
       </motion.span>

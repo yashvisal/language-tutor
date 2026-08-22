@@ -24,7 +24,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react"
-import { useSearchParams } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import { RoomAudioRenderer } from "@livekit/components-react"
 
 import { ConversationStage } from "@/components/session/conversation-stage"
@@ -52,6 +52,7 @@ export default function SessionPage() {
 function Session() {
   const live = useLiveSession()
   const { connect } = live
+  const router = useRouter()
   const autostart = useSearchParams().get("start") === "1"
 
   /**
@@ -68,17 +69,22 @@ function Session() {
   const plan = edited ?? stored
 
   /**
-   * The hand-off from `/home`, fired once. The ref rather than the connection
-   * state is what makes it once: after a session ends the learner is back on
-   * this page with the flag still in the URL, and "start another" must mean
-   * the button, not the address bar.
+   * The hand-off from `/home`, fired once and then erased. The ref makes it
+   * once within this mount — after a session ends the learner is back on this
+   * page, and "start another" must mean the button, not the address bar — and
+   * dropping the flag from the URL makes it once across mounts too, so a
+   * reload cannot reconnect and bill a second session.
    */
   const handedOff = useRef(false)
   useEffect(() => {
     if (!autostart || handedOff.current) return
     handedOff.current = true
     connect(planSnapshot())
-  }, [autostart, connect])
+    // And the flag is spent: it survives in the address bar otherwise, so a
+    // reload — or a shared link — would silently open a second billed session.
+    // The ref only guards this mount.
+    router.replace("/session")
+  }, [autostart, connect, router])
 
   // The summary outlives the room, so it wins over the connection state: a
   // session ended by the clock disconnects us, and dropping straight back to

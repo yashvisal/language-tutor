@@ -7,9 +7,8 @@ import {
   type QueryCtx,
 } from "./_generated/server"
 import type { Doc } from "./_generated/dataModel"
-
-/** How many free minutes a new account starts with (one credit). */
-const SIGNUP_GRANT_MINUTES = 10
+import { levelValidator } from "./validators"
+import { SIGNUP_GRANT_MINUTES } from "../lib/billing"
 
 /** Spanish only until the loop is monetized — see the vision doc. */
 const TARGET_LANG = "es"
@@ -60,7 +59,9 @@ export const viewer = query({
     const user = await userByClerkId(ctx, identity.subject)
     return {
       clerkId: identity.subject,
-      email: identity.email ?? user?.email ?? null,
+      // `||`, not `??`: an empty string is an absent email, and rows written
+      // before that was true still carry one. The UI never sees "".
+      email: identity.email || user?.email || null,
       level: user?.level ?? null,
       minutes: user === null ? 0 : await minutesFor(ctx, user._id),
     }
@@ -75,7 +76,7 @@ export const viewer = query({
  * second visit to `/welcome` cannot mint a second one.
  */
 export const ensureUser = mutation({
-  args: { level: v.optional(v.string()) },
+  args: { level: v.optional(levelValidator) },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity()
     if (identity === null) throw new Error("Not signed in")
@@ -87,7 +88,8 @@ export const ensureUser = mutation({
     if (existing === null) {
       userId = await ctx.db.insert("users", {
         clerkId,
-        email: identity.email ?? "",
+        // Absent, not empty: see the schema note on `users.email`.
+        email: identity.email || undefined,
         level: args.level,
         targetLang: TARGET_LANG,
         anchorLang: ANCHOR_LANG,
@@ -124,7 +126,7 @@ export const ensureUser = mutation({
 
 /** The only editable field on the account page. */
 export const setLevel = mutation({
-  args: { level: v.string() },
+  args: { level: levelValidator },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity()
     if (identity === null) throw new Error("Not signed in")

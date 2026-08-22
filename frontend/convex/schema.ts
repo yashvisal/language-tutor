@@ -1,6 +1,8 @@
 import { defineSchema, defineTable } from "convex/server"
 import { v } from "convex/values"
 
+import { levelValidator, sessionPlanValidator } from "./validators"
+
 /**
  * The product shell's four tables. Only `users` and `creditLedger` are written
  * at this step; `sessions` and `purchases` are declared now so the shape is
@@ -14,12 +16,18 @@ import { v } from "convex/values"
 export default defineSchema({
   users: defineTable({
     clerkId: v.string(),
-    email: v.string(),
     /**
-     * Self-declared, from `LEVELS` in `lib/session/plan.ts`. Optional because
-     * "a row with no level" is exactly the state `/welcome` exists to fill.
+     * Absent rather than `""` when Clerk has no email on the identity (a
+     * phone-only or OAuth-without-email account): an empty string is a value
+     * the UI would have to special-case, and "we don't have one" is not one.
      */
-    level: v.optional(v.string()),
+    email: v.optional(v.string()),
+    /**
+     * Self-declared, from `LEVELS` in `lib/session/plan.ts` — the validator is
+     * built from that same catalog. Optional because "a row with no level" is
+     * exactly the state `/welcome` exists to fill.
+     */
+    level: v.optional(levelValidator),
     targetLang: v.string(),
     anchorLang: v.string(),
     createdAt: v.number(),
@@ -51,13 +59,7 @@ export default defineSchema({
     userId: v.id("users"),
     room: v.string(),
     /** The bounded `SessionPlan` the learner started with. */
-    plan: v.object({
-      scenario: v.union(v.string(), v.null()),
-      topic: v.union(v.string(), v.null()),
-      tenses: v.array(v.string()),
-      vocab: v.array(v.string()),
-      level: v.union(v.string(), v.null()),
-    }),
+    plan: sessionPlanValidator,
     startedAt: v.number(),
     // Absent until the worker reports the session finished.
     endedAt: v.optional(v.number()),

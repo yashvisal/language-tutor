@@ -7,17 +7,29 @@
  * sessions arrive here when they exist.
  */
 
+import { useEffect, useState } from "react"
+import { useRouter } from "next/navigation"
 import { useQuery, useMutation } from "convex/react"
 
+import { LevelPicker } from "@/components/level-picker"
+import { Overline } from "@/components/overline"
 import { api } from "@/convex/_generated/api"
-import { LEVELS } from "@/lib/session/plan"
-import { cn } from "@/lib/utils"
 
 export default function SettingsPage() {
+  const router = useRouter()
   const viewer = useQuery(api.users.viewer)
   const setLevel = useMutation(api.users.setLevel)
+  const [error, setError] = useState<string | null>(null)
 
-  if (viewer === undefined || viewer === null) return null
+  // `viewer` is non-null for any signed-in identity, row or no row: a learner
+  // who never finished onboarding has no level and no free minutes, and Convex
+  // is the only thing that knows it. Same redirect as `/home`.
+  const needsWelcome = viewer !== undefined && viewer !== null && !viewer.level
+  useEffect(() => {
+    if (needsWelcome) router.replace("/welcome")
+  }, [needsWelcome, router])
+
+  if (viewer === undefined || viewer === null || needsWelcome) return null
 
   return (
     <div className="flex justify-center px-8 pb-24">
@@ -27,47 +39,33 @@ export default function SettingsPage() {
         </h1>
 
         <section className="mt-10">
-          <Label>Email</Label>
+          <Overline>Email</Overline>
           <p className="mt-2 text-sm text-foreground">{viewer.email ?? "—"}</p>
         </section>
 
         <section className="mt-9">
-          <Label>Your level</Label>
-          <div
-            role="radiogroup"
-            aria-label="Your level"
-            className="mt-3 flex flex-wrap gap-1.5"
-          >
-            {LEVELS.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                role="radio"
-                aria-checked={viewer.level === option.value}
-                // Optimistic by way of Convex: the query is reactive, so the
-                // selection follows the write without local state to drift.
-                onClick={() => void setLevel({ level: option.value })}
-                className={cn(
-                  "rounded-full border px-3 py-1 text-sm transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
-                  viewer.level === option.value
-                    ? "border-primary/40 bg-primary/10 text-foreground"
-                    : "border-border/70 text-muted-foreground hover:border-border hover:text-foreground"
-                )}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
+          <Overline>Your level</Overline>
+          {/* Optimistic by way of Convex: the query is reactive, so the
+              selection follows the write without local state to drift. A
+              failed write therefore shows nothing at all unless we say so. */}
+          <LevelPicker
+            value={viewer.level}
+            onChange={(value) => {
+              setError(null)
+              setLevel({ level: value }).catch(() => {
+                setError("Couldn’t save. Try again.")
+              })
+            }}
+            variant="inline"
+            className="mt-3"
+          />
+          {error && (
+            <p role="alert" className="mt-3 text-xs text-destructive">
+              {error}
+            </p>
+          )}
         </section>
       </div>
     </div>
-  )
-}
-
-function Label({ children }: { children: React.ReactNode }) {
-  return (
-    <p className="text-[10px] tracking-[0.14em] text-muted-foreground/50 uppercase">
-      {children}
-    </p>
   )
 }

@@ -18,6 +18,7 @@
 import { useState, type ReactNode } from "react"
 import { Shuffle, X } from "lucide-react"
 
+import { Overline } from "@/components/overline"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import type { SessionPlan } from "@/lib/session/contract"
@@ -255,14 +256,6 @@ export function SessionPreflight({
         )}
       </div>
     </div>
-  )
-}
-
-function Overline({ children }: { children: ReactNode }) {
-  return (
-    <p className="text-[10px] tracking-[0.14em] text-muted-foreground/50 uppercase">
-      {children}
-    </p>
   )
 }
 

@@ -12,10 +12,11 @@ import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import { useMutation, useQuery } from "convex/react"
 
+import { LevelPicker } from "@/components/level-picker"
 import { Button } from "@/components/ui/button"
 import { api } from "@/convex/_generated/api"
-import { DEFAULT_LEVEL, LEVELS } from "@/lib/session/plan"
-import { cn } from "@/lib/utils"
+import { SIGNUP_GRANT_MINUTES } from "@/lib/billing"
+import { DEFAULT_LEVEL } from "@/lib/session/plan"
 
 export default function WelcomePage() {
   const router = useRouter()
@@ -46,7 +47,10 @@ export default function WelcomePage() {
     }
   }
 
-  if (viewer === undefined || done) return null
+  // `null` is signed-out *or* the brief window before Clerk's token reaches
+  // Convex; middleware has already guaranteed a session, so it is the latter.
+  // Asking the question during it would flash a form that then redirects.
+  if (viewer === undefined || viewer === null || done) return null
 
   return (
     <div className="flex min-h-svh justify-center bg-background px-8 py-[clamp(4rem,16vh,9rem)]">
@@ -58,32 +62,16 @@ export default function WelcomePage() {
           It only steers where the tutor starts — you can change it any time.
         </p>
 
-        <div
-          role="radiogroup"
-          aria-label="Your level"
-          className="mt-8 flex flex-col gap-2"
-        >
-          {LEVELS.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              role="radio"
-              aria-checked={level === option.value}
-              onClick={() => setLevel(option.value)}
-              className={cn(
-                "rounded-md border px-4 py-3 text-left text-sm transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
-                level === option.value
-                  ? "border-primary/40 bg-primary/10 text-foreground"
-                  : "border-border/70 text-muted-foreground hover:border-border hover:text-foreground"
-              )}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
+        <LevelPicker
+          value={level}
+          onChange={setLevel}
+          variant="stacked"
+          className="mt-8"
+        />
 
         <p className="mt-8 text-sm text-muted-foreground">
-          You have 10 free minutes. Pausing to study doesn’t use them.
+          You have {SIGNUP_GRANT_MINUTES} free minutes. Pausing to study
+          doesn’t use them.
         </p>
 
         <Button size="lg" onClick={submit} disabled={saving} className="mt-6">
