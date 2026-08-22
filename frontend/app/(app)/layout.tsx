@@ -1,3 +1,4 @@
+import { redirect } from "next/navigation"
 import { UserButton } from "@clerk/nextjs"
 
 import { AppSidebar } from "@/components/app-shell/app-sidebar"
@@ -6,6 +7,7 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar"
+import { viewerOnServer } from "@/lib/viewer-server"
 
 /**
  * The chrome every signed-in page shares: a sidebar and a header, and nothing
@@ -13,12 +15,19 @@ import {
  * to live there — collapsing the sidebar, and the account menu — so the page
  * below it starts on a quiet surface.
  *
+ * The onboarding gate lives here, on the server, so an account that has never
+ * been through /welcome is sent there before this shell exists — not after a
+ * frame of it. Middleware has already guaranteed a Clerk session.
+ *
  * `/session` is outside this group on purpose: the conversation surface owns
  * the whole viewport.
  */
-export default function AppLayout({
+export default async function AppLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
+  const viewer = await viewerOnServer()
+  if (!viewer?.level) redirect("/welcome")
+
   return (
     <SidebarProvider>
       <AppSidebar />

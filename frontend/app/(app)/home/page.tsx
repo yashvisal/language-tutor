@@ -11,7 +11,7 @@
  * whole viewport.
  */
 
-import { useEffect, useState, useSyncExternalStore } from "react"
+import { useState, useSyncExternalStore } from "react"
 import { useRouter } from "next/navigation"
 import { useQuery } from "convex/react"
 
@@ -37,18 +37,12 @@ export default function HomePage() {
   const [edited, setEdited] = useState<SessionPlan | null>(null)
   const plan = edited ?? stored
 
-  // Signed in but never onboarded: no row, so no level and no free minutes.
-  // Middleware can't tell — only Convex knows — so the redirect lives here.
-  const needsWelcome = viewer !== undefined && viewer !== null && !viewer.level
-  useEffect(() => {
-    if (needsWelcome) router.replace("/welcome")
-  }, [needsWelcome, router])
-
   // Nothing renders until the balance is known: a flash of "0 minutes left"
   // would be a lie about the one number the learner is here for. `null` is the
   // brief window before Clerk's token reaches Convex — middleware has already
-  // guaranteed there is a session.
-  if (viewer === undefined || viewer === null || needsWelcome) return null
+  // guaranteed there is a session, and the (app) layout has already sent an
+  // un-onboarded account to /welcome on the server.
+  if (viewer === undefined || viewer === null) return null
 
   const { minutes } = viewer
 
