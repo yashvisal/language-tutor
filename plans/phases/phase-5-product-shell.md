@@ -7,6 +7,25 @@ Convex, Stripe Checkout. Read `product-vision.md` first; the taste rules
 ("Notion-like restraint", no SaaS dashboard, no gamification) apply to every
 screen below.*
 
+## Decisions (2026-08-21, Yash)
+
+- **Auth is modal-based**: Clerk's modal components from every CTA; the
+  `/sign-in`/`/sign-up` routes stay only as redirect fallbacks. Restyling the
+  auth UI is deferred.
+- **Theme**: stay faithful to the installed shadcn theme — no base typography
+  or token changes. The product accent is the Aura's light blue; the landing
+  pages key off it.
+- **Two landing pages to compare**: (1) a conventional one, blue-accented;
+  (2) an orb-centered one built around the Aura and a mocked conversation —
+  creative latitude, scroll may grow the orb into a demo. Yash picks which
+  becomes `/`.
+- **Navigation**: signed-in pages get a sidebar plus a header with the Clerk
+  user button (shadcn primitives throughout). Home is `/home` (not `/app`).
+- **No `/minutes` route and no Stripe yet** — pricing appears only as the
+  static pack numbers in the landing's pricing section. Payments and the
+  session-length rule are deferred.
+- The account page is `/settings`.
+
 ## The one idea
 
 **The learner thinks in minutes; we sell credits.** Every screen shows
