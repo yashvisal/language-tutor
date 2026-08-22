@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button"
 export function MarketingHeader() {
   return (
     <header className="sticky top-0 z-30 border-b border-border/60 bg-background/80 backdrop-blur-sm">
-      <div className="mx-auto flex h-14 w-full max-w-3xl items-center justify-between px-6">
+      <div className="mx-auto flex h-14 w-full max-w-6xl items-center justify-between px-6">
         <Link
           href="/"
           className="text-sm font-medium tracking-tight lowercase transition-opacity hover:opacity-70"
@@ -38,6 +38,7 @@ export function MarketingHeader() {
               variant="ghost"
               size="sm"
               render={<Link href="/home" />}
+              nativeButton={false}
             >
               Continue
             </Button>

@@ -13,7 +13,7 @@ export function PrimaryCta({ size = "lg" }: { size?: "default" | "lg" }) {
     <Show
       when="signed-out"
       fallback={
-        <Button size={size} render={<Link href="/home" />}>
+        <Button size={size} render={<Link href="/home" />} nativeButton={false}>
           Continue where you left off
         </Button>
       }

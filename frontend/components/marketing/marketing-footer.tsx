@@ -10,7 +10,7 @@ import { WORDMARK } from "@/components/marketing/brand"
 export function MarketingFooter() {
   return (
     <footer className="border-t border-border/60">
-      <div className="mx-auto flex w-full max-w-3xl flex-wrap items-center justify-between gap-3 px-6 py-8 text-xs text-muted-foreground">
+      <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-3 px-6 py-8 text-xs text-muted-foreground">
         <span className="lowercase">{WORDMARK}</span>
         <div className="flex items-center gap-5">
           <Show when="signed-out">
