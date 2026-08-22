@@ -18,6 +18,7 @@
 import { useState, type ReactNode } from "react"
 import { Shuffle, X } from "lucide-react"
 
+import { Overline } from "@/components/overline"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import type { SessionPlan } from "@/lib/session/contract"
@@ -37,12 +38,19 @@ export function SessionPreflight({
   onStart,
   connecting,
   error,
+  above,
+  className,
 }: {
   plan: SessionPlan
   onChange: (plan: SessionPlan) => void
   onStart: () => void
   connecting: boolean
   error: string | null
+  /** Rendered above the first question, inside the same column — `/home` puts
+   * the balance line here rather than floating it over the layout. */
+  above?: ReactNode
+  /** For hosts that already provide their own page frame (the app shell). */
+  className?: string
 }) {
   // Free text is revealed rather than always shown: an empty input next to the
   // situations reads as a second, competing question. Derived rather than
@@ -83,8 +91,14 @@ export function SessionPreflight({
   const tenses = tensesFor()
 
   return (
-    <div className="flex min-h-svh justify-center bg-background px-8 py-[clamp(3rem,12vh,7rem)]">
+    <div
+      className={cn(
+        "flex min-h-svh justify-center bg-background px-8 py-[clamp(3rem,12vh,7rem)]",
+        className
+      )}
+    >
       <div className="w-full max-w-xl">
+        {above}
         <div className="flex items-start justify-between gap-6">
           <div>
             <Overline>Before you start</Overline>
@@ -242,14 +256,6 @@ export function SessionPreflight({
         )}
       </div>
     </div>
-  )
-}
-
-function Overline({ children }: { children: ReactNode }) {
-  return (
-    <p className="text-[10px] tracking-[0.14em] text-muted-foreground/50 uppercase">
-      {children}
-    </p>
   )
 }
 

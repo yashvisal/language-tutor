@@ -72,20 +72,35 @@ export function tensesFor(language: string = TARGET_LANGUAGE): PlanOption[] {
 }
 
 /**
+ * The level values, as literal types. This is the catalog's one home: the
+ * Convex argument validator (`convex/validators.ts`) is built from these very
+ * strings, so a level the UI can offer is a level the database will accept and
+ * nothing has to be kept in sync by hand.
+ */
+export const LEVEL_VALUES = [
+  "beginner",
+  "understands more than they can say",
+  "comfortable, wants polish",
+] as const
+
+export type LevelValue = (typeof LEVEL_VALUES)[number]
+
+export interface LevelOption extends PlanOption {
+  value: LevelValue
+}
+
+/**
  * Self-declared level. The middle option is the product's reference learner
  * (see the vision doc, decision #4) and is therefore the default — a learner
  * who taps nothing has still told the tutor something true.
  */
-export const LEVELS: PlanOption[] = [
-  { value: "beginner", label: "Just starting out" },
-  {
-    value: "understands more than they can say",
-    label: "I understand more than I can say",
-  },
-  { value: "comfortable, wants polish", label: "Comfortable, want polish" },
+export const LEVELS: LevelOption[] = [
+  { value: LEVEL_VALUES[0], label: "Just starting out" },
+  { value: LEVEL_VALUES[1], label: "I understand more than I can say" },
+  { value: LEVEL_VALUES[2], label: "Comfortable, want polish" },
 ]
 
-export const DEFAULT_LEVEL = LEVELS[1]!.value
+export const DEFAULT_LEVEL: LevelValue = LEVEL_VALUES[1]
 
 export const EMPTY_PLAN: SessionPlan = {
   scenario: null,
