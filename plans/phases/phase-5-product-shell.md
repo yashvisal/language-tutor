@@ -179,9 +179,12 @@ Per the phase-4 plan; spelled out so the build has one reference.
   retried debit or replayed webhook is a no-op), `createdAt`.
   **Balance = sum(minutes).** Never a mutable field. When debits land and a
   learner's ledger grows past what is sane to scan on every read, the ledger
-  stays authoritative: add periodic checkpoint rows (the balance as of an
-  entry) or a denormalized balance maintained in the same transaction as every
-  write — never a balance that can be written independently of an entry.
+  stays authoritative and the fix must not break the sum: either a separate
+  `ledgerCheckpoints` table (balance as of a ledger entry; reads sum only the
+  entries after the newest checkpoint) — checkpoints never live in the ledger
+  itself, or they double-count — or a denormalized balance maintained in the
+  same transaction as every write. Never a balance that can be written
+  independently of an entry.
 - `sessions` — `userId`, `room`, `plan` (the bounded `SessionPlan`),
   `startedAt`, `endedAt`, `minutesBilled`, `corrections` (count, from
   `SessionFacts`).

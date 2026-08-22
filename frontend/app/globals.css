@@ -1,6 +1,9 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
+/* Keys Clerk's UI off the same CSS variables as the rest of the app, so the
+   sign-in modal and UserButton follow light/dark with everything else. */
+@import "@clerk/ui/themes/shadcn.css";
 
 @custom-variant dark (&:is(.dark *));
 

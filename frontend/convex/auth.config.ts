@@ -12,10 +12,24 @@
  * Clerk's current docs pre-map `aud` on the Sessions page instead; that flow
  * applies to newer convex versions that use the default session token.
  */
+const domain = process.env.CLERK_FRONTEND_API_URL
+
+// Fail at config load, not at the first signed-in request: an unset or
+// malformed domain makes Convex reject every token with the opaque "No auth
+// provider found matching the given token". This file is bundled into the
+// deployment, so the check stays dependency-free.
+if (!domain || !domain.startsWith("https://")) {
+  throw new Error(
+    `CLERK_FRONTEND_API_URL must be an absolute https:// URL (got ${
+      domain ? `"${domain}"` : "no value"
+    }). Set it on the deployment with: npx convex env set CLERK_FRONTEND_API_URL https://<your-subdomain>.clerk.accounts.dev`
+  )
+}
+
 const authConfig = {
   providers: [
     {
-      domain: process.env.CLERK_FRONTEND_API_URL,
+      domain,
       applicationID: "convex",
     },
   ],

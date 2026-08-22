@@ -5,6 +5,7 @@ import {
   RoomConfiguration,
 } from "livekit-server-sdk"
 
+import { MissingEnvVarError, requireServerEnv } from "@/lib/env"
 import type { SessionPlan } from "@/lib/session/contract"
 import { boundPlan } from "@/lib/session/plan"
 import {
@@ -109,17 +110,20 @@ function buildRoomConfig(plan: SessionPlan) {
 }
 
 export async function POST(request: NextRequest) {
-  const apiKey = process.env.LIVEKIT_API_KEY
-  const apiSecret = process.env.LIVEKIT_API_SECRET
-  const serverUrl = process.env.LIVEKIT_URL
-
-  if (!apiKey || !apiSecret || !serverUrl) {
-    const missing = [
-      !apiKey && "LIVEKIT_API_KEY",
-      !apiSecret && "LIVEKIT_API_SECRET",
-      !serverUrl && "LIVEKIT_URL",
-    ].filter(Boolean)
-    console.error(`/api/token: missing env vars: ${missing.join(", ")}`)
+  let apiKey: string
+  let apiSecret: string
+  let serverUrl: string
+  try {
+    ;[apiKey, apiSecret, serverUrl] = requireServerEnv(
+      "LIVEKIT_API_KEY",
+      "LIVEKIT_API_SECRET",
+      "LIVEKIT_URL"
+    )
+  } catch (error) {
+    if (!(error instanceof MissingEnvVarError)) {
+      throw error
+    }
+    console.error(`/api/token: missing env vars: ${error.names.join(", ")}`)
     return NextResponse.json(
       { error: "Server misconfigured: LiveKit credentials are not set" },
       { status: 500 }

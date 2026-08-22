@@ -1,4 +1,5 @@
 import { ClerkProvider } from "@clerk/nextjs"
+import { shadcn } from "@clerk/ui/themes"
 import { Geist, Geist_Mono } from "next/font/google"
 
 import "./globals.css"
@@ -31,7 +32,9 @@ export default function RootLayout({
       )}
     >
       <body>
-        <ClerkProvider>
+        {/* Clerk's shadcn theme reads the app's CSS variables, so its modals
+            track light/dark without a second theme source of truth. */}
+        <ClerkProvider appearance={{ theme: shadcn }}>
           <ConvexClientProvider>
             <ThemeProvider>
               <TooltipProvider>{children}</TooltipProvider>
