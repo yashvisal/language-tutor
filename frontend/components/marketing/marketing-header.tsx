@@ -1,6 +1,7 @@
 import Link from "next/link"
 import { Show, SignInButton, SignUpButton, UserButton } from "@clerk/nextjs"
 
+import { ThemeToggle } from "@/components/design/theme-toggle"
 import { WORDMARK } from "@/components/marketing/brand"
 import { Button } from "@/components/ui/button"
 
@@ -44,6 +45,7 @@ export function MarketingHeader() {
             </Button>
             <UserButton />
           </Show>
+          <ThemeToggle />
         </nav>
       </div>
     </header>

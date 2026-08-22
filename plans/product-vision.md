@@ -137,6 +137,20 @@ From reviewing the phase-1 layout explorations (aura-stage, split-columns, and t
 
 ---
 
+## Decisions Settled (2026-08-22, from live testing)
+
+1. **The learner speaking always interrupts the tutor — plain VAD, not the
+   adaptive detector.** LiveKit's adaptive interruption detector (the
+   framework's auto-selected default; never a choice we made) ruled a learner's
+   real interjection a "false interruption" three times in one session and
+   resumed the tutor over her. Same principle as dropping Grok: one
+   deterministic clock owned by the agent, no probabilistic second opinion.
+   Cost accepted: a backchannel longer than ~0.5s ("sí, sí, claro") stops the
+   tutor too. Revisit only with evidence that backchannels matter more than
+   the floor. (`interruption={"mode": "vad"}` in `backend/src/agent.py`.)
+
+---
+
 ## The Conversation Surface
 
 The working mental model for the screen (to be pressure-tested in design exploration, not final):

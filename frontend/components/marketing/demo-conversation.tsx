@@ -107,7 +107,7 @@ export function DemoConversation({
       aria-label="A short example of a session"
       role="img"
     >
-      <div className={cn("relative", hero ? "h-52 sm:h-64" : "h-36")}>
+      <div className={cn("relative", hero ? "h-44 sm:h-52" : "h-36")}>
         {/* The glow is the stage light, not decoration: it is where the
             orb's own color lands on the surface around it. */}
         <div
@@ -268,12 +268,85 @@ export function CorrectionFragment({ className }: { className?: string }) {
   )
 }
 
-/** A caption mid-transcription, for the "see your words" fragment. */
-export function CaptionFragment({ className }: { className?: string }) {
+/**
+ * Words arriving one at a time, on a loop — the shape of a live caption.
+ * Types the sentence, holds it, clears, and starts again.
+ */
+function useLoopTyping(text: string, perWordMs = 260, holdMs = 1800) {
+  const reducedMotion = useReducedMotion()
+  const total = text.split(" ").length
+  const [shown, setShown] = useState(reducedMotion ? total : 0)
+  useEffect(() => {
+    if (reducedMotion) return
+    const timer = setTimeout(
+      () => setShown((n) => (n >= total ? 0 : n + 1)),
+      shown >= total ? holdMs : shown === 0 ? 500 : perWordMs
+    )
+    return () => clearTimeout(timer)
+  }, [shown, total, perWordMs, holdMs, reducedMotion])
+  return { shown, done: shown >= total, text }
+}
+
+/** Step 1 — the learner talking, their words arriving as they say them. */
+export function SpeakFragment() {
+  const typing = useLoopTyping("Ayer yo fue al supermercado.")
   return (
-    <p className={cn("text-lg leading-snug tracking-tight", className)}>
-      Ayer yo fue al super
-      <Caret />
-    </p>
+    <StepStage state="listening" speaker="You">
+      <Caption
+        text={typing.text}
+        words={typing.shown}
+        typing={!typing.done}
+        className="text-lg"
+      />
+    </StepStage>
+  )
+}
+
+/** Step 2 — the tutor answering in Spanish, at conversation speed. */
+export function AnswerFragment() {
+  const typing = useLoopTyping("¡Qué bien! ¿Y qué compraste?", 300)
+  return (
+    <StepStage state={typing.done ? "listening" : "speaking"} speaker="Tutor">
+      <Caption
+        text={typing.text}
+        words={typing.shown}
+        typing={!typing.done}
+        className="text-lg"
+      />
+    </StepStage>
+  )
+}
+
+/** Step 3 — the correction, in place, with its reason. */
+export function FixFragment() {
+  return (
+    <StepStage state="listening" speaker="You">
+      <CorrectionFragment />
+      <p className="mt-2 text-xs text-muted-foreground">
+        <span className="font-medium text-foreground/80">fue → fui</span>
+        {" · "}past tense, first person
+      </p>
+    </StepStage>
+  )
+}
+
+/** A miniature of the session stage: small orb, speaker label, caption. */
+function StepStage({
+  state,
+  speaker,
+  children,
+}: {
+  state: AgentState
+  speaker: string
+  children: React.ReactNode
+}) {
+  return (
+    <div className="flex h-full flex-col items-center justify-center text-center">
+      <AmbientAura state={state} className="h-14" />
+      <div className="mt-4 mb-1.5 text-[10px] font-medium tracking-[0.22em] text-muted-foreground/60 uppercase">
+        {speaker}
+      </div>
+      <div className="min-h-[3.25rem]">{children}</div>
+    </div>
   )
 }
