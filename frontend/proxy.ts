@@ -7,6 +7,7 @@ import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server"
  * Convex read, so a balance check here would be a second source of truth.
  */
 const isProtectedRoute = createRouteMatcher([
+  "/go(.*)",
   "/home(.*)",
   "/welcome(.*)",
   "/settings(.*)",
