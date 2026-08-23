@@ -112,7 +112,7 @@ export function DemoConversation({
             orb's own color lands on the surface around it. */}
         <div
           aria-hidden
-          className="pointer-events-none absolute inset-0 -z-10 scale-150 rounded-full bg-blue-500/15 blur-3xl dark:bg-blue-500/20"
+          className="pointer-events-none absolute inset-0 -z-10 scale-150 rounded-full bg-blue-400/25 blur-3xl dark:bg-blue-500/20"
         />
         <AmbientAura state={auraState} className="h-full" />
       </div>

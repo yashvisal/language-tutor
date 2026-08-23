@@ -46,7 +46,7 @@ export default function LandingPage() {
         <section className="relative mx-auto flex min-h-[calc(100svh-3.5rem)] w-full max-w-4xl flex-col items-center justify-center px-6 py-10 text-center">
           <div
             aria-hidden
-            className="pointer-events-none absolute top-[55%] left-1/2 -z-10 h-[40rem] w-[40rem] -translate-x-1/2 -translate-y-1/2 rounded-full bg-blue-500/10 blur-[120px] dark:bg-blue-500/15"
+            className="pointer-events-none absolute top-[55%] left-1/2 -z-10 h-[40rem] w-[40rem] -translate-x-1/2 -translate-y-1/2 rounded-full bg-blue-400/25 blur-[120px] dark:bg-blue-500/15"
           />
           <h1 className="text-4xl leading-[1.05] font-semibold tracking-tight text-balance sm:text-5xl lg:text-6xl">
             Ten minutes of Spanish, out loud.
@@ -108,7 +108,7 @@ export default function LandingPage() {
               ].map((step, i) => (
                 <Reveal key={step.n} delay={i * 0.08}>
                   <li className="flex h-full flex-col">
-                    <div className="h-56 rounded-2xl border border-border/60 bg-card/40 px-6">
+                    <div className="h-56 rounded-2xl border border-border/60 bg-muted/50 shadow-xs dark:bg-card/40 dark:shadow-none px-6">
                       {step.stage}
                     </div>
                     <div className="px-1 pt-5">
@@ -213,7 +213,7 @@ export default function LandingPage() {
               <div className="relative h-20">
                 <div
                   aria-hidden
-                  className="pointer-events-none absolute inset-0 -z-10 scale-150 rounded-full bg-blue-500/15 blur-2xl"
+                  className="pointer-events-none absolute inset-0 -z-10 scale-150 rounded-full bg-blue-400/30 blur-2xl dark:bg-blue-500/15"
                 />
                 <AmbientAura state="listening" className="h-full" />
               </div>
