@@ -44,8 +44,9 @@ import {
 } from "@/lib/session/plan"
 import { cn } from "@/lib/utils"
 
-/** The balance below which a session is short rather than full. One credit. */
-const FULL_SESSION_MINUTES = 10
+/** Below this the balance is worth flagging: less than the smallest pack, so
+ * the next conversation is a short one. */
+const LOW_BALANCE_MINUTES = 5
 
 export function StartSession() {
   const router = useRouter()
@@ -63,9 +64,15 @@ export function StartSession() {
   // stored plan carried — the profile is the answer they gave on purpose.
   const plan = edited ?? { ...stored, level: viewer?.level ?? stored.level }
 
+  // Seconds decide, minutes display. The ledger meters seconds and the token
+  // route refuses at zero seconds, so a learner with forty of them still has a
+  // conversation — "0 minutes left" would lock a door that is actually open.
+  const seconds = viewer?.seconds
   const minutes = viewer?.minutes
-  const empty = minutes === 0
-  const low = minutes !== undefined && minutes > 0 && minutes < FULL_SESSION_MINUTES
+  const empty = seconds !== undefined && seconds <= 0
+  const under = seconds !== undefined && seconds > 0 && minutes === 0
+  const low =
+    minutes !== undefined && minutes > 0 && minutes < LOW_BALANCE_MINUTES
 
   return (
     <>
@@ -76,9 +83,9 @@ export function StartSession() {
         <div className="mt-5 min-h-16">
           {minutes !== undefined && (
             <>
-              {empty ? (
+              {empty || under ? (
                 <p className="text-2xl font-semibold tracking-tight text-foreground">
-                  No minutes left
+                  {empty ? "No minutes left" : "Under a minute left"}
                 </p>
               ) : (
                 <p className="flex items-baseline gap-2">
@@ -98,8 +105,8 @@ export function StartSession() {
               <p className="mt-2 text-sm text-muted-foreground">
                 {empty
                   ? "Minutes are for talking. Studying is free."
-                  : low
-                    ? "Enough for a shorter session."
+                  : under || low
+                    ? "Enough for a short conversation."
                     : "Minutes count only while you're talking."}
               </p>
             </>

@@ -33,7 +33,6 @@ import {
   suggestPlan,
   tensesFor,
 } from "@/lib/session/plan"
-import { SESSION_MAX_MINUTES } from "@/lib/session/protocol"
 import { cn } from "@/lib/utils"
 
 /**
@@ -262,8 +261,8 @@ export function SessionPreflight({
           What do you want to talk about?
         </h1>
         <p className="mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">
-          {SESSION_MAX_MINUTES} minutes of Spanish, with corrections when you
-          finish a thought. Everything below is optional.
+          Spanish out loud, with corrections when you finish a thought. Talk
+          for as long as you like. Everything below is optional.
         </p>
 
         <PlanFields plan={plan} onChange={onChange} className="mt-9" />

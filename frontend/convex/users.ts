@@ -1,6 +1,7 @@
 import { v } from "convex/values"
 
 import {
+  internalQuery,
   mutation,
   query,
   type MutationCtx,
@@ -8,14 +9,15 @@ import {
 } from "./_generated/server"
 import type { Doc } from "./_generated/dataModel"
 import { levelValidator } from "./validators"
-import { SIGNUP_GRANT_MINUTES } from "../lib/billing"
+import { minutesFromSeconds, SIGNUP_GRANT_SECONDS } from "../lib/billing"
 
 /** Spanish only until the loop is monetized — see the vision doc. */
 const TARGET_LANG = "es"
 const ANCHOR_LANG = "en"
 
-/** The one lookup every authenticated function starts from. */
-async function userByClerkId(
+/** The one lookup every authenticated function starts from. Exported for the
+ * HTTP actions, which are handed a Clerk id rather than an identity. */
+export async function userByClerkId(
   ctx: QueryCtx | MutationCtx,
   clerkId: string
 ): Promise<Doc<"users"> | null> {
@@ -26,7 +28,7 @@ async function userByClerkId(
 }
 
 /** Balance is always summed from the ledger, never read off a field. */
-async function minutesFor(
+export async function secondsFor(
   ctx: QueryCtx | MutationCtx,
   userId: Doc<"users">["_id"]
 ): Promise<number> {
@@ -34,12 +36,13 @@ async function minutesFor(
     .query("creditLedger")
     .withIndex("by_user", (q) => q.eq("userId", userId))
     .collect()
-  return entries.reduce((sum, entry) => sum + entry.minutes, 0)
+  return entries.reduce((sum, entry) => sum + entry.seconds, 0)
 }
 
 /**
  * Everything the signed-in UI needs about the learner, in one reactive read:
- * identity, declared level, and the minute balance.
+ * identity, declared level, and the balance — in seconds, which is what the
+ * meter spends, plus the whole minutes every surface actually prints.
  *
  * Three answers, and the callers depend on the difference:
  * - `null` — signed out.
@@ -57,13 +60,17 @@ export const viewer = query({
     if (identity === null) return null
 
     const user = await userByClerkId(ctx, identity.subject)
+    const seconds = user === null ? 0 : await secondsFor(ctx, user._id)
     return {
       clerkId: identity.subject,
       // `||`, not `??`: an empty string is an absent email, and rows written
       // before that was true still carry one. The UI never sees "".
       email: identity.email || user?.email || null,
       level: user?.level ?? null,
-      minutes: user === null ? 0 : await minutesFor(ctx, user._id),
+      seconds,
+      // Derived here rather than in each caller so "23 minutes left" means the
+      // same thing on the dashboard, in the header and on the pre-flight.
+      minutes: minutesFromSeconds(seconds),
     }
   },
 })
@@ -104,7 +111,7 @@ export const ensureUser = mutation({
 
     // The grant is separate from row creation on purpose: an account that
     // somehow got a row without one (an early tester, a partial write) still
-    // gets its ten minutes, and one that already has it never gets a second.
+    // gets its free minutes, and one that already has it never gets a second.
     const ref = `signup:${clerkId}`
     const granted = await ctx.db
       .query("creditLedger")
@@ -114,7 +121,7 @@ export const ensureUser = mutation({
       await ctx.db.insert("creditLedger", {
         userId,
         kind: "signup_grant",
-        minutes: SIGNUP_GRANT_MINUTES,
+        seconds: SIGNUP_GRANT_SECONDS,
         ref,
         createdAt: Date.now(),
       })
@@ -136,5 +143,22 @@ export const setLevel = mutation({
 
     await ctx.db.patch(user._id, { level: args.level })
     return null
+  },
+})
+
+/**
+ * The balance, by Clerk id, for the worker.
+ *
+ * Internal: the only caller is `convex/http.ts`, which has already checked the
+ * shared secret. There is no `ctx.auth` identity on that path — the worker acts
+ * for the learner, it is not the learner — so the id arrives as an argument,
+ * which is exactly why this must never be public.
+ */
+export const balanceByClerkId = internalQuery({
+  args: { clerkId: v.string() },
+  handler: async (ctx, args) => {
+    const user = await userByClerkId(ctx, args.clerkId)
+    if (user === null) return { balanceSeconds: 0 }
+    return { balanceSeconds: await secondsFor(ctx, user._id) }
   },
 })

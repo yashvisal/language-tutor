@@ -3,9 +3,10 @@
 Two things arrive on `JobContext.job.metadata` as one JSON string, set by the
 token route's `RoomAgentDispatch`:
 
-- the **billing** facts (`max_minutes`, `user_id`) that the clock enforces, and
-- the **session plan** (`plan`) — the learner's declared intent for the next
-  ten minutes: a topic or a scenario, focus tenses, vocab themes, a level.
+- the **billing** facts (`balance_s`, `user_id`) that the clock meters against,
+  and
+- the **session plan** (`plan`) — the learner's declared intent for this
+  conversation: a topic or a scenario, focus tenses, vocab themes, a level.
 
 Everything here crosses the wire from another process, so everything is
 optional and every type is checked once, at the boundary. A missing, empty, or
@@ -25,14 +26,14 @@ from dataclasses import dataclass, field
 
 logger = logging.getLogger("tutor.plan")
 
-# The default session length, used whenever the metadata does not say
-# otherwise. Ten minutes is one arc at comfortable proportions (see `arc.py`);
-# the credit unit itself lives in plans/phases/phase-4-sellable-sessions.md.
-DEFAULT_MAX_MINUTES = 10
+# The budget a session falls back to when the metadata carries no balance —
+# a worker run straight from the CLI, with no token route in front of it. In
+# production the token route always sends one (and refuses at zero), so this
+# only ever applies to development.
+DEFAULT_BALANCE_S = 600
 
-# Guard rails on a number that decides how long we pay for an audio model.
-MIN_MAX_MINUTES = 1
-MAX_MAX_MINUTES = 120
+# Guard rail on a number that decides how long we pay for an audio model.
+MAX_BALANCE_S = 24 * 60 * 60
 
 # How many list entries we accept, and how long each may be. The frontend picks
 # a handful; anything past this is either a mistake or an attempt to stuff the
@@ -67,9 +68,9 @@ class SessionPlan:
     """The session's declared intent. Every field is optional by design.
 
     Four consumers read it, and they read it differently: the tutor prompt
-    steers the conversation, the greeting opens inside the scenario, the arc
-    picks the scene's beats from it, and the analyzer weights its corrections.
-    The Review tab (phase 5) is the fifth.
+    steers the conversation, the greeting opens inside the scenario, the
+    analyzer weights its corrections, and the Review tab builds its material
+    from it.
     """
 
     topic: str | None = None
@@ -121,12 +122,14 @@ class SessionPlan:
 class JobMetadata:
     """The whole dispatch payload, coerced once.
 
-    `max_minutes` is what the clock enforces; the frontend has already checked
-    the learner's balance before minting the token, so the worker trusts the
+    `balance_s` is the learner's balance in seconds at session start, and it
+    is what the clock meters against: the conversation runs until it is spent
+    (see `clock.py`), not for a fixed number of minutes. The token route has
+    already read the balance and refused at zero, so the worker trusts the
     number but still clamps it to something a session could plausibly be.
     """
 
-    max_minutes: int = DEFAULT_MAX_MINUTES
+    balance_s: int = DEFAULT_BALANCE_S
     user_id: str | None = None
     plan: SessionPlan = field(default_factory=SessionPlan)
 
@@ -143,23 +146,23 @@ class JobMetadata:
             logger.warning("job metadata is not an object; running with defaults")
             return cls()
         return cls(
-            max_minutes=_max_minutes(raw.get("max_minutes")),
+            balance_s=_balance_s(raw.get("balance_s")),
             user_id=_text(raw.get("user_id"), limit=MAX_ITEM_CHARS),
             plan=SessionPlan.from_raw(raw.get("plan")),
         )
 
 
-def _max_minutes(value: object) -> int:
-    # bool is an int subclass; a JSON `true` is not a duration.
+def _balance_s(value: object) -> int:
+    # bool is an int subclass; a JSON `true` is not a balance.
     if not isinstance(value, (int, float)) or isinstance(value, bool):
-        return DEFAULT_MAX_MINUTES
+        return DEFAULT_BALANCE_S
     if value != value or value in (float("inf"), float("-inf")):  # NaN / inf
-        return DEFAULT_MAX_MINUTES
-    minutes = int(value)
-    if minutes < MIN_MAX_MINUTES:
-        logger.warning("max_minutes %r below the floor; using %d", value, MIN_MAX_MINUTES)
-        return MIN_MAX_MINUTES
-    if minutes > MAX_MAX_MINUTES:
-        logger.warning("max_minutes %r above the ceiling; using %d", value, MAX_MAX_MINUTES)
-        return MAX_MAX_MINUTES
-    return minutes
+        return DEFAULT_BALANCE_S
+    seconds = int(value)
+    if seconds < 0:
+        logger.warning("balance_s %r is negative; using 0", value)
+        return 0
+    if seconds > MAX_BALANCE_S:
+        logger.warning("balance_s %r above the ceiling; using %d", value, MAX_BALANCE_S)
+        return MAX_BALANCE_S
+    return seconds

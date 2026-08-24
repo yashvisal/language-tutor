@@ -39,13 +39,24 @@ ATTR_PAUSED = "tutor.paused"
 # `tutor.analyzer` tells the frontend whether corrections are coming at all, so
 # it can skip the "analyzing" phase entirely when the analyzer is off.
 ATTR_ANALYZER = "tutor.analyzer"
-# `tutor.minutes_left` is the session clock's public face: whole minutes
-# remaining, as a string, published on session start, every 30s, at the
-# one-minute warning, and at zero. The frontend displays this number and never
-# computes its own — the worker's clock is authoritative (phase 4, WS2).
-ATTR_MINUTES_LEFT = "tutor.minutes_left"
-# `tutor.session_over` is set to "true" once the clock has ended the session and
-# the goodbye has finished playing, immediately before the worker disconnects.
+# The session clock's public face (phase 6, the metered conversation). All
+# three are strings; the frontend displays them and never computes its own —
+# the worker's clock is authoritative (phase 4, WS2).
+#
+# `tutor.elapsed_s`   — active seconds so far. The stopwatch on screen; it
+#                       stops while the session is held, because holds are free.
+# `tutor.remaining_s` — balance_s - elapsed_s, floored at 0. The 0:30 state and
+#                       the countdown at the end of the balance.
+# `tutor.out_of_minutes` — "true" only while the session is held at zero.
+#
+# Published every 5s while unheld, and immediately on every pause/resume
+# transition, at the 30s nudge, and at zero.
+ATTR_ELAPSED_S = "tutor.elapsed_s"
+ATTR_REMAINING_S = "tutor.remaining_s"
+ATTR_OUT_OF_MINUTES = "tutor.out_of_minutes"
+# `tutor.session_over` is set to "true" immediately before the worker
+# disconnects — the clock's idle timeout on an abandoned out-of-minutes hold,
+# or any other end of the session.
 ATTR_SESSION_OVER = "tutor.session_over"
 # `tutor.turn_seq` is a monotonically increasing integer, bumped every time a
 # learner turn COMMITS. It is the only signal the frontend has for that moment:

@@ -35,7 +35,7 @@ export default async function HomePage() {
         {firstName ? `Hola, ${firstName}` : "Welcome back."}
       </h1>
       <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
-        Ten minutes of Spanish, out loud. Pause any time to study — that’s free.
+        Spanish, out loud — for as long as you like. Pausing to study is free.
       </p>
 
       <div className="mt-10 flex flex-col gap-6">

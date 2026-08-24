@@ -3,7 +3,7 @@
 /**
  * After the conversation.
  *
- * Two facts and two doors. The facts: how many minutes went, and what the
+ * Two facts and two doors. The facts: how long the learner talked, and what the
  * analyzer caught — the first time the session's corrections are seen all at
  * once rather than one utterance at a time. The doors: talk again, or go
  * home.
@@ -23,6 +23,12 @@ import { CATEGORY_LABELS, type SessionOutcome } from "@/lib/session/contract"
 import { groupCorrections } from "@/lib/session/reducer"
 import { cn } from "@/lib/utils"
 
+/** `m:ss` — the same reading the stopwatch showed, so the two agree. */
+function clock(seconds: number): string {
+  const whole = Math.max(0, Math.round(seconds))
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`
+}
+
 export function SessionSummary({
   outcome,
   onStartAnother,
@@ -31,7 +37,7 @@ export function SessionSummary({
   onStartAnother: () => void
 }) {
   const groups = groupCorrections(outcome.corrections)
-  const { minutesUsed } = outcome
+  const { secondsTalked } = outcome
 
   return (
     <div className="flex min-h-svh justify-center bg-background px-8 py-[clamp(3rem,12vh,7rem)]">
@@ -40,16 +46,14 @@ export function SessionSummary({
           {outcome.endedByClock ? "Time's up" : "Session ended"}
         </Overline>
         <h1 className="mt-3 text-xl tracking-[-0.015em] text-foreground">
-          {minutesUsed === null
+          {secondsTalked === null
             ? "That's the session."
-            : `You talked for ${minutesUsed} ${
-                minutesUsed === 1 ? "minute" : "minutes"
-              }.`}
+            : `You talked for ${clock(secondsTalked)}.`}
         </h1>
         <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-          {minutesUsed === null
+          {secondsTalked === null
             ? "Nice work."
-            : "Minutes are counted while you're talking — time spent paused is free."}
+            : "That's what you were charged for — time spent paused is free."}
         </p>
 
         <section className="mt-10 border-t border-border/50 pt-8">

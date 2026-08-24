@@ -1,16 +1,18 @@
 import { NextResponse, type NextRequest } from "next/server"
+import { auth } from "@clerk/nextjs/server"
+import { fetchMutation, fetchQuery } from "convex/nextjs"
 import {
   AccessToken,
   RoomAgentDispatch,
   RoomConfiguration,
 } from "livekit-server-sdk"
 
+import { api } from "@/convex/_generated/api"
 import { MissingEnvVarError, requireServerEnv } from "@/lib/env"
 import type { SessionPlan } from "@/lib/session/contract"
 import { boundPlan } from "@/lib/session/plan"
 import {
   ROOM_NAME_PREFIX,
-  SESSION_MAX_MINUTES,
   TUTOR_AGENT_NAME,
   type SessionDispatchMetadata,
 } from "@/lib/session/protocol"
@@ -35,8 +37,11 @@ import {
  *   for this session, bounded here and embedded in the dispatch metadata the
  *   worker reads (see `SessionDispatchMetadata`)
  *
- * TODO(auth): there is no auth on this endpoint yet. Add a bearer/session check
- * here before this is exposed anywhere public.
+ * This is also the money gate, and it is the only one: a token is minted only
+ * for a signed-in learner with seconds left, the balance is signed into the
+ * dispatch metadata, and the `sessions` row the worker will debit against is
+ * written here. A zero balance is a **402**, which the surface reads as "out of
+ * minutes" rather than as a failure to connect.
  */
 
 /** Token lifetime. Only needs to outlive connect + any reconnect attempt, but
@@ -81,16 +86,17 @@ function generateRoomName(identity: string) {
  * bounded first — it is free text a learner typed, and it ends up in a model
  * prompt.
  *
- * `max_minutes` is what the worker's clock counts down; it is authoritative
- * because it is signed, not because the client asked nicely.
+ * `user_id` and `balance_s` are authoritative because they are signed, not
+ * because the client asked nicely: the worker bills the id it is given here.
  */
-function buildRoomConfig(plan: SessionPlan) {
+function buildRoomConfig(
+  plan: SessionPlan,
+  userId: string,
+  balanceSeconds: number
+) {
   const metadata: SessionDispatchMetadata = {
-    // TODO(credits): read the learner's remaining minutes from the ledger once
-    // auth and the database land, and refuse the token at a zero balance.
-    max_minutes: SESSION_MAX_MINUTES,
-    // TODO(auth): the authenticated user id, once there is one.
-    user_id: null,
+    user_id: userId,
+    balance_s: balanceSeconds,
     plan: {
       topic: plan.topic,
       scenario: plan.scenario,
@@ -110,6 +116,17 @@ function buildRoomConfig(plan: SessionPlan) {
 }
 
 export async function POST(request: NextRequest) {
+  // Auth first: nothing below should run for a stranger, least of all a Convex
+  // read or a room name minted from their identity.
+  const { userId, getToken } = await auth()
+  if (!userId) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 })
+  }
+  const convexToken = await getToken({ template: "convex" })
+  if (!convexToken) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 })
+  }
+
   let apiKey: string
   let apiSecret: string
   let serverUrl: string
@@ -141,11 +158,47 @@ export async function POST(request: NextRequest) {
     body = {}
   }
 
+  // The balance, read with the learner's own token so Convex sees the same
+  // identity the browser does. A zero balance is not an error: it is the state
+  // the out-of-minutes surface exists for, so it gets its own status.
+  let balanceSeconds: number
+  try {
+    const viewer = await fetchQuery(api.users.viewer, {}, { token: convexToken })
+    balanceSeconds = viewer?.seconds ?? 0
+  } catch (error) {
+    console.error("/api/token: could not read the balance", error)
+    return NextResponse.json(
+      { error: "Could not read your balance" },
+      { status: 500 }
+    )
+  }
+  if (balanceSeconds <= 0) {
+    return NextResponse.json({ error: "out_of_minutes" }, { status: 402 })
+  }
+
   const participantIdentity =
     body.participant_identity?.trim() || `learner-${nonce()}`
   const participantName = body.participant_name?.trim() || "Learner"
   const roomName =
     body.room_name?.trim() || generateRoomName(participantIdentity)
+
+  const plan = boundPlan(body.session_plan)
+
+  // The row the worker's debits land on. Before the token, deliberately: a
+  // session the ledger has never heard of is worse than a connect that failed.
+  try {
+    await fetchMutation(
+      api.sessions.start,
+      { room: roomName, plan },
+      { token: convexToken }
+    )
+  } catch (error) {
+    console.error("/api/token: could not record the session", error)
+    return NextResponse.json(
+      { error: "Could not start the session" },
+      { status: 500 }
+    )
+  }
 
   try {
     const at = new AccessToken(apiKey, apiSecret, {
@@ -164,7 +217,7 @@ export async function POST(request: NextRequest) {
       canSubscribe: true,
     })
 
-    at.roomConfig = buildRoomConfig(boundPlan(body.session_plan))
+    at.roomConfig = buildRoomConfig(plan, userId, balanceSeconds)
 
     const participantToken = await at.toJwt()
 

@@ -24,7 +24,7 @@
 
 import { useEffect, useRef, useState, type RefObject } from "react"
 import { MessageCircle, X } from "lucide-react"
-import { AnimatePresence, motion } from "motion/react"
+import { AnimatePresence, motion, useReducedMotion } from "motion/react"
 
 import { SettledText } from "@/components/session/correction-mark"
 import {
@@ -38,6 +38,7 @@ import {
   OVERLAY_ATTR,
   OVERLAY_OPEN,
 } from "@/components/session/translate-overlay"
+import { OutOfMinutesCard } from "@/components/session/out-of-minutes"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
@@ -68,6 +69,7 @@ export function StudyOverlay({
   fetchReview,
   focusTenses,
   heroTurnId,
+  outOfMinutes = false,
   onClose,
   restoreFocusTo,
 }: {
@@ -80,6 +82,13 @@ export function StudyOverlay({
   fetchReview: () => Promise<ReviewMaterial | null>
   focusTenses?: readonly string[]
   heroTurnId: string | null
+  /**
+   * The balance ran out and the worker is holding here. The surface stays
+   * exactly what it was — the conversation, the review, the questions — with
+   * one card over it and no way to close: closing is resuming, and there is
+   * nothing to resume into until there are minutes again.
+   */
+  outOfMinutes?: boolean
   onClose: () => void
   /**
    * What opened the surface, captured by the caller at interaction time (a ref,
@@ -90,9 +99,13 @@ export function StudyOverlay({
    */
   restoreFocusTo?: RefObject<HTMLElement | null>
 }) {
+  const reducedMotion = useReducedMotion()
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return
+      // Escape is a resume, and out of minutes there is nothing to resume to.
+      if (outOfMinutes) return
       // One Escape, one layer: a translation open over the surface dismisses
       // first. The value matters — a card mid-exit is still in the DOM but is
       // no longer a layer, and would otherwise swallow this Escape too.
@@ -101,7 +114,7 @@ export function StudyOverlay({
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [onClose])
+  }, [onClose, outOfMinutes])
 
   /**
    * Dialog focus, both directions. The panel covers the stage (which the stage
@@ -110,11 +123,13 @@ export function StudyOverlay({
    * or a learner who opened this from the control bar loses their place.
    */
   const closeRef = useRef<HTMLButtonElement>(null)
+  const homeRef = useRef<HTMLAnchorElement>(null)
   useEffect(() => {
     // Read on mount, not on close: whatever opened this surface is the thing to
     // return to, whatever the ref happens to hold by then.
     const trigger = restoreFocusTo?.current
-    closeRef.current?.focus()
+    // Out of minutes the close button is gone; the way home takes its place.
+    ;(closeRef.current ?? homeRef.current)?.focus()
     return () => {
       if (trigger?.isConnected) trigger.focus()
     }
@@ -144,24 +159,43 @@ export function StudyOverlay({
               </TabsTrigger>
             ))}
           </TabsList>
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  ref={closeRef}
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={onClose}
-                  aria-label="Close and resume"
-                  className="absolute top-3 right-4 rounded-full text-muted-foreground/60 hover:text-foreground"
-                >
-                  <X />
-                </Button>
-              }
-            />
-            <TooltipContent side="left">Close and resume</TooltipContent>
-          </Tooltip>
+          {/* No way out while the balance is zero: the only door is the card
+              below, and a close button that resumed into a held session would
+              be a button that does nothing. */}
+          {!outOfMinutes && (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    ref={closeRef}
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={onClose}
+                    aria-label="Close and resume"
+                    className="absolute top-3 right-4 rounded-full text-muted-foreground/60 hover:text-foreground"
+                  >
+                    <X />
+                  </Button>
+                }
+              />
+              <TooltipContent side="left">Close and resume</TooltipContent>
+            </Tooltip>
+          )}
         </div>
+
+        {/* On top of the tabs, not instead of them: the session has not gone
+            anywhere, and the transcript and review are the most useful things
+            on the screen at the moment a learner runs out. */}
+        {outOfMinutes && (
+          <motion.div
+            initial={reducedMotion ? false : { opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3, ease: [0.32, 0.72, 0, 1] }}
+            className="shrink-0 px-6 pt-5"
+          >
+            <OutOfMinutesCard className="mx-auto max-w-md" linkRef={homeRef} />
+          </motion.div>
+        )}
 
         <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-6 pb-16">
           {/* Same grid as the stage, so every tab reads as the same document. */}
@@ -280,3 +314,4 @@ function TranscriptTab({
     </div>
   )
 }
+

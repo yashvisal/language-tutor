@@ -13,11 +13,14 @@ export const ACCENT_TEXT = "text-primary"
 
 export const CTA_LABEL = "Start speaking — your first 10 minutes are free"
 
-/** Minutes first, price second; never credits. */
+/**
+ * Minutes first, price second; never credits. Sold in fives, cheaper per minute
+ * in the larger packs (plans/phases/phase-6-metered-conversation.md).
+ */
 export const PACKS = [
-  { minutes: 10, price: "$3.99", per: "$3.99 per 10 minutes" },
-  { minutes: 50, price: "$15.99", per: "$3.20 per 10 minutes" },
-  { minutes: 120, price: "$34.99", per: "$2.92 per 10 minutes" },
+  { minutes: 5, price: "$1.99", per: "$0.40 per minute" },
+  { minutes: 20, price: "$5.99", per: "$0.30 per minute" },
+  { minutes: 60, price: "$16.99", per: "$0.28 per minute" },
 ] as const
 
 export const PACKS_NOTE = "Minutes never expire. Pausing to study is free."

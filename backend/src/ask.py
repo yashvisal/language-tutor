@@ -29,7 +29,6 @@ import json
 import logging
 import random
 import time
-from collections.abc import Callable
 
 import openai
 from livekit import rtc
@@ -42,7 +41,6 @@ from prompts import (
     ASK_LIMIT_LINES,
     ask_instructions,
     ask_session_context,
-    phase_title,
     plan_facts,
 )
 from state import SessionFacts
@@ -92,13 +90,10 @@ class AskCoach:
         cfg: TutorConfig,
         plan: SessionPlan | None = None,
         facts: SessionFacts | None = None,
-        *,
-        phase: Callable[[], str] | None = None,
     ) -> None:
         self._cfg = cfg
         self._plan = plan
         self._facts = facts
-        self._phase = phase
         self._instructions = ask_instructions(cfg)
         self._client: openai.AsyncOpenAI | None = None
         self._asked = 0
@@ -149,10 +144,6 @@ class AskCoach:
     def _situation(self) -> list[str]:
         """What the coach knows about the session it is being asked about."""
         lines = plan_facts(self._plan) if self._plan is not None else []
-        if self._phase is not None:
-            title = phase_title(self._phase())
-            if title:
-                lines.append(f"where they are in the session right now: {title}")
         summary = self._facts.summary() if self._facts is not None else None
         if summary:
             lines.append(summary)

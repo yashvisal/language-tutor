@@ -145,13 +145,15 @@ export interface SessionPlan {
  *
  * Snapshotted rather than derived, because the session state is cleared when
  * the room goes away and the corrections the learner earned must outlive it.
- * `minutesUsed` is null when the worker never published a clock (a session that
- * ended before the first attribute, or a worker without the clock): the surface
- * says nothing rather than guessing, since the worker owns the meter.
+ * `secondsTalked` is the meter's final reading — the seconds of ACTIVE talking,
+ * holds excluded, which is exactly what the ledger was charged. Null when the
+ * worker never published a clock (a session that ended before the first
+ * attribute, or a worker without one): the surface says nothing rather than
+ * guessing, since the worker owns the meter.
  */
 export interface SessionOutcome {
   plan: SessionPlan
-  minutesUsed: number | null
+  secondsTalked: number | null
   /** True when the clock ended it, false when the learner hung up. */
   endedByClock: boolean
   /** Every correction the analyzer produced this session, in the order seen. */

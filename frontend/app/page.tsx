@@ -49,7 +49,7 @@ export default function LandingPage() {
             className="pointer-events-none absolute top-[55%] left-1/2 -z-10 h-[40rem] w-[40rem] -translate-x-1/2 -translate-y-1/2 rounded-full bg-blue-400/25 blur-[120px] dark:bg-blue-500/15"
           />
           <h1 className="text-4xl leading-[1.05] font-semibold tracking-tight text-balance sm:text-5xl lg:text-6xl">
-            Ten minutes of Spanish, out loud.
+            Spanish, out loud. Pay for the minutes you talk.
           </h1>
           <p className="mt-4 max-w-lg text-base leading-relaxed text-balance text-muted-foreground sm:text-lg">
             A tutor that answers naturally and never talks over you. The

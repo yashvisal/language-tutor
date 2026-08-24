@@ -3,7 +3,7 @@ import { cn } from "@/lib/utils"
 
 /**
  * Pricing as three tiles. Minutes are the big number — it is what the learner
- * is buying — price second, per-10-minutes small. The middle pack is the one
+ * is buying — price second, per-minute small. The middle pack is the one
  * most people should pick, so it is the one with the accent border; nothing
  * else competes for attention. No buttons: payments are not live yet, and a
  * tile that pretends to sell is worse than one that simply informs.

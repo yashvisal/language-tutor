@@ -8,7 +8,7 @@ import { levelValidator, sessionPlanValidator } from "./validators"
  * at this step; `sessions` and `purchases` are declared now so the shape is
  * settled in one place and the later steps (minutes, packs) only add writers.
  *
- * The one structural rule: **balance is `sum(creditLedger.minutes)`**, never a
+ * The one structural rule: **balance is `sum(creditLedger.seconds)`**, never a
  * mutable field on `users`. An append-only ledger makes every grant and debit
  * auditable, and `ref` is the idempotency key — a replayed Stripe webhook or a
  * retried worker debit finds its own row and does nothing.
@@ -43,11 +43,16 @@ export default defineSchema({
       v.literal("debit"),
       v.literal("adjustment")
     ),
-    /** Signed: grants are positive, debits negative. */
-    minutes: v.number(),
+    /**
+     * Signed SECONDS: grants are positive, debits negative. Seconds, not
+     * minutes, because the meter bills the seconds actually spoken — see
+     * `lib/billing.ts`.
+     */
+    seconds: v.number(),
     /**
      * Unique per entry by convention, enforced by every writer checking this
-     * index first: `signup:<clerkId>`, a Stripe session id, or a room name.
+     * index first: `signup:<clerkId>`, a Stripe session id, or `<room>:<seq>`
+     * for a worker debit.
      */
     ref: v.string(),
     createdAt: v.number(),
@@ -63,7 +68,9 @@ export default defineSchema({
     startedAt: v.number(),
     // Absent until the worker reports the session finished.
     endedAt: v.optional(v.number()),
-    minutesBilled: v.optional(v.number()),
+    /** Cumulative seconds this room has been billed for; the debit action's
+     * high-water mark, so a re-reported total debits only the delta. */
+    secondsBilled: v.optional(v.number()),
     corrections: v.optional(v.number()),
   })
     .index("by_room", ["room"])

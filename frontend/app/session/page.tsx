@@ -30,6 +30,7 @@ import { ArrowLeft } from "lucide-react"
 import { RoomAudioRenderer } from "@livekit/components-react"
 
 import { ConversationStage } from "@/components/session/conversation-stage"
+import { OutOfMinutesScreen } from "@/components/session/out-of-minutes"
 import { SessionPreflight } from "@/components/session/session-preflight"
 import { SessionSummary } from "@/components/session/session-summary"
 import { STAGE_AURA_CLASS, TutorAura } from "@/components/session/tutor-aura"
@@ -100,6 +101,13 @@ function Session() {
     )
   }
 
+  // The token route refused: no room was ever opened, so there is nothing to
+  // pre-flight. The card is the whole screen, and it is the same card a session
+  // held at zero shows over the conversation.
+  if (live.outOfMinutes && live.connection !== "live") {
+    return <OutOfMinutesScreen />
+  }
+
   if (live.connection !== "live") {
     return (
       <SessionPreflight
@@ -139,7 +147,9 @@ function Session() {
         muted={live.muted}
         onToggleMute={live.toggleMute}
         onEnd={live.disconnect}
-        minutesLeft={live.minutesLeft}
+        elapsedSeconds={live.elapsedSeconds}
+        remainingSeconds={live.remainingSeconds}
+        outOfMinutes={live.outOfMinutes}
         translate={live.translate}
         study={live.study}
         focusTenses={live.plan?.tenses}
