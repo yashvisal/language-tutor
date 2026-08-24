@@ -1,10 +1,14 @@
-# Phase 6: the dashboard — a clean, shippable signed-in app
+# Phase 6: Product Polish — the dashboard and the metered conversation
 
-*Status: in build (2026-08-24), branch `phase-6-dashboard`. Decided by Yash
+*Status: in build (2026-08-24), branch `phase-6-dashboard`, PR #6. Two parts:
+the dashboard shell (below) and the metered conversation
+(`phase-6-metered-conversation.md`), decided the same day — one combined
+review at the end. Decided by Yash
 after the phase-5 shell shipped and felt like scaffolding: no sidebar, one
 dashboard, the plan picker as a modal, our own header, and a visual direction
-closer to "crafted primitives" than to hairlines. The conversation stage and
-the arc are out of scope here — the arc is the next phase.*
+closer to "crafted primitives" than to hairlines. The conversation
+stage changes only where the metered conversation needs it (the stopwatch,
+the out-of-minutes hold).*
 
 ## Decisions (2026-08-23/24, Yash)
 
@@ -31,8 +35,8 @@ the arc are out of scope here — the arc is the next phase.*
 
 ## Out of scope
 
-The live conversation stage, the arc (next phase), the money seam and
-payments (phase-5 steps 2–4, tracked in the audit), the landing page.
+Payments (Stripe) and deployment — the next phase. Everything else the
+metered conversation needs is in this one.
 
 ## Exit
 

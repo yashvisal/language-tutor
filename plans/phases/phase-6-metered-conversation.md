@@ -1,8 +1,8 @@
-# Phase 7: the metered conversation
+# Phase 6 (part 2): the metered conversation
 
 *Status: proposed 2026-08-24 from Yash's decision (see `product-vision.md`,
 "Decisions Settled (2026-08-24)"). Replaces the arc rewrite and absorbs the
-money seam (phase-5 steps 2–3). Follows phase 6 (the dashboard). Prices and
+money seam (phase-5 step 2). Built alongside the dashboard in phase 6. Prices and
 the free grant are placeholders until Yash sets them.*
 
 ## The idea
@@ -18,9 +18,12 @@ scripted wrap-up, no goodbye.
 
 - **Dashboard**: "23 minutes left" (phase 6, unchanged in shape). Start a
   conversation.
-- **In the session**: the minutes pill counts down in real time. At 0:30 it
-  changes state ("30 seconds left · Add minutes") and the tutor wraps the
-  thought without announcing anything mechanical.
+- **In the session**: a **stopwatch**, not a countdown — the time you have
+  talked counts up at the top, and it visibly stops while you are on hold
+  (asking, reviewing, reading), because that time is free. Nothing counts
+  down until the last 30 seconds of your balance, when the pill turns to
+  "0:30 left" and the tutor wraps the thought without announcing anything
+  mechanical.
 - **At zero**: the stage holds — the same pause surface, with one card: "You're
   out of minutes." Buy a pack → the balance rises → resume in the same
   conversation. Or "Back to home". Until payments exist, only the second door
