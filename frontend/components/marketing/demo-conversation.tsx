@@ -90,7 +90,16 @@ export function DemoConversation({
         ? "thinking"
         : "listening"
 
-  const speaker = beat.kind === "tutor" && !resolved ? "Tutor" : "You"
+  // The hold beat is the tutor's last line, still on screen — not a blank.
+  const holdText =
+    beat.kind === "hold" && index > 0
+      ? (() => {
+          const prev = SCRIPT[index - 1]!
+          return prev.kind === "tutor" ? prev.text : null
+        })()
+      : null
+  const speaker =
+    (beat.kind === "tutor" || holdText !== null) && !resolved ? "Tutor" : "You"
 
   const corrected = resolved || beat.kind === "correct"
   const learnerVisible =
@@ -132,6 +141,12 @@ export function DemoConversation({
             text={beat.text}
             words={words}
             typing
+            className={hero ? "text-xl sm:text-2xl" : "text-base"}
+          />
+        ) : holdText !== null && !resolved ? (
+          <Caption
+            text={holdText}
+            words={Number.MAX_SAFE_INTEGER}
             className={hero ? "text-xl sm:text-2xl" : "text-base"}
           />
         ) : learnerVisible ? (

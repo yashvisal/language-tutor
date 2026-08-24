@@ -18,7 +18,17 @@ const domain = process.env.CLERK_FRONTEND_API_URL
 // malformed domain makes Convex reject every token with the opaque "No auth
 // provider found matching the given token". This file is bundled into the
 // deployment, so the check stays dependency-free.
-if (!domain || !domain.startsWith("https://")) {
+function isHttpsOrigin(value: string | undefined): value is string {
+  if (!value) return false
+  try {
+    const url = new URL(value)
+    return url.protocol === "https:" && url.hostname.length > 0
+  } catch {
+    return false
+  }
+}
+
+if (!isHttpsOrigin(domain)) {
   throw new Error(
     `CLERK_FRONTEND_API_URL must be an absolute https:// URL (got ${
       domain ? `"${domain}"` : "no value"
