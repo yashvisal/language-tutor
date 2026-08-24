@@ -26,12 +26,16 @@ Read `product-vision.md` first; nothing here reopens a settled decision.*
 
 ## Transcript and hold
 
-5. **Learner fragments.** One spoken turn can arrive as several STT finals
-   ("Yo quiero pagar con" → "Plástico.") and shows as several bubbles. The turn
-   detector already merges them for the model; join consecutive learner finals
-   that commit as one turn for the UI. (`on_user_turn_completed` knows the
-   boundary; or merge learner segments with no tutor segment between them in
-   `frontend/lib/session/live-producer.ts`.)
+5. **Learner fragments.** DONE (2026-08-23). One spoken turn arrives as several
+   STT finals ("Yo quiero pagar con" → "Plástico.") and used to show as several
+   bubbles. The worker now publishes the turn detector's commit as a monotonic
+   `tutor.turn_seq` attribute (`_publish_turn_commit` in `backend/src/agent.py`,
+   from both `on_user_turn_completed` and the hold flush); the live producer
+   turns each rise into a `learner.turn_committed` event, and the reducer joins
+   consecutive learner segments into one turn until that event arrives. An
+   earlier attempt keyed the join on the analyzer settling instead — that lands
+   ~2s after the commit, so the learner's next sentence landed in the previous
+   bubble, and it was reverted (4af9632 → 1172dcd).
 6. **Hold flush unproven live.** `_flush_open_user_turn` closes the open STT
    segment at hold; every hold in testing was `result: empty`. One deliberate
    test: start a sentence, hit Space mid-word, resume, finish it — the

@@ -160,6 +160,10 @@ const TURN_ADVANCING = new Set<SessionEvent["type"]>([
   "transcript.delta",
   "transcript.final",
   "analysis.complete",
+  // Buffered with the rest: it marks a boundary BETWEEN transcript events, so
+  // dispatching it ahead of the deltas queued behind a hold would close the
+  // wrong turn.
+  "learner.turn_committed",
 ])
 
 /* -------------------------------------------------------------------------- */
@@ -536,6 +540,11 @@ export function useLiveSession(): LiveSession {
   /** Index of the oldest transcription entry that is not yet seen-final. */
   const transcriptScanFrom = useRef(0)
   const finalizedLearner = useRef<FinalizedUtterance[]>([])
+  /**
+   * The highest `tutor.turn_seq` we have acted on. Zero is "none seen": the
+   * worker counts from one, per room.
+   */
+  const turnSeqSeen = useRef(0)
   const correctionsSeen = useRef(new Set<string>())
   /**
    * Translations already paid for, keyed by turn, speaker and RAW span. Raw
@@ -597,6 +606,7 @@ export function useLiveSession(): LiveSession {
     transcriptSeen.current.clear()
     transcriptScanFrom.current = 0
     finalizedLearner.current = []
+    turnSeqSeen.current = 0
     correctionsSeen.current.clear()
     translations.current.clear()
     buffered.current = []
@@ -688,6 +698,29 @@ export function useLiveSession(): LiveSession {
     }
     transcriptScanFrom.current = cursor
   }, [transcriptions, localIdentity, analyzerOff, emit])
+
+  /* -- turn commits -> learner.turn_committed ----------------------------- */
+
+  /**
+   * The worker bumps `tutor.turn_seq` once per COMMITTED learner turn. That
+   * commit is the end of the learner's bubble and nothing on the transcript
+   * stream marks it — an STT final closes a VAD-bounded phrase, and a hesitant
+   * learner produces several of those per turn.
+   *
+   * Only a RISE is a commit. A lower or equal value is a stale attribute
+   * snapshot (attributes arrive as whole maps, and this effect re-runs whenever
+   * any of them changes); an agent that reconnects mid-session restarts its
+   * count, and a first sighting above zero is worth one event either way — it
+   * closes whatever bubble is on stage, which is the safe direction.
+   */
+  const turnSeqAttribute = agent.attributes?.[PARTICIPANT_ATTRIBUTES.turnSeq]
+  useEffect(() => {
+    if (turnSeqAttribute === undefined) return
+    const seq = Number.parseInt(turnSeqAttribute, 10)
+    if (Number.isNaN(seq) || seq <= turnSeqSeen.current) return
+    turnSeqSeen.current = seq
+    emit({ type: "learner.turn_committed" })
+  }, [turnSeqAttribute, emit])
 
   /* -- corrections -> analysis.complete ----------------------------------- */
 

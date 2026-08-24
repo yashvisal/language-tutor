@@ -51,6 +51,7 @@ from config import (
     ATTR_PAUSED,
     ATTR_SESSION_OVER,
     ATTR_TRUE,
+    ATTR_TURN_SEQ,
     RPC_PAUSE,
     RPC_RESUME,
     TutorConfig,
@@ -89,6 +90,39 @@ MAX_RESUME_ASKS = 5
 MAX_ASK_CHARS = 200
 
 
+# Publishes in flight. Fire-and-forget tasks are garbage collected unless
+# something holds a reference to them, so they are parked here until they end.
+_turn_seq_tasks: set[asyncio.Task[None]] = set()
+
+
+def _publish_turn_commit(room: rtc.Room, state: SessionState) -> None:
+    """Announce that a learner turn just committed, as a monotonic counter.
+
+    WHY: the frontend has no other signal for that moment. The STT emits a
+    segment per VAD-bounded phrase, so one conversational turn arrives as
+    several segments, and only the turn detector here knows which of them was
+    the last. The UI closes the learner's bubble when this number rises; before
+    it existed the UI waited for the analyzer's answer instead, which lands
+    ~2s late, so a learner who started their next sentence inside that window
+    saw it appended to the previous bubble (live, 2026-08-23).
+
+    Fire-and-forget: publishing must never sit in front of a reply or a hold.
+    A dropped publish costs one merged bubble, never a stalled session.
+    """
+    state.turn_seq += 1
+    seq = state.turn_seq
+
+    async def _publish() -> None:
+        try:
+            await room.local_participant.set_attributes({ATTR_TURN_SEQ: str(seq)})
+        except Exception:
+            logger.warning("failed to publish turn seq %d", seq, exc_info=True)
+
+    task = asyncio.create_task(_publish(), name="tutor-turn-seq")
+    _turn_seq_tasks.add(task)
+    task.add_done_callback(_turn_seq_tasks.discard)
+
+
 class TutorAgent(Agent):
     """The conversation partner. Analysis happens beside it, never inside it."""
 
@@ -97,6 +131,7 @@ class TutorAgent(Agent):
         cfg: TutorConfig,
         analyzer: CorrectionAnalyzer | None,
         state: SessionState,
+        room: rtc.Room,
         plan: SessionPlan | None = None,
         phase_block: str = "",
     ) -> None:
@@ -104,6 +139,7 @@ class TutorAgent(Agent):
         self._cfg = cfg
         self._analyzer = analyzer
         self._state = state
+        self._room = room
 
     # The analyzer trigger. Fires with the full committed turn because turn
     # detection happens agent-side — with model-owned turn detection this node
@@ -111,6 +147,12 @@ class TutorAgent(Agent):
     async def on_user_turn_completed(
         self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage
     ) -> None:
+        # The turn is committed — tell the UI so it can close the learner's
+        # bubble. BEFORE the hold branch below: a turn that commits during a
+        # hold is still a committed turn, and the StopResponse it raises only
+        # suppresses the tutor's reply.
+        _publish_turn_commit(self._room, self._state)
+
         text = (new_message.text_content or "").strip()
         if text and self._analyzer is not None:
             self._analyzer.analyze_in_background(
@@ -245,7 +287,7 @@ async def tutor(ctx: JobContext) -> None:
     arc = _build_arc(cfg, session, state, facts, meta)
 
     await session.start(
-        agent=TutorAgent(cfg, analyzer, state, meta.plan, arc.brief(cfg)),
+        agent=TutorAgent(cfg, analyzer, state, ctx.room, meta.plan, arc.brief(cfg)),
         room=ctx.room,
         room_options=room_io.RoomOptions(
             # Text input is off: this is a voice surface, not a chat box.
@@ -438,7 +480,10 @@ HOLD_FLUSH_CEILING_S = 3.5
 
 
 async def _flush_open_user_turn(
-    session: AgentSession, state: SessionState, analyzer: CorrectionAnalyzer | None
+    session: AgentSession,
+    state: SessionState,
+    analyzer: CorrectionAnalyzer | None,
+    room: rtc.Room,
 ) -> None:
     """Close the learner's open transcript segment before the hold goes quiet.
 
@@ -480,6 +525,11 @@ async def _flush_open_user_turn(
         logger.warning("hold: user turn flush failed", exc_info=True)
 
     if text:
+        # This path commits a turn without `on_user_turn_completed` ever running
+        # (the framework forces `skip_reply`, see the docstring), so the UI's
+        # turn-commit signal has to be published here too — otherwise the first
+        # words after a resume land in the pre-hold bubble.
+        _publish_turn_commit(room, state)
         # The turn is owed an answer, which the conversational re-entry gives on
         # resume — unless a resume raced this flush, in which case it has already
         # decided how to re-enter and the flag would only leak into the next
@@ -745,7 +795,7 @@ async def _register_pause_rpc(
         await _publish_paused(paused)
         logger.info("session %s", "paused" if paused else "resumed")
         if paused:
-            await _flush_open_user_turn(session, state, analyzer)
+            await _flush_open_user_turn(session, state, analyzer, ctx.room)
         return True
 
     async def _pause(_data: rtc.RpcInvocationData) -> str:

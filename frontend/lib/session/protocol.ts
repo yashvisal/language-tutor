@@ -248,6 +248,13 @@ export const PARTICIPANT_ATTRIBUTES = {
   minutesLeft: "tutor.minutes_left",
   /** `"true"` once the clock — not the learner — ended the session. */
   sessionOver: "tutor.session_over",
+  /**
+   * Integer string, bumped once per COMMITTED learner turn. The worker's turn
+   * detector is the only thing that knows where a learner's turn ends — the STT
+   * emits a segment per VAD-bounded phrase — so this is what closes the
+   * learner's bubble on stage (see `openSegment` in `reducer.ts`).
+   */
+  turnSeq: "tutor.turn_seq",
 } as const
 
 /** Value convention for boolean participant attributes. */

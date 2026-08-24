@@ -47,6 +47,13 @@ ATTR_MINUTES_LEFT = "tutor.minutes_left"
 # `tutor.session_over` is set to "true" once the clock has ended the session and
 # the goodbye has finished playing, immediately before the worker disconnects.
 ATTR_SESSION_OVER = "tutor.session_over"
+# `tutor.turn_seq` is a monotonically increasing integer, bumped every time a
+# learner turn COMMITS. It is the only signal the frontend has for that moment:
+# the STT emits a segment per VAD-bounded phrase, so one conversational turn is
+# several segments, and only the agent's turn detector knows which of them was
+# the last. The UI closes the learner's bubble on this — see the join rule in
+# `frontend/lib/session/reducer.ts`.
+ATTR_TURN_SEQ = "tutor.turn_seq"
 
 # Value convention for boolean participant attributes.
 ATTR_TRUE = "true"

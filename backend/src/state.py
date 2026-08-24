@@ -35,6 +35,12 @@ class SessionState:
     # The last bridge intent used, so consecutive resumes never repeat a line.
     last_bridge_intent: str | None = None
 
+    # How many learner turns have committed this session. Published as
+    # `tutor.turn_seq` (see `_publish_turn_commit` in agent.py): the frontend
+    # closes the learner's bubble when this number rises, because no transcript
+    # event marks the end of a turn.
+    turn_seq: int = 0
+
     # What the hold interrupted, captured when `tutor.pause` fires. Resume reads
     # it to decide whether the tutor owes the learner a re-entry or should stay
     # quiet and let them lead.
