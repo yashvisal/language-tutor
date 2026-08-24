@@ -147,9 +147,11 @@ class TutorConfig:
     # transcript arrives and the late flush triggers a phantom second commit
     # that interrupts the tutor's reply (the SDK warns about exactly this,
     # found live 2026-08-12). max is how long an uncertain end-of-turn waits
-    # for a learner mid-word-search.
+    # for a learner mid-word-search: 3s (2026-08-23) — at 6s a hedged
+    # sentence ("...things like that, you know") scored 0.24 and the learner
+    # sat through six seconds of silence before the first reply.
     min_endpointing_s: float = 1.2
-    max_endpointing_s: float = 6.0
+    max_endpointing_s: float = 3.0
     realtime_model: str = "gpt-realtime-2.1"
     realtime_voice: str = "marin"
     # Reasoning effort for reasoning-capable realtime models. "minimal"
@@ -182,7 +184,7 @@ class TutorConfig:
             target_lang=_env("TUTOR_TARGET_LANG", "es"),
             anchor_lang=_env("TUTOR_ANCHOR_LANG", "en"),
             min_endpointing_s=float(_env("TUTOR_MIN_ENDPOINT_S", "1.2")),
-            max_endpointing_s=float(_env("TUTOR_MAX_ENDPOINT_S", "6.0")),
+            max_endpointing_s=float(_env("TUTOR_MAX_ENDPOINT_S", "3.0")),
             realtime_model=_env("TUTOR_REALTIME_MODEL", "gpt-realtime-2.1"),
             realtime_reasoning=_env_reasoning("TUTOR_REALTIME_REASONING", "minimal"),
             realtime_speed=_env_speed("TUTOR_REALTIME_SPEED", 1.0),

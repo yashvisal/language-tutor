@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import random
+import sys
 import time
 from dataclasses import dataclass
 
@@ -424,10 +425,16 @@ def _capture_pause_context(session: AgentSession, state: SessionState) -> None:
 
 
 # A hold must never block on the STT, so the flush below is bounded twice: the
-# silence pushed into the STT and the wait for the final it produces, then a
-# hard ceiling around the whole thing.
-HOLD_FLUSH_S = 1.0
-HOLD_FLUSH_CEILING_S = 2.0
+# silence pushed into the STT, the wait for the final it produces, then a hard
+# ceiling around the whole thing. The wait must outlast the STT's own final
+# latency (~0.85s after its 350ms VAD window, measured 2026-08-23): at 1.0s
+# the final never arrived, the provider kept its segment open across the
+# hold, and its post-resume final replayed the pre-hold words in front of the
+# new ones. The hold is acknowledged before any of this, so the wait costs
+# the learner nothing.
+HOLD_FLUSH_SILENCE_S = 1.0
+HOLD_FLUSH_WAIT_S = 2.5
+HOLD_FLUSH_CEILING_S = 3.5
 
 
 async def _flush_open_user_turn(
@@ -458,8 +465,8 @@ async def _flush_open_user_turn(
         text = await asyncio.wait_for(
             session.commit_user_turn(
                 skip_reply=True,
-                transcript_timeout=HOLD_FLUSH_S,
-                stt_flush_duration=HOLD_FLUSH_S,
+                transcript_timeout=HOLD_FLUSH_WAIT_S,
+                stt_flush_duration=HOLD_FLUSH_SILENCE_S,
             ),
             timeout=HOLD_FLUSH_CEILING_S,
         )
@@ -825,4 +832,10 @@ async def _register_pause_rpc(
 
 
 if __name__ == "__main__":
+    # Windows consoles default to cp1252, which cannot encode the Spanish the
+    # transcripts are full of; without this every "¿" in a debug line is a
+    # logging traceback instead of a log line.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     agents.cli.run_app(server)
