@@ -32,9 +32,10 @@ screen below.*
   for a future that isn't here. The signed-in app is a **header + one
   dashboard**.
 - **Header**: wordmark (lowercase `tutor`, the same constant as the landing),
-  minutes left, a light/dark toggle, and a profile affordance that goes to
-  **our own `/settings`** — not Clerk's `<UserButton/>` menu. Settings owns
-  sign-out (Clerk's `signOut()`), email, level.
+  minutes left, a light/dark toggle, and the learner's avatar (Clerk's image,
+  our button — not Clerk's `<UserButton/>` menu). The avatar opens a
+  **settings popover**: email, level, sign out (Clerk's `signOut()`). There is
+  no `/settings` page; the route and its middleware entry go away.
 - **Dashboard (`/home`)**: welcomes the learner, shows minutes left, and
   starts a conversation. The plan picker (scenario / topic / tenses / vocab)
   leaves the page and becomes a **modal** opened by "Start a conversation";
