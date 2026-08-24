@@ -240,8 +240,8 @@ class SessionClock:
 def report_minutes_billed(user_id: str | None, minutes: int, room: str) -> None:
     """The ledger seam: what this session owes, reported once at teardown.
 
-    TODO(phase 4, credits): POST this to the Next.js internal debit endpoint
-    (signed, server-to-server) — that route is the only writer of debit rows.
+    TODO(phase 5, minutes): POST this to the signed Convex HTTP action — the
+    only writer of debit rows (see plans/phases/phase-5-product-shell.md).
     Until it exists this logs, so the number is already in the record and the
     call site never has to move.
     """

@@ -426,8 +426,8 @@ held — a learner studying a correction is not spending minutes (decision
 At teardown — clock, learner leaving, or a crash — the worker calls
 `report_minutes_billed(user_id, minutes, room)` with the actual minutes used,
 rounded up. Today that only logs `session minutes billed`; it is the seam for
-the signed internal debit endpoint on the Next.js app, which will be the only
-writer of ledger debit rows. Credit pricing and the economics behind
+the signed Convex HTTP action (phase 5) that will be the only writer of ledger
+debit rows. Credit pricing and the economics behind
 `max_minutes` live in `plans/phases/phase-4-sellable-sessions.md`.
 
 ## Pause semantics

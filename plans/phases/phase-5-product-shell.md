@@ -113,7 +113,9 @@ only chrome.
 
 ### 5. Session (`/session`) — exists
 
-Unchanged inside. Two seams:
+Unchanged inside. Two seams — **neither built yet** (audit 2026-08-23: the
+token route still hard-codes `max_minutes` and `user_id: null`; nothing
+decrements a balance). They are build-order step 2:
 
 - The token route reads the balance from Convex and embeds `user_id` and
   `max_minutes = min(10, balance)` in the dispatch metadata (replaces the
