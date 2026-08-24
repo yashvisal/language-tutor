@@ -332,6 +332,10 @@ def plan_facts(plan: SessionPlan) -> list[str]:
         lines.append(f"what they want to talk about: {plan.topic}")
     if plan.tenses:
         lines.append("the forms they want to practise: " + ", ".join(plan.tenses))
+    if plan.focus_note:
+        lines.append(f"what they asked specifically about: {plan.focus_note}")
+    if plan.note:
+        lines.append(f"what else they told you: {plan.note}")
     if plan.vocab:
         lines.append("the vocabulary they want to work in: " + ", ".join(plan.vocab))
     if plan.level:

@@ -76,6 +76,11 @@ class SessionPlan:
     topic: str | None = None
     scenario: str | None = None
     tenses: list[str] = field(default_factory=list)
+    # The two open lines the learner typed in their own words, beside the
+    # catalogs: what they want pushed on, and anything else we should know.
+    # Worth more than the chips around them, and passed through verbatim.
+    focus_note: str | None = None
+    note: str | None = None
     vocab: list[str] = field(default_factory=list)
     level: str | None = None
 
@@ -87,6 +92,8 @@ class SessionPlan:
             topic=_text(raw.get("topic")),
             scenario=_text(raw.get("scenario")),
             tenses=_text_list(raw.get("tenses")),
+            focus_note=_text(raw.get("focus_note")),
+            note=_text(raw.get("note")),
             vocab=_text_list(raw.get("vocab")),
             level=_text(raw.get("level"), limit=MAX_ITEM_CHARS),
         )
@@ -94,7 +101,17 @@ class SessionPlan:
     @property
     def is_empty(self) -> bool:
         """True when the learner declared nothing — "just talk to me"."""
-        return not any((self.topic, self.scenario, self.tenses, self.vocab, self.level))
+        return not any(
+            (
+                self.topic,
+                self.scenario,
+                self.tenses,
+                self.focus_note,
+                self.note,
+                self.vocab,
+                self.level,
+            )
+        )
 
     @property
     def subject(self) -> str | None:
@@ -113,6 +130,8 @@ class SessionPlan:
             "plan_topic": self.topic,
             "plan_scenario": self.scenario,
             "plan_tenses": self.tenses,
+            "plan_focus_note": self.focus_note,
+            "plan_note": self.note,
             "plan_vocab": self.vocab,
             "plan_level": self.level,
         }

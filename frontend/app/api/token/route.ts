@@ -101,6 +101,8 @@ function buildRoomConfig(
       topic: plan.topic,
       scenario: plan.scenario,
       tenses: plan.tenses,
+      focus_note: plan.focusNote,
+      note: plan.note,
       vocab: plan.vocab,
       level: plan.level,
     },

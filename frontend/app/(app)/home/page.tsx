@@ -1,6 +1,7 @@
 import { currentUser } from "@clerk/nextjs/server"
 import { Captions, Mic, Sparkles } from "lucide-react"
 
+import { ActivityCalendar } from "@/components/home/activity-calendar"
 import { StartSession } from "@/components/home/start-session"
 
 /**
@@ -39,6 +40,12 @@ export default async function HomePage() {
 
       <div className="mt-8">
         <StartSession />
+      </div>
+
+      {/* Under the panel, not beside it: the balance is the decision, this is
+          the record. Client island — the day boundaries are the learner's. */}
+      <div className="mt-10">
+        <ActivityCalendar />
       </div>
 
       {/* Not a card: three quiet facts, so the panel above stays the only

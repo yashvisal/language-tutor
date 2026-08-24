@@ -33,6 +33,29 @@ the out-of-minutes hold).*
   reduced-motion respected. Light mode is the primary target.
 - Sequencing: PR #5 merged first (2026-08-24); this lands as its own PR.
 
+### Revised 2026-08-24 (after the first build read as "slop")
+
+- **Exact seconds everywhere.** Time left is `m:ss` (`formatClock`), never a
+  rounded minute count — the meter counts seconds, so the balance does.
+- **The plan picker is a conversation, not a form.** Three question cards in
+  sequence (beautifului.dev "Approval Card"): a `1 / 3` mark, Skip, Continue,
+  Start on the last. Each card asks one question — what to be ready to talk
+  about (situation + free text), what to be pushed on (tenses + free text,
+  e.g. "when to use *he comido* vs *comí*"), where they are (level + free
+  text) — and each free-text line is **context the tutor carries into the
+  conversation** (`topic`, new `focusNote`, new `note` in `plan_facts`). The
+  vocabulary chip input is gone.
+- **Header is wide, content is narrow**: the header spans `max-w-5xl`; the
+  page stays `max-w-2xl`.
+- **The dashboard gets an activity calendar** — a GitHub-contributions grid of
+  the days the learner spoke (intensity = seconds talked), from `sessions`.
+  Chosen over a "last conversation" row or a streak counter.
+- **The avatar menu is Settings · Billing · Sign out.** Settings is a modal
+  (level; name/email read-only). Billing is a modal (exact time left, the
+  three packs as "Coming soon", a recent ledger). No pages.
+- **Language**: no picker (vision §3 stands), but no new copy hardcodes
+  "Spanish" — it comes from the `TARGET_LANGUAGE` config.
+
 ## Out of scope
 
 Payments (Stripe) and deployment — the next phase. Everything else the

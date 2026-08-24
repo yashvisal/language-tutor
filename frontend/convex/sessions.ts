@@ -1,6 +1,6 @@
 import { v } from "convex/values"
 
-import { internalMutation, mutation } from "./_generated/server"
+import { internalMutation, mutation, query } from "./_generated/server"
 import type { Doc } from "./_generated/dataModel"
 import { secondsFor, userByClerkId } from "./users"
 import { sessionPlanValidator } from "./validators"
@@ -112,5 +112,51 @@ export const debit = internalMutation({
     }
 
     return { balanceSeconds: await secondsFor(ctx, user._id) }
+  },
+})
+
+/** How far back the activity calendar looks. */
+const ACTIVITY_WEEKS = 26
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/**
+ * The learner's recent talking, for the activity calendar on `/home`.
+ *
+ * Returns one entry per session — a raw `startedAt` and the seconds it was
+ * billed — rather than pre-bucketed days. The bucket boundary is midnight in
+ * the LEARNER's timezone, and the server doesn't know it: Convex functions run
+ * in UTC, and a session at 9pm Pacific belongs to that day, not the next one.
+ * The alternatives were passing a `tzOffsetMinutes` arg (which makes the query
+ * key change twice a year, and on every flight) or storing a local day string
+ * at write time (a schema change for a read-side concern). Bucketing on the
+ * client with `Date` needs neither, and the payload is a handful of numbers.
+ *
+ * The window is padded a day at each end so that whichever way the learner's
+ * offset shifts a timestamp, the day it lands on is still covered.
+ */
+export const activity = query({
+  args: {},
+  returns: v.array(v.object({ startedAt: v.number(), seconds: v.number() })),
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity()
+    if (identity === null) return []
+
+    const user = await userByClerkId(ctx, identity.subject)
+    if (user === null) return []
+
+    const since = Date.now() - (ACTIVITY_WEEKS * 7 + 2) * DAY_MS
+    const rows = await ctx.db
+      .query("sessions")
+      .withIndex("by_user_startedAt", (q) =>
+        q.eq("userId", user._id).gte("startedAt", since)
+      )
+      .collect()
+
+    // A session that has never been debited contributes a day with no talking
+    // in it — it is dropped rather than lit, because the cell means "you spoke".
+    return rows.map((row) => ({
+      startedAt: row.startedAt,
+      seconds: row.secondsBilled ?? 0,
+    }))
   },
 })

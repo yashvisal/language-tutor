@@ -1,26 +1,32 @@
 "use client"
 
 /**
- * The pre-flight: the one screen between a learner and speaking.
+ * The pre-flight: the one thing between a learner and speaking.
  *
- * It exists because a session with a declared intent is a better session — the
- * plan steers the tutor's prompt and weights the analyzer — but the cost of
- * asking is that nobody has said a word yet. So it is a single quiet column,
- * not a wizard: every field is optional, defaults are already chosen, and
- * "Suggest one for me" fills the whole thing in one tap. Starting with nothing
- * selected is a legitimate answer (free conversation), and the button never
- * disables.
+ * It is three question cards rather than a form, and the reason is what the
+ * answers are FOR. A form asks you to configure a session; a question asks you
+ * something, and what you say becomes context the tutor carries into the
+ * conversation — which is why every card pairs a short catalog with one open
+ * line in the learner's own words. "when to use he comido vs comí" is worth
+ * more to the tutor than any chip, and there was nowhere to type it before.
  *
- * Two hosts now: `/session`'s own pre-connect state (this component) and the
- * dashboard's plan modal (`PlanFields` alone). The fields are exported rather
- * than copied so the two can never ask the same question two ways.
+ * One question on screen at a time, `1 / 3` in the footer, Skip always
+ * available, Back on the cards that have something behind them. Nothing is
+ * required: skipping all three is a legitimate plan (free conversation), and
+ * the last card's button never disables.
  *
- * Nothing here is Spanish-specific: the situations are prompt-ready phrases and
- * the focus forms come from the per-language catalog in `plan.ts`.
+ * Two hosts: the dashboard's modal (`components/home/start-session.tsx`) and
+ * `/session`'s own pre-connect state (`SessionPreflight` below). Both render
+ * `PlanCards` — the questions are exported rather than copied so the two can
+ * never ask the same thing two ways.
+ *
+ * Nothing here is Spanish-specific: the situations are prompt-ready phrases,
+ * the forms and the focus example come from the per-language catalogs in
+ * `plan.ts`, and the language is named through `TARGET_LANGUAGE_NAME`.
  */
 
 import { useState, type ReactNode } from "react"
-import { Shuffle, X } from "lucide-react"
+import { AnimatePresence, motion, useReducedMotion } from "motion/react"
 
 import { Overline } from "@/components/overline"
 import { Button } from "@/components/ui/button"
@@ -30,36 +36,63 @@ import {
   LEVELS,
   PLAN_LIMITS,
   SCENARIOS,
+  TARGET_LANGUAGE_NAME,
+  focusNotePlaceholder,
   suggestPlan,
   tensesFor,
 } from "@/lib/session/plan"
 import { cn } from "@/lib/utils"
 
+const STEP_COUNT = 3
+
 /**
- * Every question the plan is made of, and nothing around them — no heading, no
- * Start. The host supplies the frame.
+ * The three questions, and the footer that walks them.
+ *
+ * The host supplies the frame (a modal, a page column) and the class names for
+ * its own padding; this owns everything inside — including the Start button,
+ * because "the last card's Continue IS Start" is a property of the sequence,
+ * not of whoever is hosting it.
  */
-export function PlanFields({
+export function PlanCards({
   plan,
   onChange,
+  onStart,
   levelHint,
+  starting = false,
+  startLabel = "Start",
   className,
+  bodyClassName,
+  footerClassName,
 }: {
   plan: SessionPlan
   onChange: (plan: SessionPlan) => void
+  /** Fired by the last card's button. The host persists and connects. */
+  onStart: () => void
   /** Said beside the level when it arrived from somewhere the learner set it. */
   levelHint?: string
+  starting?: boolean
+  startLabel?: string
   className?: string
+  bodyClassName?: string
+  footerClassName?: string
 }) {
-  // Free text is revealed rather than always shown: an empty input next to the
-  // situations reads as a second, competing question. Derived rather than
-  // purely stateful, so a plan that arrives after mount (the stored one) opens
-  // its own input.
-  const [topicToggled, setTopicToggled] = useState(false)
-  const topicOpen = topicToggled || plan.topic !== null
-  const [vocabDraft, setVocabDraft] = useState("")
+  const [step, setStep] = useState(0)
+  // Which way the next card should come from. Kept in state rather than derived
+  // because the outgoing card animates after `step` has already changed.
+  const [forward, setForward] = useState(true)
+  const reducedMotion = useReducedMotion()
 
   const patch = (next: Partial<SessionPlan>) => onChange({ ...plan, ...next })
+
+  const go = (next: number) => {
+    setForward(next > step)
+    setStep(next)
+  }
+
+  const last = step === STEP_COUNT - 1
+  const advance = () => (last ? onStart() : go(step + 1))
+
+  const tenses = tensesFor()
 
   const toggleTense = (value: string) =>
     patch({
@@ -70,163 +103,156 @@ export function PlanFields({
           : plan.tenses,
     })
 
-  const addVocab = () => {
-    const value = vocabDraft.trim().slice(0, PLAN_LIMITS.vocabChars)
-    if (!value || plan.vocab.includes(value)) {
-      setVocabDraft("")
-      return
-    }
-    if (plan.vocab.length >= PLAN_LIMITS.maxVocab) return
-    patch({ vocab: [...plan.vocab, value] })
-    setVocabDraft("")
-  }
+  const cards: ReactNode[] = [
+    <Card
+      key="subject"
+      question="What do you want to be ready to talk about?"
+      aside={
+        <button
+          type="button"
+          onClick={() => onChange(suggestPlan(plan.level))}
+          className="shrink-0 text-xs text-muted-foreground underline underline-offset-4 transition-colors duration-200 outline-none hover:text-foreground focus-visible:text-foreground"
+        >
+          Suggest one for me
+        </button>
+      }
+      noteLabel="Or, in your own words"
+      noteValue={plan.topic}
+      notePlaceholder="Something specific — a trip next week, a call with your grandmother…"
+      noteMaxLength={PLAN_LIMITS.topicChars}
+      onNoteChange={(topic) => patch({ topic })}
+    >
+      {SCENARIOS.map((option) => (
+        <Chip
+          key={option.value}
+          selected={plan.scenario === option.value}
+          onClick={() =>
+            patch({
+              scenario: plan.scenario === option.value ? null : option.value,
+            })
+          }
+        >
+          {option.label}
+        </Chip>
+      ))}
+    </Card>,
 
-  // Suggest sits with the fields it fills rather than up at heading altitude,
-  // where it competed with the question itself.
-  const suggest = () => {
-    const suggested = suggestPlan(plan.level)
-    setTopicToggled(false)
-    onChange(suggested)
-  }
+    <Card
+      key="focus"
+      question="Anything you want the tutor to push you on?"
+      hint={
+        tenses.length > 0
+          ? "You could use some of these — pick any, or none."
+          : undefined
+      }
+      noteLabel="Something specific?"
+      noteValue={plan.focusNote}
+      notePlaceholder={focusNotePlaceholder()}
+      noteMaxLength={PLAN_LIMITS.focusNoteChars}
+      onNoteChange={(focusNote) => patch({ focusNote })}
+    >
+      {tenses.map((option) => (
+        <Chip
+          key={option.value}
+          selected={plan.tenses.includes(option.value)}
+          onClick={() => toggleTense(option.value)}
+        >
+          {option.label}
+        </Chip>
+      ))}
+    </Card>,
 
-  const tenses = tensesFor()
+    <Card
+      key="level"
+      question={`Where are you with ${TARGET_LANGUAGE_NAME} right now?`}
+      hint={levelHint}
+      noteLabel="Anything else the tutor should know?"
+      noteValue={plan.note}
+      notePlaceholder="Grew up hearing it, haven’t spoken it in years…"
+      noteMaxLength={PLAN_LIMITS.noteChars}
+      onNoteChange={(note) => patch({ note })}
+    >
+      {LEVELS.map((option) => (
+        <Chip
+          key={option.value}
+          selected={plan.level === option.value}
+          onClick={() => patch({ level: option.value })}
+        >
+          {option.label}
+        </Chip>
+      ))}
+    </Card>,
+  ]
+
+  const offset = reducedMotion ? 0 : forward ? 12 : -12
 
   return (
-    <div className={cn("flex flex-col gap-7", className)}>
-      <Field
-        label="Situation"
-        aside={
-          <Button
-            variant="ghost"
-            size="xs"
-            onClick={suggest}
-            className="-my-1 gap-1.5 text-muted-foreground"
+    <div className={cn("flex flex-col", className)}>
+      {/* Reserved height, sized to the tallest card: the three are different
+          lengths, and a footer that jumps between questions reads as a
+          different screen each time rather than one that turned a page. */}
+      <div className={cn("min-h-80", bodyClassName)}>
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.div
+            key={step}
+            initial={{ opacity: 0, x: offset }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -offset }}
+            transition={{ duration: reducedMotion ? 0 : 0.18, ease: "easeOut" }}
           >
-            <Shuffle />
-            Suggest one for me
-          </Button>
-        }
-      >
-        <div className="flex flex-wrap gap-1.5">
-          {SCENARIOS.map((option) => (
-            <Chip
-              key={option.value}
-              selected={plan.scenario === option.value}
-              onClick={() => {
-                const selected = plan.scenario === option.value
-                setTopicToggled(false)
-                // A situation and a topic are two answers to one question.
-                patch({
-                  scenario: selected ? null : option.value,
-                  topic: null,
-                })
-              }}
-            >
-              {option.label}
-            </Chip>
-          ))}
-          <Chip
-            selected={topicOpen}
-            onClick={() => {
-              setTopicToggled(!topicOpen)
-              if (topicOpen) patch({ topic: null })
-              else patch({ scenario: null })
-            }}
-          >
-            Something else…
-          </Chip>
-        </div>
-        {topicOpen && (
-          <Input
-            autoFocus
-            value={plan.topic ?? ""}
-            maxLength={PLAN_LIMITS.topicChars}
-            onChange={(e) => {
-              // Typing is itself the toggle: without this, clearing the last
-              // character would drop `topic` to null and unmount the input
-              // under the learner's cursor.
-              setTopicToggled(true)
-              patch({ topic: e.target.value || null })
-            }}
-            placeholder="Anything — my trip to Oaxaca, why I quit my job…"
-            aria-label="Topic"
-            className="mt-3 h-9"
-          />
+            {cards[step]}
+          </motion.div>
+        </AnimatePresence>
+      </div>
+
+      <div
+        className={cn(
+          "flex items-center justify-between gap-4 border-t border-foreground/[0.06] dark:border-white/10",
+          footerClassName
         )}
-      </Field>
-
-      {tenses.length > 0 && (
-        <Field label="Focus" hint="The tutor will steer toward these forms">
-          <div className="flex flex-wrap gap-1.5">
-            {tenses.map((option) => (
-              <Chip
-                key={option.value}
-                selected={plan.tenses.includes(option.value)}
-                onClick={() => toggleTense(option.value)}
-              >
-                {option.label}
-              </Chip>
-            ))}
-          </div>
-        </Field>
-      )}
-
-      <Field label="Vocabulary" hint="Themes to work in">
-        <div className="flex flex-wrap items-center gap-1.5">
-          {plan.vocab.map((theme) => (
-            <span
-              key={theme}
-              className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/5 py-1 pr-1 pl-3 text-sm text-foreground"
+      >
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-muted-foreground tabular-nums">
+            {step + 1} / {STEP_COUNT}
+          </span>
+          {step > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => go(step - 1)}
+              className="-mx-2 text-muted-foreground"
             >
-              {theme}
-              <button
-                type="button"
-                onClick={() =>
-                  patch({ vocab: plan.vocab.filter((v) => v !== theme) })
-                }
-                aria-label={"Remove " + theme}
-                className="rounded-full p-0.5 text-muted-foreground transition-colors duration-200 hover:text-foreground"
-              >
-                <X className="size-3" />
-              </button>
-            </span>
-          ))}
-          {plan.vocab.length < PLAN_LIMITS.maxVocab && (
-            <Input
-              value={vocabDraft}
-              maxLength={PLAN_LIMITS.vocabChars}
-              onChange={(e) => setVocabDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key !== "Enter") return
-                e.preventDefault()
-                addVocab()
-              }}
-              onBlur={addVocab}
-              placeholder={plan.vocab.length ? "Add another…" : "food, travel…"}
-              aria-label="Add a vocabulary theme"
-              className="h-8 w-44 rounded-full px-3"
-            />
+              Back
+            </Button>
           )}
         </div>
-      </Field>
 
-      <Field label="Where you are" hint={levelHint}>
-        <div className="flex flex-wrap gap-1.5">
-          {LEVELS.map((option) => (
-            <Chip
-              key={option.value}
-              selected={plan.level === option.value}
-              onClick={() => patch({ level: option.value })}
+        <div className="flex items-center gap-2">
+          {/* Skip advances without touching this card's answers. The last card
+              has nothing to advance to — its Skip would be its Start. */}
+          {!last && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => go(step + 1)}
+              className="text-muted-foreground"
             >
-              {option.label}
-            </Chip>
-          ))}
+              Skip
+            </Button>
+          )}
+          <Button size="lg" onClick={advance} disabled={last && starting}>
+            {last ? (starting ? "Connecting…" : startLabel) : "Continue"}
+          </Button>
         </div>
-      </Field>
+      </div>
     </div>
   )
 }
 
+/**
+ * `/session`'s own pre-flight: the same three cards, in a page-width column,
+ * reached only without the dashboard hand-off (a bookmark, a reload).
+ */
 export function SessionPreflight({
   plan,
   onChange,
@@ -257,26 +283,26 @@ export function SessionPreflight({
       <div className="w-full max-w-xl">
         {above}
         <Overline>Before you start</Overline>
-        <h1 className="mt-3 text-xl tracking-[-0.015em] text-foreground">
-          What do you want to talk about?
-        </h1>
-        <p className="mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">
-          Spanish out loud, with corrections when you finish a thought. Talk
-          for as long as you like. Everything below is optional.
+        <p className="mt-3 max-w-sm text-sm leading-relaxed text-muted-foreground">
+          {TARGET_LANGUAGE_NAME} out loud, with corrections when you finish a
+          thought. Three questions first — skip any of them.
         </p>
 
-        <PlanFields plan={plan} onChange={onChange} className="mt-9" />
+        <PlanCards
+          plan={plan}
+          onChange={onChange}
+          onStart={onStart}
+          starting={connecting}
+          startLabel="Start talking"
+          className="mt-8"
+          footerClassName="mt-8 pt-6"
+        />
 
-        <div className="mt-10 flex items-center gap-4 border-t border-border/50 pt-6">
-          <Button size="lg" onClick={onStart} disabled={connecting}>
-            {connecting ? "Connecting…" : "Start talking"}
-          </Button>
-          <p className="text-xs text-muted-foreground">
-            Microphone required. Pausing to study doesn’t use your minutes.
-          </p>
-        </div>
+        <p className="mt-4 text-xs text-muted-foreground">
+          Microphone required. Pausing to study doesn’t use your minutes.
+        </p>
         {error && (
-          <p role="alert" className="mt-4 text-xs text-destructive">
+          <p role="alert" className="mt-3 text-xs text-destructive">
             {error}
           </p>
         )}
@@ -285,29 +311,57 @@ export function SessionPreflight({
   )
 }
 
-/** A labelled block. Sections are separated by space and a small label — no
- * cards, no boxes: the plan is one column of questions. */
-function Field({
-  label,
+/**
+ * One question: the question itself, its options, and one open line under
+ * them. The open line is always visible rather than revealed — on a card that
+ * asks only one thing it cannot compete with the question, and hiding it hid
+ * the most useful answer the learner could give.
+ */
+function Card({
+  question,
   hint,
   aside,
   children,
+  noteLabel,
+  noteValue,
+  notePlaceholder,
+  noteMaxLength,
+  onNoteChange,
 }: {
-  label: string
+  question: string
   hint?: string
   aside?: ReactNode
   children: ReactNode
+  noteLabel: string
+  noteValue: string | null
+  notePlaceholder: string
+  noteMaxLength: number
+  onNoteChange: (value: string | null) => void
 }) {
   return (
     <section>
-      <div className="mb-3 flex items-baseline justify-between gap-3">
-        <div className="flex items-baseline gap-2">
-          <Overline>{label}</Overline>
-          {hint && <span className="text-xs text-muted-foreground">{hint}</span>}
-        </div>
+      <div className="flex items-baseline justify-between gap-4">
+        <h2 className="text-base leading-snug tracking-[-0.01em] text-foreground text-balance">
+          {question}
+        </h2>
         {aside}
       </div>
-      {children}
+      {hint && (
+        <p className="mt-1.5 text-xs text-muted-foreground">{hint}</p>
+      )}
+
+      <div className="mt-4 flex flex-wrap gap-1.5">{children}</div>
+
+      <label className="mt-6 block">
+        <span className="text-xs text-muted-foreground">{noteLabel}</span>
+        <Input
+          value={noteValue ?? ""}
+          maxLength={noteMaxLength}
+          onChange={(e) => onNoteChange(e.target.value || null)}
+          placeholder={notePlaceholder}
+          className="mt-1.5 h-9"
+        />
+      </label>
     </section>
   )
 }

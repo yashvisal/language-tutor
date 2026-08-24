@@ -133,7 +133,20 @@ export interface SessionPlan {
   topic: string | null
   /** Forms to steer toward, as catalog values for the target language. */
   tenses: string[]
-  /** Free-text vocabulary themes. */
+  /**
+   * Free text beside the forms: the specific thing the learner wants pushed on
+   * ("when to use he comido vs comí"). A form catalog is a menu; this is the
+   * question they actually came in with, so it reaches the tutor verbatim.
+   */
+  focusNote: string | null
+  /** Anything else the tutor should know, free text, beside the level. */
+  note: string | null
+  /**
+   * Free-text vocabulary themes. No longer asked for in the UI (the pre-flight
+   * is three questions, and a themes input was a fourth), but kept on the
+   * contract because the worker's Review material still reads it and a future
+   * surface may fill it again. The UI always sends `[]`.
+   */
   vocab: string[]
   /** Self-declared, one tap. No assessment — see phase 4, workstream 4. */
   level: string | null

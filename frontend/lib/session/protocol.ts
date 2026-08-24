@@ -305,6 +305,10 @@ export interface SessionDispatchMetadata {
     topic: string | null
     scenario: string | null
     tenses: string[]
+    /** Free text beside the forms — the thing they asked to be pushed on. */
+    focus_note: string | null
+    /** Free text beside the level — anything else the tutor should know. */
+    note: string | null
     vocab: string[]
     level: string | null
   }

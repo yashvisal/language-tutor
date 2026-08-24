@@ -20,7 +20,7 @@ import { useState, useSyncExternalStore } from "react"
 import { useRouter } from "next/navigation"
 import { useQuery } from "convex/react"
 
-import { PlanFields } from "@/components/session/session-preflight"
+import { PlanCards } from "@/components/session/session-preflight"
 import { CARD_CLASS } from "@/components/surface"
 import { Button } from "@/components/ui/button"
 import {
@@ -128,32 +128,25 @@ export function StartSession() {
               Start a conversation
             </DialogTitle>
             <DialogDescription>
-              Everything here is optional. Skip it and the tutor will ask.
+              Three questions, all optional — what you say here is what the
+              tutor starts with. Microphone required.
             </DialogDescription>
           </DialogHeader>
 
-          <div className="max-h-[55svh] overflow-y-auto px-6 py-1 [scrollbar-width:thin] [scrollbar-color:var(--border)_transparent]">
-            <PlanFields
-              plan={plan}
-              onChange={setEdited}
-              levelHint="from your profile"
-            />
-          </div>
-
-          <div className="flex items-center justify-between gap-4 border-t border-foreground/[0.06] px-6 py-4 dark:border-white/10">
-            <p className="text-xs text-muted-foreground">
-              Microphone required.
-            </p>
-            <Button
-              size="lg"
-              onClick={() => {
-                savePlan(plan)
-                router.push("/session?start=1")
-              }}
-            >
-              Start
-            </Button>
-          </div>
+          {/* Keyed on `open` so a reopened modal asks the first question
+              again rather than resuming a walk the learner abandoned. */}
+          <PlanCards
+            key={String(open)}
+            plan={plan}
+            onChange={setEdited}
+            levelHint="from your profile"
+            bodyClassName="px-6 pb-6"
+            footerClassName="px-6 py-4"
+            onStart={() => {
+              savePlan(plan)
+              router.push("/session?start=1")
+            }}
+          />
         </DialogContent>
       </Dialog>
     </>

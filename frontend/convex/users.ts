@@ -76,6 +76,40 @@ export const viewer = query({
 })
 
 /**
+ * The learner's recent credit history, newest first — what the Billing dialog
+ * prints under "Recent activity".
+ *
+ * Read straight off `by_user` and reversed rather than sorted by `createdAt`:
+ * the index is already in insertion order, which is the order the ledger was
+ * written in, and 20 rows is the whole page. Signed out, or signed in with no
+ * row yet, is an empty list rather than an error — the dialog is reachable
+ * before `/welcome` has run.
+ */
+export const ledger = query({
+  args: {},
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity()
+    if (identity === null) return []
+
+    const user = await userByClerkId(ctx, identity.subject)
+    if (user === null) return []
+
+    const entries = await ctx.db
+      .query("creditLedger")
+      .withIndex("by_user", (q) => q.eq("userId", user._id))
+      .order("desc")
+      .take(20)
+
+    return entries.map((entry) => ({
+      id: entry._id,
+      kind: entry.kind,
+      seconds: entry.seconds,
+      createdAt: entry.createdAt,
+    }))
+  },
+})
+
+/**
  * Creates the learner's row and hands them their free minutes. Called from
  * `/welcome`, but written to survive being called from anywhere, any number of
  * times: the row is created once, the level is updated when passed, and the

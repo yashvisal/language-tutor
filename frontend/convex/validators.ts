@@ -56,10 +56,19 @@ export const sessionPlanValidator = v.object({
   scenario: v.union(v.string(), v.null()),
   topic: v.union(v.string(), v.null()),
   tenses: v.array(v.string()),
+  // Optional, unlike their contract counterparts: rows written before the two
+  // open notes existed have no such field, and a stored session is history —
+  // it is never rewritten to match a newer plan shape.
+  focusNote: v.optional(v.union(v.string(), v.null())),
+  note: v.optional(v.union(v.string(), v.null())),
   vocab: v.array(v.string()),
   level: v.union(v.string(), v.null()),
 })
 
+/** Drops the `?` the back-compat fields carry, so the assertion below still
+ * compares the two shapes field for field. */
+type Filled<T> = { [K in keyof T]-?: Exclude<T[K], undefined> }
+
 export type SessionPlanMatchesContract = Assert<
-  Equals<Infer<typeof sessionPlanValidator>, SessionPlan>
+  Equals<Filled<Infer<typeof sessionPlanValidator>>, SessionPlan>
 >

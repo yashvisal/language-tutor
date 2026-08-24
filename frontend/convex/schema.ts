@@ -74,7 +74,10 @@ export default defineSchema({
     corrections: v.optional(v.number()),
   })
     .index("by_room", ["room"])
-    .index("by_user", ["userId"]),
+    .index("by_user", ["userId"])
+    // The activity calendar reads one learner's recent sessions in time order;
+    // `by_user` alone would make it collect a lifetime of rows to keep 26 weeks.
+    .index("by_user_startedAt", ["userId", "startedAt"]),
 
   purchases: defineTable({
     userId: v.id("users"),
