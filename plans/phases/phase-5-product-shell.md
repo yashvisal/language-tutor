@@ -26,7 +26,7 @@ screen below.*
   session-length rule are deferred.
 - The account page is `/settings`.
 
-## Decisions (2026-08-23, Yash — the signed-in shell, re-scoped)
+## Decisions (2026-08-23, Yash — the signed-in shell, re-scoped) — now **phase 6**, see `phase-6-dashboard.md`
 
 - **No sidebar.** There is nothing to navigate to yet; a sidebar was chrome
   for a future that isn't here. The signed-in app is a **header + one
