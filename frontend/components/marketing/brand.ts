@@ -1,14 +1,15 @@
 /**
  * Shared marketing constants. The product has no name yet, so the wordmark is
  * a plain lowercase placeholder; the accent is the Aura's blue (the same
- * `#3b82f6` / Tailwind blue-500 family `TutorAura` renders), used sparingly —
+ * `#3b82f6` / Tailwind blue-500 family `TutorAura` renders, and now the value
+ * of `--primary`), used sparingly —
  * the CTA and one highlight per page, never a wash or a gradient.
  */
 
 export const WORDMARK = "tutor"
 
 /** Inline accent for the single highlight on each page. */
-export const ACCENT_TEXT = "text-blue-600 dark:text-blue-400"
+export const ACCENT_TEXT = "text-primary"
 
 export const CTA_LABEL = "Start speaking — your first 10 minutes are free"
 

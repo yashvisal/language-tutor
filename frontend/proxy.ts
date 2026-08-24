@@ -10,7 +10,6 @@ const isProtectedRoute = createRouteMatcher([
   "/go(.*)",
   "/home(.*)",
   "/welcome(.*)",
-  "/settings(.*)",
   "/session(.*)",
   "/api/token(.*)",
 ])

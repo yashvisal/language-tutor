@@ -24,7 +24,9 @@ import {
   useState,
   useSyncExternalStore,
 } from "react"
+import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
+import { ArrowLeft } from "lucide-react"
 import { RoomAudioRenderer } from "@livekit/components-react"
 
 import { ConversationStage } from "@/components/session/conversation-stage"
@@ -101,6 +103,17 @@ function Session() {
   if (live.connection !== "live") {
     return (
       <SessionPreflight
+        above={
+          // Reached without the hand-off — a bookmark, a reload — so this is
+          // the only screen the learner can see. It needs a way back.
+          <Link
+            href="/home"
+            className="mb-8 inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors duration-200 hover:text-foreground"
+          >
+            <ArrowLeft className="size-3.5" />
+            Back to home
+          </Link>
+        }
         plan={plan}
         onChange={setEdited}
         connecting={live.connection === "connecting"}

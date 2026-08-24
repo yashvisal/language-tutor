@@ -19,12 +19,12 @@ export function PricingPacks({ className }: { className?: string }) {
             className={cn(
               "relative rounded-2xl border bg-card p-6 transition-colors",
               featured
-                ? "border-blue-500/50 dark:border-blue-400/40"
+                ? "border-primary/50"
                 : "border-border/70"
             )}
           >
             {featured && (
-              <span className="absolute -top-2.5 left-6 rounded-full border border-blue-500/40 bg-background px-2 py-0.5 text-[10px] font-medium tracking-[0.14em] text-blue-600 uppercase dark:text-blue-400">
+              <span className="absolute -top-2.5 left-6 rounded-full border border-primary/40 bg-background px-2 py-0.5 text-[10px] font-medium tracking-[0.14em] text-primary uppercase">
                 Most popular
               </span>
             )}

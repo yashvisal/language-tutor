@@ -113,7 +113,7 @@ export default function LandingPage() {
                     </div>
                     <div className="px-1 pt-5">
                       <div className="flex items-baseline gap-3">
-                        <span className="text-xs font-medium tabular-nums text-blue-600 dark:text-blue-400">
+                        <span className="text-xs font-medium tabular-nums text-primary">
                           {step.n}
                         </span>
                         <h3 className="text-lg font-medium tracking-tight">
@@ -163,7 +163,7 @@ export default function LandingPage() {
                       className={cn(
                         "flex items-baseline gap-2 rounded-full border px-4 py-2 text-sm",
                         available
-                          ? "border-blue-500/50 text-foreground dark:border-blue-400/40"
+                          ? "border-primary/50 text-foreground"
                           : "border-border/70 text-muted-foreground"
                       )}
                     >

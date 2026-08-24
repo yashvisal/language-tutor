@@ -1,67 +1,62 @@
-"use client"
+import { currentUser } from "@clerk/nextjs/server"
+import { Captions, Mic, Sparkles } from "lucide-react"
+
+import { StartSession } from "@/components/home/start-session"
+import { CARD_CLASS, IconBadge } from "@/components/surface"
 
 /**
- * Home is the pre-flight. There is nothing else a learner comes here to do, so
- * the page is the balance line plus the same `SessionPreflight` the session
- * page uses — one component, two hosts, no second copy to drift.
+ * The dashboard. Three things, in the order they matter: who you are, how much
+ * talking you have left, and the way into a session. Everything else that used
+ * to live here — the whole plan picker — moved into the modal behind the
+ * button, because a learner opening `/home` is not here to fill in a form.
  *
- * "Start talking" persists the plan and hands off to `/session?start=1`, which
- * connects immediately. The alternative — connecting here — would put the
- * conversation surface inside the sidebar shell, and the conversation owns the
- * whole viewport.
+ * Server-rendered around one client island: the greeting is Clerk's, on the
+ * server, so it never flashes; the balance is Convex's, reactive, in
+ * `StartSession`.
+ *
+ * Recent sessions belong under this. There is no writer for them yet, and an
+ * empty card promising a list is worse than no card.
  */
 
-import { useState, useSyncExternalStore } from "react"
-import { useRouter } from "next/navigation"
-import { useQuery } from "convex/react"
+/** What actually happens in there, for someone who has never done it. */
+const HOW_IT_GOES = [
+  { icon: Mic, line: "You speak." },
+  { icon: Captions, line: "The tutor answers, and waits." },
+  { icon: Sparkles, line: "The fix appears after your turn." },
+]
 
-import { SessionPreflight } from "@/components/session/session-preflight"
-import { api } from "@/convex/_generated/api"
-import type { SessionPlan } from "@/lib/session/contract"
-import {
-  planSnapshot,
-  savePlan,
-  serverPlanSnapshot,
-  subscribeToPlan,
-} from "@/lib/session/plan"
-
-export default function HomePage() {
-  const router = useRouter()
-  const viewer = useQuery(api.users.viewer)
-
-  const stored = useSyncExternalStore(
-    subscribeToPlan,
-    planSnapshot,
-    serverPlanSnapshot
-  )
-  const [edited, setEdited] = useState<SessionPlan | null>(null)
-  const plan = edited ?? stored
-
-  // Nothing renders until the balance is known: a flash of "0 minutes left"
-  // would be a lie about the one number the learner is here for. `null` is the
-  // brief window before Clerk's token reaches Convex — middleware has already
-  // guaranteed there is a session, and the (app) layout has already sent an
-  // un-onboarded account to /welcome on the server.
-  if (viewer === undefined || viewer === null) return null
-
-  const { minutes } = viewer
+export default async function HomePage() {
+  const user = await currentUser()
+  const firstName = user?.firstName?.trim()
 
   return (
-    <SessionPreflight
-      className="min-h-0 py-0 pb-24"
-      above={
-        <p className="mb-10 text-sm text-muted-foreground">
-          {minutes} {minutes === 1 ? "minute" : "minutes"} left
-        </p>
-      }
-      plan={plan}
-      onChange={setEdited}
-      connecting={false}
-      error={null}
-      onStart={() => {
-        savePlan(plan)
-        router.push("/session?start=1")
-      }}
-    />
+    <div className="mx-auto w-full max-w-3xl px-6 py-10 sm:py-14">
+      <h1 className="text-3xl font-semibold tracking-tight text-foreground">
+        {firstName ? `Hola, ${firstName}` : "Welcome back."}
+      </h1>
+      <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
+        Ten minutes of Spanish, out loud. Pause any time to study — that’s free.
+      </p>
+
+      <div className="mt-10 flex flex-col gap-6">
+        <StartSession />
+
+        <section className={CARD_CLASS}>
+          <h2 className="text-sm font-medium text-foreground">
+            How a session goes
+          </h2>
+          <ul className="mt-5 flex flex-col gap-4">
+            {HOW_IT_GOES.map((step) => (
+              <li key={step.line} className="flex items-center gap-3">
+                <IconBadge icon={step.icon} />
+                <span className="text-sm text-muted-foreground">
+                  {step.line}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      </div>
+    </div>
   )
 }

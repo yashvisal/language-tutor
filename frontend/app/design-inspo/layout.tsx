@@ -1,5 +1,5 @@
 import { DesignSidebar } from "@/components/design/design-sidebar"
-import { ThemeToggle } from "@/components/design/theme-toggle"
+import { ThemeToggle } from "@/components/theme-toggle"
 import { VariantSwitcher } from "@/components/design/variant-switcher"
 import { Separator } from "@/components/ui/separator"
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar"

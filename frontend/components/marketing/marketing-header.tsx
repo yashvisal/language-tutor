@@ -1,7 +1,7 @@
 import Link from "next/link"
 import { Show, SignInButton, SignUpButton, UserButton } from "@clerk/nextjs"
 
-import { ThemeToggle } from "@/components/design/theme-toggle"
+import { ThemeToggle } from "@/components/theme-toggle"
 import { WORDMARK } from "@/components/marketing/brand"
 import { Button } from "@/components/ui/button"
 
