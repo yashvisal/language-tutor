@@ -106,8 +106,8 @@ export default function LandingPage() {
                   stage: <FixFragment />,
                 },
               ].map((step, i) => (
-                <Reveal key={step.n} delay={i * 0.08}>
-                  <li className="flex h-full flex-col">
+                <li key={step.n} className="flex h-full flex-col">
+                  <Reveal delay={i * 0.08} className="flex h-full flex-col">
                     <div className="h-56 rounded-2xl border border-border/60 bg-muted/50 shadow-xs dark:bg-card/40 dark:shadow-none px-6">
                       {step.stage}
                     </div>
@@ -124,8 +124,8 @@ export default function LandingPage() {
                         {step.body}
                       </p>
                     </div>
-                  </li>
-                </Reveal>
+                  </Reveal>
+                </li>
               ))}
             </ol>
           </div>

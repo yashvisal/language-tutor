@@ -868,6 +868,9 @@ export function useLiveSession(): LiveSession {
     // a session that is still held re-pauses the agent it reconnects to.
     pauseAsked.current = null
     pauseAttempts.current = 0
+    // A replacement worker counts its turns from one again; keeping the old
+    // high-water mark would make it ignore every commit until it caught up.
+    turnSeqSeen.current = 0
   }, [agentIdentity])
 
   useEffect(() => {
