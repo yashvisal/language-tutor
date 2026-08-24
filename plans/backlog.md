@@ -26,7 +26,7 @@ Read `product-vision.md` first; nothing here reopens a settled decision.*
 
 ## Transcript and hold
 
-5. **Learner fragments.** One spoken turn can arrive as several STT finals
+5. ~~**Learner fragments.**~~ *Done 2026-08-23 — learner segments join the turn on stage until the tutor speaks or a resume lands (`reducer.ts`).* One spoken turn can arrive as several STT finals
    ("Yo quiero pagar con" → "Plástico.") and shows as several bubbles. The turn
    detector already merges them for the model; join consecutive learner finals
    that commit as one turn for the UI. (`on_user_turn_completed` knows the
