@@ -19,9 +19,8 @@ Read `product-vision.md` first; nothing here reopens a settled decision.*
    when the study surface opens, keeping the deterministic conjugation tables.
    Same principle as #1: the plan is a starting point, the conversation is the
    truth. (`backend/src/review.py`, `frontend/components/session/study-review.tsx`.)
-3. **Arc feel.** Yash: "the overall experience isn't as cute as I want." Needs
-   2–3 concrete moments he wished had happened before anything is designed.
-   Not a prompt-tweak task until then.
+3. ~~**Arc feel.**~~ *Superseded 2026-08-24: there is no arc. See the vision
+   doc's "metered conversation" decisions and `phases/phase-7-metered-conversation.md`.*
 4. **Review depth** is surface-level (tabled 2026-08-21, after #2).
 
 ## Transcript and hold

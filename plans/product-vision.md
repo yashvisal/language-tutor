@@ -151,6 +151,30 @@ From reviewing the phase-1 layout explorations (aura-stage, split-columns, and t
 
 ---
 
+## Decisions Settled (2026-08-24, the metered conversation)
+
+1. **Minutes are metered, not scheduled.** A session is not a 10-minute
+   container to fill; it is a conversation that runs as long as the learner
+   wants and their balance allows — three minutes or twenty. The clock counts
+   the exact seconds of talking (holds stay free). Supersedes "a credit buys
+   10 minutes" and "a session is a 1/4/4/1 arc" (2026-08-20).
+2. **Buy in fives, cheaper in packs.** Minutes are sold in 5-minute
+   increments; larger packs cost less per minute. Prices are placeholders
+   until set (see `phases/phase-7-metered-conversation.md`); the ≥3×-cost
+   rule stands.
+3. **The only time-shaped moment is the honest one.** At ~30 seconds left the
+   tutor is told to finish the thought and the surface says so; at zero the
+   session holds (not ends) with the way to buy more and continue, or go
+   home. No wrap-up phase, no scripted goodbye.
+4. **No session arc.** Frame/guided/scene/debrief on a timer produced a
+   "surface-level, inauthentic" session (Yash, 2026-08-24) and the audit's
+   four consent gates. The tutor opens in the target language with one
+   question and supports on evidence; the post-session summary carries the
+   look-back. What survives from the arc work: the instruction-update seam,
+   the hold deferral, and `turn_seq` as the tutor's evidence input.
+
+---
+
 ## The Conversation Surface
 
 The working mental model for the screen (to be pressure-tested in design exploration, not final):
