@@ -1,9 +1,0 @@
-docs: audit of where the app stands and what shipping needs (2026-08-23)
-
-Three read-only audits (signed-in UI, tutor arc, gap to shipping) plus the
-day's live findings, in one document with a proposed order of work and the
-decisions it needs. Also fixes two doc contradictions the audit caught: the
-debit seam is the Convex HTTP action, not a Next.js endpoint, and the
-token-route gating is not yet built.
-
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
