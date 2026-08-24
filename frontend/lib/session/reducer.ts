@@ -10,9 +10,8 @@
  * The stage model is RELEVANCE, NOT RECENCY (see plans/product-vision.md): the
  * hero is the segment currently in flight, the pinned context is the previous
  * turn, and everything older is history behind an escape hatch. That falls out
- * of one rule — a delta for a new segment id retires the current turn into
- * `turns`, unless it is the learner still talking (no tutor segment and no
- * resume since), in which case it joins the turn already on stage.
+ * of one rule — a delta for a new segment id retires the current one into
+ * `turns`.
  */
 
 import type {
@@ -41,13 +40,6 @@ export interface SessionState {
   /** Every reason the session is currently held; empty means running. */
   holds: PauseReason[]
   agentState: AgentState
-  /**
-   * A real resume has landed since the last segment opened. The learner's
-   * segments otherwise join across any pause, but the worker commits the
-   * pre-hold text as its own turn to the tutor — so the first words after a
-   * resume are a new turn there, and must be a new bubble here.
-   */
-  resumedSinceSegment: boolean
 }
 
 export const INITIAL_SESSION_STATE: SessionState = {
@@ -56,7 +48,6 @@ export const INITIAL_SESSION_STATE: SessionState = {
   phase: "live",
   holds: [],
   agentState: "idle",
-  resumedSinceSegment: false,
 }
 
 /**
@@ -177,26 +168,14 @@ function openSegment(
   targetText: string
 ): SessionState {
   const segment = { id: segmentId, target: targetText, anchor: "" }
-  // Same speaker, same conversational turn — append, don't retire.
-  //
-  // For the LEARNER this holds however long they breathe, and regardless of
-  // whether the analyzer already answered: the agent's turn detector merges
-  // every VAD-bounded fragment into ONE turn until the tutor replies, so
-  // "Yo quiero pagar con" / "Plástico." is one thing said and must be one
-  // bubble. Only the tutor starting (which retires this turn below) or a
-  // resume ends it — the worker commits held text as a turn of its own, so
-  // after a resume the next words are genuinely new on both sides.
-  //
-  // The TUTOR is the opposite case: its turns are bounded by its own replies,
-  // so two consecutive tutor utterances with no learner between them really
-  // are two turns. Only an unsettled tutor turn keeps taking segments.
-  const continues =
-    state.current !== null &&
+  // Same speaker, still unsettled: this is the same conversational turn
+  // continuing after a pause — append, don't retire. A settled turn (the
+  // analyzer already answered it) is finished; new speech starts fresh.
+  if (
+    state.current &&
     state.current.speaker === speaker &&
-    (speaker === "learner"
-      ? !state.resumedSinceSegment
-      : state.phase !== "settled")
-  if (state.current && continues) {
+    state.phase !== "settled"
+  ) {
     const current = joined({
       ...state.current,
       segments: [
@@ -210,7 +189,7 @@ function openSegment(
         segment,
       ],
     })
-    return { ...state, current, phase: "live", resumedSinceSegment: false }
+    return { ...state, current, phase: "live" }
   }
   const opened: Turn = joined({
     id: segmentId,
@@ -224,7 +203,6 @@ function openSegment(
     turns: state.current ? [...state.turns, state.current] : state.turns,
     current: opened,
     phase: "live",
-    resumedSinceSegment: false,
   }
 }
 
@@ -320,23 +298,14 @@ export function sessionReducer(
         ? state
         : { ...state, holds: [...state.holds, event.reason] }
 
-    case "session.resumed": {
+    case "session.resumed":
       // Releasing a reason that isn't held is routine, not an error: the
       // translation overlay releases on unmount whatever closed it, and
       // `holds.forEach(release)` re-releases whatever it just cleared. Return
       // the same state so those no-ops cost no render.
-      if (!state.holds.includes(event.reason)) return state
-      const holds = state.holds.filter((r) => r !== event.reason)
-      // Only the LAST release is a resume — that is what the producer turns
-      // into a single resume RPC, and what makes the worker close off the
-      // held text as a turn. Dropping one of several holds is still held.
-      return {
-        ...state,
-        holds,
-        resumedSinceSegment:
-          state.resumedSinceSegment || holds.length === 0,
-      }
-    }
+      return state.holds.includes(event.reason)
+        ? { ...state, holds: state.holds.filter((r) => r !== event.reason) }
+        : state
 
     case "session.reset":
       // Holds survive a reset: a learner reading a correction is still reading.
