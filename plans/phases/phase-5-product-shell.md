@@ -26,6 +26,29 @@ screen below.*
   session-length rule are deferred.
 - The account page is `/settings`.
 
+## Decisions (2026-08-23, Yash — the signed-in shell, re-scoped)
+
+- **No sidebar.** There is nothing to navigate to yet; a sidebar was chrome
+  for a future that isn't here. The signed-in app is a **header + one
+  dashboard**.
+- **Header**: wordmark (lowercase `tutor`, the same constant as the landing),
+  minutes left, a light/dark toggle, and a profile affordance that goes to
+  **our own `/settings`** — not Clerk's `<UserButton/>` menu. Settings owns
+  sign-out (Clerk's `signOut()`), email, level.
+- **Dashboard (`/home`)**: welcomes the learner, shows minutes left, and
+  starts a conversation. The plan picker (scenario / topic / tenses / vocab)
+  leaves the page and becomes a **modal** opened by "Start a conversation";
+  Start inside the modal hands off to `/session`. Recent sessions land later
+  with the `sessions` writer.
+- **Visual direction** (reference: beautifului.dev — "crafted primitives for
+  AI-native interfaces"): white space, cards with subtle shadow rather than
+  hairlines, medium radii (~12–16px), one meaningful accent per element,
+  tinted rounded-square icon badges, gliding hover states, full-opacity text.
+  Light mode is the primary target. This supersedes the "hairlines and
+  opacity" grammar the session playground grew; the conversation stage itself
+  is out of scope for this pass.
+- Sequencing: PR #5 merges first; this rework lands on a new branch.
+
 ## The one idea
 
 **The learner thinks in minutes; we sell credits.** Every screen shows
