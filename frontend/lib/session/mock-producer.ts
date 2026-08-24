@@ -169,10 +169,17 @@ export function nextMockBeat(state: SessionState): MockBeat {
   // empty transcript — the stage swaps a beat before its first word lands,
   // exactly as a real segment does. Running off the end loops the script.
   const next = MOCK_SCRIPT[cursor + 1]
+  // A learner turn hands the stage over the way the live pipeline does: the
+  // worker's turn commit closes the bubble, and only then does the next
+  // segment open. The script strictly alternates speakers, so nothing here
+  // depends on it — it is emitted so the playground exercises the same path
+  // live does (see `learner.turn_committed` in contract.ts).
+  const committed: SessionEvent[] =
+    entry.speaker === "learner" ? [{ type: "learner.turn_committed" }] : []
   return {
     delay: entry.dwell,
     events: next
-      ? [...transcript(next, 0), agentStateFor(next)]
+      ? [...committed, ...transcript(next, 0), agentStateFor(next)]
       : [{ type: "session.reset" }, ...openingEvents()],
   }
 }

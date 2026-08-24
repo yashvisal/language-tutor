@@ -10,9 +10,21 @@
  * The page owns only what wraps that surface — the pre-flight where the learner
  * declares a plan, the connection lifecycle, and the summary the session ends
  * into. Three states, in the order a learner meets them: plan, talk, look back.
+ *
+ * `/home` is the same pre-flight inside the app shell, so it hands off with
+ * `?start=1`: the plan is already persisted, and this page connects straight
+ * away instead of asking the same questions a second time. Without the flag
+ * (a direct visit, a bookmark) the page still opens on its own pre-flight.
  */
 
-import { useState, useSyncExternalStore } from "react"
+import {
+  Suspense,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react"
+import { useRouter, useSearchParams } from "next/navigation"
 import { RoomAudioRenderer } from "@livekit/components-react"
 
 import { ConversationStage } from "@/components/session/conversation-stage"
@@ -29,7 +41,19 @@ import {
 } from "@/lib/session/plan"
 
 export default function SessionPage() {
+  // `useSearchParams` needs a boundary to fall back to during prerender.
+  return (
+    <Suspense fallback={null}>
+      <Session />
+    </Suspense>
+  )
+}
+
+function Session() {
   const live = useLiveSession()
+  const { connect } = live
+  const router = useRouter()
+  const autostart = useSearchParams().get("start") === "1"
 
   /**
    * The plan. The last session's is the starting point (an external store, so
@@ -43,6 +67,24 @@ export default function SessionPage() {
   )
   const [edited, setEdited] = useState<SessionPlan | null>(null)
   const plan = edited ?? stored
+
+  /**
+   * The hand-off from `/home`, fired once and then erased. The ref makes it
+   * once within this mount — after a session ends the learner is back on this
+   * page, and "start another" must mean the button, not the address bar — and
+   * dropping the flag from the URL makes it once across mounts too, so a
+   * reload cannot reconnect and bill a second session.
+   */
+  const handedOff = useRef(false)
+  useEffect(() => {
+    if (!autostart || handedOff.current) return
+    handedOff.current = true
+    connect(planSnapshot())
+    // And the flag is spent: it survives in the address bar otherwise, so a
+    // reload — or a shared link — would silently open a second billed session.
+    // The ref only guards this mount.
+    router.replace("/session")
+  }, [autostart, connect, router])
 
   // The summary outlives the room, so it wins over the connection state: a
   // session ended by the clock disconnects us, and dropping straight back to

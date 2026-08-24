@@ -120,7 +120,7 @@ TUTOR_REALTIME_REASONING=minimal           # minimal | low — see config.py
 TUTOR_REALTIME_SPEED=1.0               # output audio speed multiplier
 TUTOR_REALTIME_VOICE=marin
 TUTOR_MIN_ENDPOINT_S=1.2            # must outlast the STT flush lag (~0.5s)
-TUTOR_MAX_ENDPOINT_S=6.0            # patience for a learner mid-word-search
+TUTOR_MAX_ENDPOINT_S=3.0            # patience for a learner mid-word-search
 TUTOR_STT_MODEL=gpt-live-transcribe
 TUTOR_ANALYZER_MODEL=gpt-5.6-luna
 TUTOR_ANALYZER_ENABLED=true
@@ -426,8 +426,8 @@ held — a learner studying a correction is not spending minutes (decision
 At teardown — clock, learner leaving, or a crash — the worker calls
 `report_minutes_billed(user_id, minutes, room)` with the actual minutes used,
 rounded up. Today that only logs `session minutes billed`; it is the seam for
-the signed internal debit endpoint on the Next.js app, which will be the only
-writer of ledger debit rows. Credit pricing and the economics behind
+the signed Convex HTTP action (phase 5) that will be the only writer of ledger
+debit rows. Credit pricing and the economics behind
 `max_minutes` live in `plans/phases/phase-4-sellable-sessions.md`.
 
 ## Pause semantics

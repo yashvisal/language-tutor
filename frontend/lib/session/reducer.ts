@@ -12,6 +12,11 @@
  * turn, and everything older is history behind an escape hatch. That falls out
  * of one rule — a delta for a new segment id retires the current one into
  * `turns`.
+ *
+ * THE JOIN RULE, in one sentence: a new segment continues the turn on stage
+ * when the speaker is the same and that turn is not yet finished — for the
+ * learner "finished" means the worker committed it (`learner.turn_committed`),
+ * for the tutor it means its final has settled.
  */
 
 import type {
@@ -37,6 +42,14 @@ export interface SessionState {
   /** The utterance in flight (or the last one, until the next begins). */
   current: Turn | null
   phase: TurnPhase
+  /**
+   * The worker's turn detector has closed `current` (learner turns only). It is
+   * the boundary that ends a learner's bubble: the analyzer's answer used to
+   * stand in for it and arrives ~2s late, so a learner starting their next
+   * sentence inside that window had it appended to the previous bubble (live,
+   * 2026-08-23). Cleared whenever a turn opens.
+   */
+  committed: boolean
   /** Every reason the session is currently held; empty means running. */
   holds: PauseReason[]
   agentState: AgentState
@@ -46,6 +59,7 @@ export const INITIAL_SESSION_STATE: SessionState = {
   turns: [],
   current: null,
   phase: "live",
+  committed: false,
   holds: [],
   agentState: "idle",
 }
@@ -168,14 +182,18 @@ function openSegment(
   targetText: string
 ): SessionState {
   const segment = { id: segmentId, target: targetText, anchor: "" }
-  // Same speaker, still unsettled: this is the same conversational turn
-  // continuing after a pause — append, don't retire. A settled turn (the
-  // analyzer already answered it) is finished; new speech starts fresh.
-  if (
-    state.current &&
-    state.current.speaker === speaker &&
-    state.phase !== "settled"
-  ) {
+  // Same speaker, turn not finished yet: this is the same conversational turn
+  // continuing after a breath — append, don't retire.
+  //
+  // What "finished" means is per speaker. For the LEARNER it is the worker's
+  // turn commit and nothing else: the analyzer's answer (`phase === "settled"`)
+  // trails the commit by ~2s, and gating on it put the learner's next sentence
+  // in the previous bubble. For the TUTOR there is no commit signal and none is
+  // needed — its speech is generated in one piece — so its final settling still
+  // ends the turn.
+  const finished =
+    speaker === "learner" ? state.committed : state.phase === "settled"
+  if (state.current && state.current.speaker === speaker && !finished) {
     const current = joined({
       ...state.current,
       segments: [
@@ -191,6 +209,7 @@ function openSegment(
     })
     return { ...state, current, phase: "live" }
   }
+
   const opened: Turn = joined({
     id: segmentId,
     speaker,
@@ -203,6 +222,7 @@ function openSegment(
     turns: state.current ? [...state.turns, state.current] : state.turns,
     current: opened,
     phase: "live",
+    committed: false,
   }
 }
 
@@ -268,7 +288,9 @@ export function sessionReducer(
       // correction the earlier events delivered. A timeout settles exactly
       // like an answer, but records itself — "no corrections found" and "no
       // answer arrived" must stay distinguishable downstream (and a timeout
-      // never downgrades a turn that already has a real answer).
+      // never downgrades a turn that already has a real answer). Settling is
+      // about when CORRECTIONS may show, not about where a turn ends — the
+      // turn boundary is `learner.turn_committed`, which lands ~2s earlier.
       const next = patchOwning(state, event.segmentId, (t) => {
         const merged = [...(t.corrections ?? [])]
         for (const c of event.corrections) {
@@ -288,6 +310,25 @@ export function sessionReducer(
         next.phase === "analyzing"
         ? { ...next, phase: "settled" }
         : next
+    }
+
+    case "learner.turn_committed": {
+      // The worker closed the learner's turn. Marking the turn on stage is all
+      // this does: the next learner segment then opens a fresh bubble instead
+      // of joining this one.
+      //
+      // ORDERING. The attribute this rides on propagates asynchronously, so the
+      // commit can arrive AFTER the tutor's first transcript delta has already
+      // retired the learner turn — the common case, and a no-op here, because
+      // `current` is then the tutor's and closing a tutor turn is not this
+      // event's business (its own final settles it). The mirror case, a
+      // learner delta arriving BEFORE the commit for the turn it follows, would
+      // wrongly join: it cannot happen in practice, since a commit needs ≥1.2s
+      // of silence and the attribute lands in ~100ms, so the learner would have
+      // to resume speaking within ~100ms of the silence that ended their turn.
+      return state.current?.speaker === "learner" && !state.committed
+        ? { ...state, committed: true }
+        : state
     }
 
     case "agent.state":

@@ -286,6 +286,20 @@ export interface AnalysisCompleteEvent {
 
 export type AnalysisStatus = "complete" | "timeout"
 
+/**
+ * The learner's conversational turn is CLOSED — the worker's turn detector
+ * committed it, merging however many VAD-bounded STT segments it spanned.
+ *
+ * There is no transcript event for this: a segment final closes a phrase, not a
+ * turn, and a hesitant learner produces several per turn. Only the worker knows
+ * the boundary, so it publishes it (`tutor.turn_seq`) and the producer turns
+ * each rise into one of these. The reducer needs no payload — it closes
+ * whatever learner turn is on stage, so the next segment opens a fresh bubble.
+ */
+export interface LearnerTurnCommittedEvent {
+  type: "learner.turn_committed"
+}
+
 /** Agent lifecycle, mirroring LiveKit's `useAgent()` state. */
 export interface AgentStateEvent {
   type: "agent.state"
@@ -321,6 +335,7 @@ export type SessionEvent =
   | TranscriptDeltaEvent
   | TranscriptFinalEvent
   | AnalysisCompleteEvent
+  | LearnerTurnCommittedEvent
   | AgentStateEvent
   | SessionPausedEvent
   | SessionResumedEvent

@@ -47,6 +47,13 @@ ATTR_MINUTES_LEFT = "tutor.minutes_left"
 # `tutor.session_over` is set to "true" once the clock has ended the session and
 # the goodbye has finished playing, immediately before the worker disconnects.
 ATTR_SESSION_OVER = "tutor.session_over"
+# `tutor.turn_seq` is a monotonically increasing integer, bumped every time a
+# learner turn COMMITS. It is the only signal the frontend has for that moment:
+# the STT emits a segment per VAD-bounded phrase, so one conversational turn is
+# several segments, and only the agent's turn detector knows which of them was
+# the last. The UI closes the learner's bubble on this — see the join rule in
+# `frontend/lib/session/reducer.ts`.
+ATTR_TURN_SEQ = "tutor.turn_seq"
 
 # Value convention for boolean participant attributes.
 ATTR_TRUE = "true"
@@ -147,9 +154,11 @@ class TutorConfig:
     # transcript arrives and the late flush triggers a phantom second commit
     # that interrupts the tutor's reply (the SDK warns about exactly this,
     # found live 2026-08-12). max is how long an uncertain end-of-turn waits
-    # for a learner mid-word-search.
+    # for a learner mid-word-search: 3s (2026-08-23) — at 6s a hedged
+    # sentence ("...things like that, you know") scored 0.24 and the learner
+    # sat through six seconds of silence before the first reply.
     min_endpointing_s: float = 1.2
-    max_endpointing_s: float = 6.0
+    max_endpointing_s: float = 3.0
     realtime_model: str = "gpt-realtime-2.1"
     realtime_voice: str = "marin"
     # Reasoning effort for reasoning-capable realtime models. "minimal"
@@ -182,7 +191,7 @@ class TutorConfig:
             target_lang=_env("TUTOR_TARGET_LANG", "es"),
             anchor_lang=_env("TUTOR_ANCHOR_LANG", "en"),
             min_endpointing_s=float(_env("TUTOR_MIN_ENDPOINT_S", "1.2")),
-            max_endpointing_s=float(_env("TUTOR_MAX_ENDPOINT_S", "6.0")),
+            max_endpointing_s=float(_env("TUTOR_MAX_ENDPOINT_S", "3.0")),
             realtime_model=_env("TUTOR_REALTIME_MODEL", "gpt-realtime-2.1"),
             realtime_reasoning=_env_reasoning("TUTOR_REALTIME_REASONING", "minimal"),
             realtime_speed=_env_speed("TUTOR_REALTIME_SPEED", 1.0),
