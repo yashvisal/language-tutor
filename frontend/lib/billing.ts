@@ -23,3 +23,15 @@ export const SIGNUP_GRANT_MINUTES = SIGNUP_GRANT_SECONDS / 60
 export function minutesFromSeconds(seconds: number): number {
   return Math.floor(Math.max(0, seconds) / 60)
 }
+
+/** Seconds → `m:ss`, the way time is shown wherever exactness matters: the
+ * dashboard, the header, the in-session clock. Never rounds. */
+export function formatClock(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds))
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return `${m}:${s.toString().padStart(2, "0")}`
+}
+
+/** Under this many seconds the balance is "low": one 5-minute pack. */
+export const LOW_BALANCE_SECONDS = 300

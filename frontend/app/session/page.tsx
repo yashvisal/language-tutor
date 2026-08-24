@@ -108,6 +108,18 @@ function Session() {
     return <OutOfMinutesScreen />
   }
 
+  // Handed off from the dashboard, or already dialling: the learner chose to
+  // start, so the only honest screen is the stage warming up — not the form
+  // they just filled in flashing past on its way to the conversation.
+  if (autostart || live.connection === "connecting") {
+    return (
+      <div className="flex h-svh flex-col items-center justify-center gap-6 bg-background">
+        <TutorAura state="connecting" className={STAGE_AURA_CLASS} />
+        <p className="text-sm text-muted-foreground">Connecting…</p>
+      </div>
+    )
+  }
+
   if (live.connection !== "live") {
     return (
       <SessionPreflight
@@ -124,7 +136,8 @@ function Session() {
         }
         plan={plan}
         onChange={setEdited}
-        connecting={live.connection === "connecting"}
+        // Never true here — a connecting session rendered the stage above.
+        connecting={false}
         error={live.error}
         onStart={() => {
           // Persisted at the moment of use, so a repeat session opens on the

@@ -1,26 +1,27 @@
 "use client"
 
 /**
- * The dashboard's one live region: the balance, and the door into a session.
+ * The dashboard's one live region: the time left, and the door into a
+ * session. One panel, two halves — the number on the left, the button on the
+ * right — because they are one decision: the button's label and whether it
+ * works at all are functions of the balance.
  *
- * They are one component because they are one decision — the button's label and
- * whether it works at all are functions of the balance, and splitting them
- * would mean two subscriptions to the same query disagreeing for a frame.
+ * The number is exact (`m:ss`), not a rounded minute count: the meter counts
+ * seconds, so the balance is shown in seconds. It does not tick here — the
+ * balance only changes when a session debits it, and Convex pushes that.
  *
- * The plan picker used to be the page. It is a modal now: a learner arriving at
- * `/home` is not here to fill in a form, and the questions are optional anyway.
- * Start persists the plan and hands off to `/session?start=1`, which connects
- * immediately — connecting here would put the conversation surface inside the
- * app shell, and the conversation owns the whole viewport.
+ * The plan picker lives in a modal behind the button: a learner arriving at
+ * `/home` is not here to fill in a form, and the questions are optional
+ * anyway. Start persists the plan and hands off to `/session?start=1`, which
+ * connects immediately.
  */
 
 import { useState, useSyncExternalStore } from "react"
 import { useRouter } from "next/navigation"
 import { useQuery } from "convex/react"
-import { Timer } from "lucide-react"
 
 import { PlanFields } from "@/components/session/session-preflight"
-import { CARD_CLASS, IconBadge } from "@/components/surface"
+import { CARD_CLASS } from "@/components/surface"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -35,6 +36,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { api } from "@/convex/_generated/api"
+import { LOW_BALANCE_SECONDS, formatClock } from "@/lib/billing"
 import type { SessionPlan } from "@/lib/session/contract"
 import {
   planSnapshot,
@@ -43,10 +45,6 @@ import {
   subscribeToPlan,
 } from "@/lib/session/plan"
 import { cn } from "@/lib/utils"
-
-/** Below this the balance is worth flagging: less than the smallest pack, so
- * the next conversation is a short one. */
-const LOW_BALANCE_MINUTES = 5
 
 export function StartSession() {
   const router = useRouter()
@@ -64,99 +62,88 @@ export function StartSession() {
   // stored plan carried — the profile is the answer they gave on purpose.
   const plan = edited ?? { ...stored, level: viewer?.level ?? stored.level }
 
-  // Seconds decide, minutes display. The ledger meters seconds and the token
-  // route refuses at zero seconds, so a learner with forty of them still has a
-  // conversation — "0 minutes left" would lock a door that is actually open.
   const seconds = viewer?.seconds
-  const minutes = viewer?.minutes
-  const empty = seconds !== undefined && seconds <= 0
-  const under = seconds !== undefined && seconds > 0 && minutes === 0
-  const low =
-    minutes !== undefined && minutes > 0 && minutes < LOW_BALANCE_MINUTES
+  const known = seconds !== undefined
+  const empty = known && seconds <= 0
+  const low = known && !empty && seconds < LOW_BALANCE_SECONDS
 
   return (
     <>
-      <section className={CARD_CLASS}>
-        <IconBadge icon={Timer} />
-        {/* Nothing until the balance is known: a flash of "0 minutes left" is a
-            lie about the one number this card exists to say. */}
-        <div className="mt-5 min-h-16">
-          {minutes !== undefined && (
-            <>
-              {empty || under ? (
-                <p className="text-2xl font-semibold tracking-tight text-foreground">
-                  {empty ? "No minutes left" : "Under a minute left"}
-                </p>
-              ) : (
-                <p className="flex items-baseline gap-2">
-                  <span
-                    className={cn(
-                      "text-4xl font-semibold tracking-tight tabular-nums",
-                      low ? "text-primary" : "text-foreground"
-                    )}
-                  >
-                    {minutes}
-                  </span>
-                  <span className="text-sm text-muted-foreground">
-                    {minutes === 1 ? "minute left" : "minutes left"}
-                  </span>
-                </p>
-              )}
-              <p className="mt-2 text-sm text-muted-foreground">
-                {empty
-                  ? "Minutes are for talking. Studying is free."
-                  : under || low
-                    ? "Enough for a short conversation."
-                    : "Minutes count only while you're talking."}
-              </p>
-            </>
-          )}
+      <section
+        className={cn(
+          CARD_CLASS,
+          "flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between"
+        )}
+      >
+        <div>
+          <p className="text-sm text-muted-foreground">Time left</p>
+          {/* Reserved height so nothing renders until the balance is known —
+              a flash of "0:00" is a lie about the one number on this page. */}
+          <p
+            className={cn(
+              "mt-1 min-h-10 text-4xl font-semibold tracking-tight tabular-nums",
+              low || empty ? "text-primary" : "text-foreground"
+            )}
+          >
+            {known && formatClock(seconds)}
+          </p>
+          <p className="mt-1.5 text-sm text-muted-foreground">
+            {empty
+              ? "Talking uses time. Studying never does."
+              : low
+                ? "Enough for a short conversation."
+                : "Counts only while you talk."}
+          </p>
         </div>
+
+        {empty ? (
+          // Payments are not built, so the empty state has nowhere to send
+          // anyone. The affordance is here so the shape is the real one.
+          <Tooltip>
+            {/* A span, not the button: a disabled button takes no pointer
+                events, so it can never be its own tooltip trigger. */}
+            <TooltipTrigger render={<span className="shrink-0" />}>
+              <Button size="lg" disabled>
+                Get minutes
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Coming soon</TooltipContent>
+          </Tooltip>
+        ) : (
+          <Button
+            size="lg"
+            disabled={!known}
+            onClick={() => setOpen(true)}
+            className="shrink-0 transition-[transform,box-shadow,background-color] duration-200 hover:shadow-md"
+          >
+            Start a conversation
+          </Button>
+        )}
       </section>
 
-      {empty ? (
-        // Payments are not built, so the empty state has nowhere to send
-        // anyone. The affordance is here so the shape is the real one.
-        <Tooltip>
-          {/* A span, not the button: a disabled button takes no pointer
-              events, so it can never be its own tooltip trigger. */}
-          <TooltipTrigger render={<span className="self-start" />}>
-            <Button size="lg" disabled className="h-11 px-6 text-base">
-              Get minutes
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Coming soon</TooltipContent>
-        </Tooltip>
-      ) : (
-        <Button
-          size="lg"
-          disabled={minutes === undefined}
-          onClick={() => setOpen(true)}
-          className="h-11 self-start px-6 text-base transition-[transform,box-shadow,background-color] duration-200 hover:shadow-md"
-        >
-          Start a conversation
-        </Button>
-      )}
-
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-h-[85svh] gap-0 overflow-y-auto p-6 sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle className="text-lg">
-              What do you want to talk about?
+        <DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-md">
+          <DialogHeader className="px-6 pt-6 pb-4 text-left">
+            <DialogTitle className="text-lg font-semibold tracking-tight">
+              Start a conversation
             </DialogTitle>
             <DialogDescription>
-              Everything here is optional — the tutor will ask if you skip it.
+              Everything here is optional. Skip it and the tutor will ask.
             </DialogDescription>
           </DialogHeader>
 
-          <PlanFields
-            plan={plan}
-            onChange={setEdited}
-            levelHint="from your profile"
-            className="mt-7"
-          />
+          <div className="max-h-[55svh] overflow-y-auto px-6 py-1 [scrollbar-width:thin] [scrollbar-color:var(--border)_transparent]">
+            <PlanFields
+              plan={plan}
+              onChange={setEdited}
+              levelHint="from your profile"
+            />
+          </div>
 
-          <div className="mt-8 border-t border-foreground/[0.08] pt-5">
+          <div className="flex items-center justify-between gap-4 border-t border-foreground/[0.06] px-6 py-4 dark:border-white/10">
+            <p className="text-xs text-muted-foreground">
+              Microphone required.
+            </p>
             <Button
               size="lg"
               onClick={() => {
