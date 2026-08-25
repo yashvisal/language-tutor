@@ -37,19 +37,32 @@ the out-of-minutes hold).*
 
 - **Exact seconds everywhere.** Time left is `m:ss` (`formatClock`), never a
   rounded minute count — the meter counts seconds, so the balance does.
-- **The plan picker is a conversation, not a form.** Three question cards in
-  sequence (beautifului.dev "Approval Card"): a `1 / 3` mark, Skip, Continue,
-  Start on the last. Each card asks one question — what to be ready to talk
-  about (situation + free text), what to be pushed on (tenses + free text,
-  e.g. "when to use *he comido* vs *comí*"), where they are (level + free
-  text) — and each free-text line is **context the tutor carries into the
-  conversation** (`topic`, new `focusNote`, new `note` in `plan_facts`). The
-  vocabulary chip input is gone.
-- **Header is wide, content is narrow**: the header spans `max-w-5xl`; the
-  page stays `max-w-2xl`.
-- **The dashboard gets an activity calendar** — a GitHub-contributions grid of
-  the days the learner spoke (intensity = seconds talked), from `sessions`.
-  Chosen over a "last conversation" row or a streak counter.
+- **The plan picker is a conversation, not a form.** Three questions asked
+  one at a time (beautifului.dev "Approval Card"): the question, one text
+  field the learner types into, a muted `1 / 3`, Skip, Continue, Start on
+  the last. **No option chips, no tabs** — the first cut kept the chip grid
+  and only paginated it, which missed the point (2026-08-24, Yash). The
+  answers are free text and are **context the tutor carries into the
+  conversation**: what to be ready to talk about → `topic`; what to be
+  pushed on (e.g. "when to use *he comido* vs *comí*") → `focusNote`;
+  anything else → `note`. `scenario`/`tenses` stay in the contract for the
+  catalogs and `suggestPlan`; the level comes from the profile.
+- **Header is edge to edge, content is narrow**: the header has no max
+  width (wordmark hard left, controls hard right); the page is `max-w-3xl`.
+- **The dashboard keeps the panel** (2026-08-25, after five explorations in
+  `/design-inspo/home` and two "no card" cuts, all rejected): the greeting;
+  one ringed panel with the balance — `Time left`, `m:ss` large, one status
+  line — and **Start a conversation** on its right; then **History**. The
+  "how a session goes" line under the panel was cut too (2026-08-25). Not
+  a "pick up where you left
+  off" row, not a Prepare feature, not stats, not the clock stranded as bare
+  type — those convolute a session-based product or read as disconnected.
+- **History, not a calendar.** The activity grid was tried and cut ("good in
+  theory"). A dated list of past conversations (date · what it was about ·
+  m:ss · N fixes); clicking one opens a modal with what they talked about
+  and the mistakes the analyzer caught. **When there is no history the
+  section is absent** — the page is the greeting and the panel. Needs the
+  session outcome written to Convex when a session ends.
 - **The avatar menu is Settings · Billing · Sign out.** Settings is a modal
   (level; name/email read-only). Billing is a modal (exact time left, the
   three packs as "Coming soon", a recent ledger). No pages.
