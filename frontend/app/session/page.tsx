@@ -139,11 +139,11 @@ function Session() {
         // Never true here — a connecting session rendered the stage above.
         connecting={false}
         error={live.error}
-        onStart={() => {
+        onStart={(finalPlan) => {
           // Persisted at the moment of use, so a repeat session opens on the
           // plan that was actually spoken — not on an abandoned edit.
-          savePlan(plan)
-          live.connect(plan)
+          savePlan(finalPlan)
+          live.connect(finalPlan)
         }}
       />
     )

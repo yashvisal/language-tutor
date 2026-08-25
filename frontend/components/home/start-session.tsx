@@ -142,8 +142,8 @@ export function StartSession() {
             onChange={setEdited}
             bodyClassName="px-6 pb-6"
             footerClassName="px-6 py-4"
-            onStart={() => {
-              savePlan(plan)
+            onStart={(finalPlan) => {
+              savePlan(finalPlan)
               router.push("/session?start=1")
             }}
           />

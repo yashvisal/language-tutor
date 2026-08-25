@@ -40,7 +40,8 @@ the out-of-minutes hold).*
 - **The plan picker is a conversation, not a form.** Three questions asked
   one at a time (beautifului.dev "Approval Card"): the question, one text
   field the learner types into, a muted `1 / 3`, Skip, Continue, Start on
-  the last. **No option chips, no tabs** — the first cut kept the chip grid
+  the last, and Back from the second question on (there is nothing to go
+  back to from the first — the modal's close is the way out). **No option chips, no tabs** — the first cut kept the chip grid
   and only paginated it, which missed the point (2026-08-24, Yash). The
   answers are free text and are **context the tutor carries into the
   conversation**: what to be ready to talk about → `topic`; what to be

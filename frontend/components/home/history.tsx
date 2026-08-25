@@ -227,7 +227,7 @@ function titleFor(plan: StoredPlan): string {
 
 /** The learner typed it mid-sentence; as a title it wants a capital. */
 function sentenceCase(text: string): string {
-  return text.charAt(0).toLocaleUpperCase() + text.slice(1)
+  return text.charAt(0).toLocaleUpperCase(TARGET_LANGUAGE) + text.slice(1)
 }
 
 /** The plan as the learner declared it, skipping everything they left blank. */

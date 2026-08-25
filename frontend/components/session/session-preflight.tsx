@@ -87,8 +87,10 @@ export function PlanCards({
 }: {
   plan: SessionPlan
   onChange: (plan: SessionPlan) => void
-  /** Fired by the last question's button. The host persists and connects. */
-  onStart: () => void
+  /** Fired by the last question's button with the plan as of that answer —
+   * the host's own `plan` state is one render behind at this point. The host
+   * persists and connects. */
+  onStart: (plan: SessionPlan) => void
   starting?: boolean
   startLabel?: string
   className?: string
@@ -134,8 +136,10 @@ export function PlanCards({
    */
   const advance = (keep: boolean) => {
     const raw = keep ? plan[current.field] : null
-    patch({ [current.field]: raw?.trim() || null } as Partial<SessionPlan>)
-    if (last) onStart()
+    const next: SessionPlan = { ...plan, [current.field]: raw?.trim() || null }
+    onChange(next)
+    // The host's `plan` is still the previous render's; hand it this one.
+    if (last) onStart(next)
     else setStep(step + 1)
   }
 
@@ -328,7 +332,7 @@ export function SessionPreflight({
 }: {
   plan: SessionPlan
   onChange: (plan: SessionPlan) => void
-  onStart: () => void
+  onStart: (plan: SessionPlan) => void
   connecting: boolean
   error: string | null
   /** Rendered above the first question, inside the same column — `/session`
