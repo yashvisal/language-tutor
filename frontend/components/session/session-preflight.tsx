@@ -3,61 +3,82 @@
 /**
  * The pre-flight: the one thing between a learner and speaking.
  *
- * It is three question cards rather than a form, and the reason is what the
- * answers are FOR. A form asks you to configure a session; a question asks you
- * something, and what you say becomes context the tutor carries into the
- * conversation — which is why every card pairs a short catalog with one open
- * line in the learner's own words. "when to use he comido vs comí" is worth
- * more to the tutor than any chip, and there was nowhere to type it before.
+ * It is a short conversation, not a form. Three questions, one on screen at a
+ * time, each answered by typing — because what the learner types is what the
+ * tutor carries into the session. "when to use he comido vs comí" is worth more
+ * than any chip could be, and a grid of chips only ever asked the learner to
+ * configure a session before they had said anything.
  *
- * One question on screen at a time, `1 / 3` in the footer, Skip always
- * available, Back on the cards that have something behind them. Nothing is
- * required: skipping all three is a legitimate plan (free conversation), and
- * the last card's button never disables.
+ * So: one prominent question, one text field, `1 / 3` in the footer, Skip and
+ * Continue. Answered questions collapse into quiet rows above the current one,
+ * which is what makes the card read as a conversation rather than a wizard —
+ * and clicking a row goes back to it. Nothing is required: skipping all three
+ * is a legitimate plan (free conversation), and the last step's button never
+ * disables.
+ *
+ * The three answers land in `plan.topic`, `plan.focusNote` and `plan.note`.
+ * `scenario` and `tenses` stay in the contract — the catalogs and `suggestPlan`
+ * still use them — but this screen never sets them, and the level is whatever
+ * the learner's profile says.
  *
  * Two hosts: the dashboard's modal (`components/home/start-session.tsx`) and
  * `/session`'s own pre-connect state (`SessionPreflight` below). Both render
  * `PlanCards` — the questions are exported rather than copied so the two can
  * never ask the same thing two ways.
  *
- * Nothing here is Spanish-specific: the situations are prompt-ready phrases,
- * the forms and the focus example come from the per-language catalogs in
- * `plan.ts`, and the language is named through `TARGET_LANGUAGE_NAME`.
+ * Nothing here is Spanish-specific: the focus example comes from the
+ * per-language catalog in `plan.ts`, and the language is named through
+ * `TARGET_LANGUAGE_NAME`.
  */
 
-import { useState, type ReactNode } from "react"
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react"
 import { AnimatePresence, motion, useReducedMotion } from "motion/react"
 
 import { Overline } from "@/components/overline"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import type { SessionPlan } from "@/lib/session/contract"
 import {
-  LEVELS,
   PLAN_LIMITS,
-  SCENARIOS,
   TARGET_LANGUAGE_NAME,
   focusNotePlaceholder,
-  suggestPlan,
-  tensesFor,
 } from "@/lib/session/plan"
 import { cn } from "@/lib/utils"
 
-const STEP_COUNT = 3
+/** The plan fields this screen can write. The rest of the plan is untouched. */
+type AnswerField = "topic" | "focusNote" | "note"
+
+interface Question {
+  field: AnswerField
+  question: string
+  hint?: string
+  placeholder: string
+  maxLength: number
+}
+
+/** Two rows of room, growing to about five before it scrolls. */
+const FIELD_LINE_HEIGHT = 24
+const FIELD_PADDING = 16
+const FIELD_MAX_HEIGHT = FIELD_LINE_HEIGHT * 5 + FIELD_PADDING
 
 /**
  * The three questions, and the footer that walks them.
  *
  * The host supplies the frame (a modal, a page column) and the class names for
  * its own padding; this owns everything inside — including the Start button,
- * because "the last card's Continue IS Start" is a property of the sequence,
- * not of whoever is hosting it.
+ * because "the last question's Continue IS Start" is a property of the
+ * sequence, not of whoever is hosting it.
  */
 export function PlanCards({
   plan,
   onChange,
   onStart,
-  levelHint,
   starting = false,
   startLabel = "Start",
   className,
@@ -66,10 +87,8 @@ export function PlanCards({
 }: {
   plan: SessionPlan
   onChange: (plan: SessionPlan) => void
-  /** Fired by the last card's button. The host persists and connects. */
+  /** Fired by the last question's button. The host persists and connects. */
   onStart: () => void
-  /** Said beside the level when it arrived from somewhere the learner set it. */
-  levelHint?: string
   starting?: boolean
   startLabel?: string
   className?: string
@@ -77,130 +96,118 @@ export function PlanCards({
   footerClassName?: string
 }) {
   const [step, setStep] = useState(0)
-  // Which way the next card should come from. Kept in state rather than derived
-  // because the outgoing card animates after `step` has already changed.
-  const [forward, setForward] = useState(true)
   const reducedMotion = useReducedMotion()
+
+  const questions: Question[] = [
+    {
+      field: "topic",
+      question: "What do you want to be ready to talk about?",
+      placeholder:
+        "A trip to Oaxaca next month, a call with my grandmother, ordering at a restaurant…",
+      maxLength: PLAN_LIMITS.topicChars,
+    },
+    {
+      field: "focusNote",
+      question: "Anything you want the tutor to push you on?",
+      hint: "Tenses, phrases, a habit you want to break.",
+      placeholder: focusNotePlaceholder(),
+      maxLength: PLAN_LIMITS.focusNoteChars,
+    },
+    {
+      field: "note",
+      question: "Anything else the tutor should know?",
+      placeholder: "I understand more than I can say. Go slow at first.",
+      maxLength: PLAN_LIMITS.noteChars,
+    },
+  ]
+
+  const last = step === questions.length - 1
+  const current = questions[step]!
 
   const patch = (next: Partial<SessionPlan>) => onChange({ ...plan, ...next })
 
-  const go = (next: number) => {
-    setForward(next > step)
-    setStep(next)
+  /**
+   * Move on. `keep` is the difference between Continue and Skip: Continue
+   * commits what was typed (trimmed, empty becomes nothing at all), Skip
+   * clears it, so a question the learner walked past never reaches the tutor
+   * as a half-typed thought.
+   */
+  const advance = (keep: boolean) => {
+    const raw = keep ? plan[current.field] : null
+    patch({ [current.field]: raw?.trim() || null } as Partial<SessionPlan>)
+    if (last) onStart()
+    else setStep(step + 1)
   }
-
-  const last = step === STEP_COUNT - 1
-  const advance = () => (last ? onStart() : go(step + 1))
-
-  const tenses = tensesFor()
-
-  const toggleTense = (value: string) =>
-    patch({
-      tenses: plan.tenses.includes(value)
-        ? plan.tenses.filter((t) => t !== value)
-        : plan.tenses.length < PLAN_LIMITS.maxTenses
-          ? [...plan.tenses, value]
-          : plan.tenses,
-    })
-
-  const cards: ReactNode[] = [
-    <Card
-      key="subject"
-      question="What do you want to be ready to talk about?"
-      aside={
-        <button
-          type="button"
-          onClick={() => onChange(suggestPlan(plan.level))}
-          className="shrink-0 text-xs text-muted-foreground underline underline-offset-4 transition-colors duration-200 outline-none hover:text-foreground focus-visible:text-foreground"
-        >
-          Suggest one for me
-        </button>
-      }
-      noteLabel="Or, in your own words"
-      noteValue={plan.topic}
-      notePlaceholder="Something specific — a trip next week, a call with your grandmother…"
-      noteMaxLength={PLAN_LIMITS.topicChars}
-      onNoteChange={(topic) => patch({ topic })}
-    >
-      {SCENARIOS.map((option) => (
-        <Chip
-          key={option.value}
-          selected={plan.scenario === option.value}
-          onClick={() =>
-            patch({
-              scenario: plan.scenario === option.value ? null : option.value,
-            })
-          }
-        >
-          {option.label}
-        </Chip>
-      ))}
-    </Card>,
-
-    <Card
-      key="focus"
-      question="Anything you want the tutor to push you on?"
-      hint={
-        tenses.length > 0
-          ? "You could use some of these — pick any, or none."
-          : undefined
-      }
-      noteLabel="Something specific?"
-      noteValue={plan.focusNote}
-      notePlaceholder={focusNotePlaceholder()}
-      noteMaxLength={PLAN_LIMITS.focusNoteChars}
-      onNoteChange={(focusNote) => patch({ focusNote })}
-    >
-      {tenses.map((option) => (
-        <Chip
-          key={option.value}
-          selected={plan.tenses.includes(option.value)}
-          onClick={() => toggleTense(option.value)}
-        >
-          {option.label}
-        </Chip>
-      ))}
-    </Card>,
-
-    <Card
-      key="level"
-      question={`Where are you with ${TARGET_LANGUAGE_NAME} right now?`}
-      hint={levelHint}
-      noteLabel="Anything else the tutor should know?"
-      noteValue={plan.note}
-      notePlaceholder="Grew up hearing it, haven’t spoken it in years…"
-      noteMaxLength={PLAN_LIMITS.noteChars}
-      onNoteChange={(note) => patch({ note })}
-    >
-      {LEVELS.map((option) => (
-        <Chip
-          key={option.value}
-          selected={plan.level === option.value}
-          onClick={() => patch({ level: option.value })}
-        >
-          {option.label}
-        </Chip>
-      ))}
-    </Card>,
-  ]
-
-  const offset = reducedMotion ? 0 : forward ? 12 : -12
 
   return (
     <div className={cn("flex flex-col", className)}>
-      {/* Reserved height, sized to the tallest card: the three are different
-          lengths, and a footer that jumps between questions reads as a
-          different screen each time rather than one that turned a page. */}
-      <div className={cn("min-h-80", bodyClassName)}>
+      <div className={bodyClassName}>
+        {/* Answered questions, in the order they were asked. Quiet enough that
+            the live question is the only thing with weight on screen, and
+            clickable because "wait, I want to change that" is the whole reason
+            they stay on screen at all. */}
+        {step > 0 && (
+          <ul className="mb-5 divide-y divide-foreground/[0.06] dark:divide-white/10">
+            {questions.slice(0, step).map((answered, index) => {
+              const value = plan[answered.field]?.trim()
+              return (
+                <li key={answered.field}>
+                  <button
+                    type="button"
+                    onClick={() => setStep(index)}
+                    className="flex w-full items-baseline justify-between gap-4 py-2.5 text-left transition-colors duration-200 outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
+                  >
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-xs text-muted-foreground">
+                        {answered.question}
+                      </span>
+                      {value && (
+                        <span className="mt-0.5 block truncate text-sm text-foreground">
+                          {value}
+                        </span>
+                      )}
+                    </span>
+                    {!value && (
+                      <span className="shrink-0 rounded-full bg-foreground/[0.05] px-2 py-0.5 text-[11px] text-muted-foreground dark:bg-white/10">
+                        Skipped
+                      </span>
+                    )}
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+
         <AnimatePresence mode="wait" initial={false}>
           <motion.div
             key={step}
-            initial={{ opacity: 0, x: offset }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -offset }}
+            initial={{ opacity: 0, y: reducedMotion ? 0 : 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
             transition={{ duration: reducedMotion ? 0 : 0.18, ease: "easeOut" }}
           >
-            {cards[step]}
+            <h2 className="text-lg leading-snug font-normal text-foreground">
+              {current.question}
+            </h2>
+            {current.hint && (
+              <p className="mt-1.5 text-xs text-muted-foreground">
+                {current.hint}
+              </p>
+            )}
+
+            <AnswerField
+              label={current.question}
+              value={plan[current.field] ?? ""}
+              placeholder={current.placeholder}
+              maxLength={current.maxLength}
+              onValueChange={(value) =>
+                patch({
+                  [current.field]: value || null,
+                } as Partial<SessionPlan>)
+              }
+              onSubmit={() => advance(true)}
+            />
           </motion.div>
         </AnimatePresence>
       </div>
@@ -213,14 +220,15 @@ export function PlanCards({
       >
         <div className="flex items-center gap-3">
           <span className="text-xs text-muted-foreground tabular-nums">
-            {step + 1} / {STEP_COUNT}
+            {step + 1} / {questions.length}
           </span>
           {step > 0 && (
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => go(step - 1)}
-              className="-mx-2 text-muted-foreground"
+              onClick={() => setStep(step - 1)}
+              disabled={starting}
+              className="text-muted-foreground"
             >
               Back
             </Button>
@@ -228,19 +236,18 @@ export function PlanCards({
         </div>
 
         <div className="flex items-center gap-2">
-          {/* Skip advances without touching this card's answers. The last card
-              has nothing to advance to — its Skip would be its Start. */}
-          {!last && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => go(step + 1)}
-              className="text-muted-foreground"
-            >
-              Skip
-            </Button>
-          )}
-          <Button size="lg" onClick={advance} disabled={last && starting}>
+          {/* Skip clears this question's answer and moves on — on the last one
+              that means starting, with nothing said here. */}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => advance(false)}
+            disabled={starting}
+            className="text-muted-foreground"
+          >
+            Skip
+          </Button>
+          <Button size="lg" onClick={() => advance(true)} disabled={starting}>
             {last ? (starting ? "Connecting…" : startLabel) : "Continue"}
           </Button>
         </div>
@@ -250,8 +257,65 @@ export function PlanCards({
 }
 
 /**
- * `/session`'s own pre-flight: the same three cards, in a page-width column,
- * reached only without the dashboard hand-off (a bookmark, a reload).
+ * The answer: one field, focused the moment its question appears, growing with
+ * what is typed. Enter continues — this is a sentence, not a paragraph — and
+ * Shift+Enter is there for anyone who wants a second line anyway.
+ */
+function AnswerField({
+  value,
+  placeholder,
+  maxLength,
+  label,
+  onValueChange,
+  onSubmit,
+}: {
+  value: string
+  placeholder: string
+  maxLength: number
+  label: string
+  onValueChange: (value: string) => void
+  onSubmit: () => void
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null)
+
+  // Focus through a ref rather than the `autoFocus` attribute: inside a dialog
+  // the attribute races the focus trap, and an effect runs after it settles.
+  useEffect(() => {
+    ref.current?.focus()
+  }, [])
+
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    el.style.height = "auto"
+    el.style.height = `${Math.min(el.scrollHeight, FIELD_MAX_HEIGHT)}px`
+  }, [value])
+
+  const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key !== "Enter" || event.shiftKey) return
+    event.preventDefault()
+    onSubmit()
+  }
+
+  return (
+    <textarea
+      ref={ref}
+      rows={2}
+      value={value}
+      aria-label={label}
+      maxLength={maxLength}
+      placeholder={placeholder}
+      onChange={(event) => onValueChange(event.target.value)}
+      onKeyDown={onKeyDown}
+      style={{ maxHeight: FIELD_MAX_HEIGHT }}
+      className="mt-4 block w-full resize-none rounded-xl bg-foreground/[0.04] px-4 py-3 text-[15px] leading-6 text-foreground transition-[box-shadow,background-color] duration-200 outline-none placeholder:text-muted-foreground/70 focus-visible:bg-foreground/[0.06] focus-visible:ring-2 focus-visible:ring-primary/30 dark:bg-white/[0.06] dark:focus-visible:bg-white/[0.08]"
+    />
+  )
+}
+
+/**
+ * `/session`'s own pre-flight: the same three questions, in a page-width
+ * column, reached only without the dashboard hand-off (a bookmark, a reload).
  */
 export function SessionPreflight({
   plan,
@@ -285,7 +349,7 @@ export function SessionPreflight({
         <Overline>Before you start</Overline>
         <p className="mt-3 max-w-sm text-sm leading-relaxed text-muted-foreground">
           {TARGET_LANGUAGE_NAME} out loud, with corrections when you finish a
-          thought. Three questions first — skip any of them.
+          thought. Three quick questions first — skip any.
         </p>
 
         <PlanCards
@@ -308,88 +372,5 @@ export function SessionPreflight({
         )}
       </div>
     </div>
-  )
-}
-
-/**
- * One question: the question itself, its options, and one open line under
- * them. The open line is always visible rather than revealed — on a card that
- * asks only one thing it cannot compete with the question, and hiding it hid
- * the most useful answer the learner could give.
- */
-function Card({
-  question,
-  hint,
-  aside,
-  children,
-  noteLabel,
-  noteValue,
-  notePlaceholder,
-  noteMaxLength,
-  onNoteChange,
-}: {
-  question: string
-  hint?: string
-  aside?: ReactNode
-  children: ReactNode
-  noteLabel: string
-  noteValue: string | null
-  notePlaceholder: string
-  noteMaxLength: number
-  onNoteChange: (value: string | null) => void
-}) {
-  return (
-    <section>
-      <div className="flex items-baseline justify-between gap-4">
-        <h2 className="text-base leading-snug tracking-[-0.01em] text-foreground text-balance">
-          {question}
-        </h2>
-        {aside}
-      </div>
-      {hint && (
-        <p className="mt-1.5 text-xs text-muted-foreground">{hint}</p>
-      )}
-
-      <div className="mt-4 flex flex-wrap gap-1.5">{children}</div>
-
-      <label className="mt-6 block">
-        <span className="text-xs text-muted-foreground">{noteLabel}</span>
-        <Input
-          value={noteValue ?? ""}
-          maxLength={noteMaxLength}
-          onChange={(e) => onNoteChange(e.target.value || null)}
-          placeholder={notePlaceholder}
-          className="mt-1.5 h-9"
-        />
-      </label>
-    </section>
-  )
-}
-
-/** The one selection primitive on this screen: a quiet outline that fills with
- * the identity color when chosen. */
-function Chip({
-  selected,
-  onClick,
-  children,
-}: {
-  selected: boolean
-  onClick: () => void
-  children: ReactNode
-}) {
-  return (
-    <button
-      type="button"
-      aria-pressed={selected}
-      onClick={onClick}
-      className={cn(
-        "rounded-full border px-3 py-1 text-sm transition-[background-color,border-color,color] duration-200 outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
-        selected
-          ? "border-primary/40 bg-primary/10 text-foreground"
-          : "border-border/70 text-muted-foreground hover:border-border hover:text-foreground"
-      )}
-    >
-      {children}
-    </button>
   )
 }

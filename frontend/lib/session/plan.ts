@@ -157,7 +157,7 @@ export const EMPTY_PLAN: SessionPlan = {
  * the route calls `boundPlan`, the UI enforces the same caps as input limits.
  */
 export const PLAN_LIMITS = {
-  topicChars: 120,
+  topicChars: 140,
   scenarioChars: 80,
   // The two open notes are sentences, not essays — long enough for "when to
   // use he comido vs comí", short enough that nobody writes the tutor's
