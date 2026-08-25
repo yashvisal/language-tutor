@@ -300,6 +300,8 @@ function AnswerField({
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key !== "Enter" || event.shiftKey) return
+    // Enter inside an IME commits the candidate, not the answer.
+    if (event.nativeEvent.isComposing) return
     event.preventDefault()
     onSubmit()
   }
