@@ -34,10 +34,10 @@
 import {
   useEffect,
   useLayoutEffect,
-  useRef,
   useState,
   type KeyboardEvent,
   type ReactNode,
+  useRef,
 } from "react"
 import { AnimatePresence, motion, useReducedMotion } from "motion/react"
 
@@ -134,20 +134,16 @@ export function PlanCards({
    * clears it, so a question the learner walked past never reaches the tutor
    * as a half-typed thought.
    */
-  // Start fires once. The footer buttons disable on `starting`, but Enter in
-  // the field does not know about it, and a host may not pass `starting` at
-  // all — so the guard lives here, on the only path that starts.
-  const started = useRef(false)
   const advance = (keep: boolean) => {
-    if (last && started.current) return
     const raw = keep ? plan[current.field] : null
     const next: SessionPlan = { ...plan, [current.field]: raw?.trim() || null }
     onChange(next)
     // The host's `plan` is still the previous render's; hand it this one.
-    if (last) {
-      started.current = true
-      onStart(next)
-    } else setStep(step + 1)
+    // Firing twice is the host's problem to absorb (the connection owner
+    // ignores a start while one is in flight; a repeated push is a no-op) —
+    // a guard here outlived a failed start and made Start dead.
+    if (last) onStart(next)
+    else setStep(step + 1)
   }
 
   return (

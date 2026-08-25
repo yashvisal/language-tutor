@@ -506,8 +506,14 @@ export function useLiveSession(): LiveSession {
   /** The token route refused for a zero balance. Not an error message: a state. */
   const [refused, setRefused] = useState(false)
 
+  /** A start in flight. `useSession` stays Disconnected while the token is
+   * fetched, so nothing upstream can tell a second Start from the first. */
+  const starting = useRef(false)
+
   const connect = useCallback(
     (sessionPlan: SessionPlan) => {
+      if (starting.current) return
+      starting.current = true
       setError(null)
       setOutcome(null)
       // The plan has to reach the token source before `start()` mints the
@@ -528,6 +534,10 @@ export function useLiveSession(): LiveSession {
             return
           }
           setError(err instanceof Error ? err.message : String(err))
+        })
+        .finally(() => {
+          // Settled either way: a refused or failed start can be tried again.
+          starting.current = false
         })
     },
     [session, setError, setOutcome]
