@@ -36,7 +36,7 @@ export function AppHeader() {
   const viewer = useQuery(api.users.viewer)
 
   return (
-    <header className="mx-auto flex h-14 w-full max-w-5xl shrink-0 items-center justify-between px-6">
+    <header className="flex h-14 w-full shrink-0 items-center justify-between px-6 sm:px-8">
       <Wordmark />
       <div className="flex items-center gap-1">
         {/* Nothing until the balance is known: a flash of "0:00 left" would
@@ -73,7 +73,7 @@ function AccountMenu({ email }: { email: string | null }) {
       <DropdownMenu>
         <DropdownMenuTrigger
           aria-label="Account"
-          className="ml-1 size-8 shrink-0 overflow-hidden rounded-full outline-none transition-[box-shadow] duration-200 focus-visible:ring-3 focus-visible:ring-ring/50"
+          className="ml-1 size-8 shrink-0 overflow-hidden rounded-full transition-[box-shadow] duration-200 outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
         >
           {user?.imageUrl ? (
             // Clerk's CDN serves the avatar already sized; next/image would add
@@ -136,7 +136,10 @@ function AccountMenu({ email }: { email: string | null }) {
 
 /** Two letters from whatever we have — a name, or the email's local part. */
 function initials(name: string) {
-  const parts = name.replace(/@.*$/, "").split(/[\s._-]+/).filter(Boolean)
+  const parts = name
+    .replace(/@.*$/, "")
+    .split(/[\s._-]+/)
+    .filter(Boolean)
   if (parts.length === 0) return "?"
   return (parts[0][0] + (parts[1]?.[0] ?? "")).toUpperCase()
 }
