@@ -3,7 +3,7 @@ import { v } from "convex/values"
 import { internalMutation, mutation, query } from "./_generated/server"
 import type { Doc } from "./_generated/dataModel"
 import { secondsFor, userByClerkId } from "./users"
-import { sessionPlanValidator } from "./validators"
+import { sessionOutcomeValidator, sessionPlanValidator } from "./validators"
 
 /**
  * The `sessions` row: one per room, written when the token is minted and
@@ -115,28 +115,92 @@ export const debit = internalMutation({
   },
 })
 
-/** How far back the activity calendar looks. */
-const ACTIVITY_WEEKS = 26
-const DAY_MS = 24 * 60 * 60 * 1000
+/* -------------------------------------------------------------------------- */
+/*  Finishing a session, and looking back at it                               */
+/* -------------------------------------------------------------------------- */
+
+/** Belt-and-braces caps on a client-written array. A session that earned more
+ * than this many corrections is not a session, it is a bug or an attack, and
+ * either way the row should stay small enough to read. */
+const MAX_CORRECTIONS = 200
+const MAX_CHARS = 500
+
+function clamp(value: string): string {
+  return value.length > MAX_CHARS ? value.slice(0, MAX_CHARS) : value
+}
 
 /**
- * The learner's recent talking, for the activity calendar on `/home`.
+ * The client's end-of-session snapshot, written to the row the token minted.
  *
- * Returns one entry per session — a raw `startedAt` and the seconds it was
- * billed — rather than pre-bucketed days. The bucket boundary is midnight in
- * the LEARNER's timezone, and the server doesn't know it: Convex functions run
- * in UTC, and a session at 9pm Pacific belongs to that day, not the next one.
- * The alternatives were passing a `tzOffsetMinutes` arg (which makes the query
- * key change twice a year, and on every flight) or storing a local day string
- * at write time (a schema change for a read-side concern). Bucketing on the
- * client with `Date` needs neither, and the payload is a handful of numbers.
+ * Called from the surface rather than the worker because the corrections only
+ * ever exist on the client: the analyzer streams them to the browser, and the
+ * `SessionOutcome` assembled at the moment of ending is the only complete copy.
+ * The worker still owns the meter (`debit` above); this writes what was said.
  *
- * The window is padded a day at each end so that whichever way the learner's
- * offset shifts a timestamp, the day it lands on is still covered.
+ * Idempotent and non-destructive. `endedAt` is set only if unset, so a second
+ * call — a retry, a summary re-mounted — never moves the end of the session,
+ * and a room with no row (or another learner's room) is a silent no-op rather
+ * than an error: nothing on the summary screen depends on this succeeding.
  */
-export const activity = query({
+export const finish = mutation({
+  args: { room: v.string(), outcome: sessionOutcomeValidator },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity()
+    if (identity === null) throw new Error("Not signed in")
+
+    const user = await userByClerkId(ctx, identity.subject)
+    if (user === null) throw new Error("No account yet")
+
+    const session = await ctx.db
+      .query("sessions")
+      .withIndex("by_room", (q) => q.eq("room", args.room))
+      .unique()
+    // Someone else's room, or a room the app never recorded. Either way this
+    // caller has nothing to write.
+    if (session === null || session.userId !== user._id) return null
+
+    const corrections = args.outcome.corrections
+      .slice(0, MAX_CORRECTIONS)
+      .map((correction) => ({
+        id: clamp(correction.id),
+        original: clamp(correction.original),
+        replacement: clamp(correction.replacement),
+        category: clamp(correction.category),
+        severity: clamp(correction.severity),
+        explanation: clamp(correction.explanation),
+      }))
+
+    await ctx.db.patch(session._id, {
+      endedAt: session.endedAt ?? Date.now(),
+      outcome: { ...args.outcome, corrections },
+      corrections: corrections.length,
+    })
+    return null
+  },
+})
+
+/** How many past conversations History shows. Older than this is archaeology,
+ * and the list is a glance, not a ledger. */
+const HISTORY_LIMIT = 30
+
+/**
+ * The learner's finished conversations, newest first — what `/home` lists
+ * under History and what its modal reads.
+ *
+ * Only sessions with an `endedAt`: a row exists from the moment the token is
+ * minted, and a conversation that is happening right now is not history. The
+ * seconds are the outcome's meter reading where there is one and the billed
+ * total otherwise, so a row finished before `outcome` existed still prints an
+ * honest number.
+ *
+ * The whole corrections array travels with the list rather than behind a
+ * per-session query: it is at most 200 short strings, the modal needs it the
+ * instant a row is clicked, and a second round-trip to show what someone
+ * already clicked on is a spinner nobody asked for.
+ */
+export const history = query({
   args: {},
-  returns: v.array(v.object({ startedAt: v.number(), seconds: v.number() })),
   handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity()
     if (identity === null) return []
@@ -144,19 +208,22 @@ export const activity = query({
     const user = await userByClerkId(ctx, identity.subject)
     if (user === null) return []
 
-    const since = Date.now() - (ACTIVITY_WEEKS * 7 + 2) * DAY_MS
     const rows = await ctx.db
       .query("sessions")
-      .withIndex("by_user_startedAt", (q) =>
-        q.eq("userId", user._id).gte("startedAt", since)
-      )
-      .collect()
+      .withIndex("by_user_startedAt", (q) => q.eq("userId", user._id))
+      .order("desc")
+      .take(HISTORY_LIMIT * 2)
 
-    // A session that has never been debited contributes a day with no talking
-    // in it — it is dropped rather than lit, because the cell means "you spoke".
-    return rows.map((row) => ({
-      startedAt: row.startedAt,
-      seconds: row.secondsBilled ?? 0,
-    }))
+    return rows
+      .filter((row) => row.endedAt !== undefined)
+      .slice(0, HISTORY_LIMIT)
+      .map((row) => ({
+        id: row._id,
+        startedAt: row.startedAt,
+        endedAt: row.endedAt ?? row.startedAt,
+        secondsTalked: row.outcome?.secondsTalked ?? row.secondsBilled ?? 0,
+        plan: row.plan,
+        corrections: row.outcome?.corrections ?? [],
+      }))
   },
 })

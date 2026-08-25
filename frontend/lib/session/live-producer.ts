@@ -51,6 +51,7 @@ import {
   useState,
 } from "react"
 import { ConnectionState, Track, type Room } from "livekit-client"
+import { useMutation } from "convex/react"
 import {
   useAgent,
   useSession,
@@ -60,6 +61,7 @@ import {
   type TrackReference,
 } from "@livekit/components-react"
 
+import { api } from "@/convex/_generated/api"
 import type {
   Correction,
   PauseReason,
@@ -425,6 +427,9 @@ export function useLiveSession(): LiveSession {
 
   const [outcome, setOutcome] = useState<SessionOutcome | null>(null)
 
+  /** Persists the snapshot below. Declared here so `finish` closes over it. */
+  const recordFinish = useMutation(api.sessions.finish)
+
   /** The plan this room was started with, for the summary. */
   const plan = useRef<SessionPlan | null>(null)
   /**
@@ -451,16 +456,35 @@ export function useLiveSession(): LiveSession {
       if (ended.current) return
       ended.current = true
       const talked = elapsedSeen.current
-      setOutcome({
+      const outcome: SessionOutcome = {
         plan: plan.current ?? EMPTY_PLAN,
         // The worker owns the meter; with no reading there is nothing honest
         // to show, so the summary says nothing about the time.
         secondsTalked: talked === null ? null : Math.max(0, talked),
         endedByClock,
         corrections: sessionCorrections(latest.current),
-      })
+      }
+      setOutcome(outcome)
+
+      // …and the same snapshot to Convex, for History on `/home`. The
+      // corrections only ever existed in this browser, so this is the moment
+      // they are persisted or lost. Fire-and-forget on purpose: the summary
+      // the learner is about to read renders from local state, and a failed
+      // write must not take it down. `room.name` is empty on a session that
+      // never connected — nothing to record.
+      const name = room.name
+      if (name) {
+        void recordFinish({
+          room: name,
+          outcome: {
+            corrections: outcome.corrections,
+            secondsTalked: outcome.secondsTalked,
+            endedByClock: outcome.endedByClock,
+          },
+        }).catch(() => {})
+      }
     },
-    [setOutcome]
+    [setOutcome, recordFinish, room]
   )
 
   const clearOutcome = useCallback(() => setOutcome(null), [setOutcome])

@@ -1,7 +1,11 @@
 import { defineSchema, defineTable } from "convex/server"
 import { v } from "convex/values"
 
-import { levelValidator, sessionPlanValidator } from "./validators"
+import {
+  levelValidator,
+  sessionOutcomeValidator,
+  sessionPlanValidator,
+} from "./validators"
 
 /**
  * The product shell's four tables. Only `users` and `creditLedger` are written
@@ -71,12 +75,24 @@ export default defineSchema({
     /** Cumulative seconds this room has been billed for; the debit action's
      * high-water mark, so a re-reported total debits only the delta. */
     secondsBilled: v.optional(v.number()),
+    /**
+     * How many corrections the analyzer produced, denormalized off `outcome`
+     * so a list of sessions never has to read the corrections to count them.
+     * Rows finished before `outcome` existed still carry only this.
+     */
     corrections: v.optional(v.number()),
+    /**
+     * The finished session, as the summary screen saw it — written once by
+     * `sessions.finish` when the client's `SessionOutcome` is produced. Absent
+     * on a session in progress, and on any session that ended before this
+     * field existed (history is never backfilled with guesses).
+     */
+    outcome: v.optional(sessionOutcomeValidator),
   })
     .index("by_room", ["room"])
     .index("by_user", ["userId"])
-    // The activity calendar reads one learner's recent sessions in time order;
-    // `by_user` alone would make it collect a lifetime of rows to keep 26 weeks.
+    // History reads one learner's recent sessions newest-first; `by_user`
+    // alone would make it collect a lifetime of rows to show thirty.
     .index("by_user_startedAt", ["userId", "startedAt"]),
 
   purchases: defineTable({
