@@ -123,13 +123,14 @@ export function StartSession() {
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-md">
-          <DialogHeader className="px-6 pt-6 pb-4 text-left">
-            <DialogTitle className="text-lg font-semibold tracking-tight">
+          {/* An eyebrow, not a heading: the question is the card's one
+              headline, so the dialog's own title steps back to a label. */}
+          <DialogHeader className="px-6 pt-5 pb-4 text-left">
+            <DialogTitle className="text-xs font-medium tracking-[0.08em] text-muted-foreground uppercase">
               Start a conversation
             </DialogTitle>
-            <DialogDescription>
-              Three questions, all optional — what you say here is what the
-              tutor starts with. Microphone required.
+            <DialogDescription className="sr-only">
+              Three quick questions — skip any. Microphone required.
             </DialogDescription>
           </DialogHeader>
 
@@ -139,7 +140,6 @@ export function StartSession() {
             key={String(open)}
             plan={plan}
             onChange={setEdited}
-            levelHint="from your profile"
             bodyClassName="px-6 pb-6"
             footerClassName="px-6 py-4"
             onStart={() => {

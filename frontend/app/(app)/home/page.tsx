@@ -1,7 +1,5 @@
 import { currentUser } from "@clerk/nextjs/server"
-import { Captions, Mic, Sparkles } from "lucide-react"
-
-import { ActivityCalendar } from "@/components/home/activity-calendar"
+import { History } from "@/components/home/history"
 import { StartSession } from "@/components/home/start-session"
 
 /**
@@ -14,23 +12,16 @@ import { StartSession } from "@/components/home/start-session"
  * server, so it never flashes; the balance is Convex's, reactive, in
  * `StartSession`.
  *
- * Recent sessions belong under this. There is no writer for them yet, and an
- * empty card promising a list is worse than no card.
+ * Under the panel: History — the conversations already had, each one a door
+ * into what was said and what the tutor caught.
  */
-
-/** What actually happens in there, for someone who has never done it. */
-const HOW_IT_GOES = [
-  { icon: Mic, line: "You speak" },
-  { icon: Captions, line: "The tutor answers, and waits" },
-  { icon: Sparkles, line: "The fix appears after your turn" },
-]
 
 export default async function HomePage() {
   const user = await currentUser()
   const firstName = user?.firstName?.trim()
 
   return (
-    <div className="mx-auto w-full max-w-2xl px-6 py-12 sm:py-16">
+    <div className="mx-auto w-full max-w-3xl px-6 py-12 sm:py-16">
       <h1 className="text-2xl font-semibold tracking-tight text-foreground">
         {firstName ? `Hola, ${firstName}.` : "Welcome back."}
       </h1>
@@ -43,24 +34,10 @@ export default async function HomePage() {
       </div>
 
       {/* Under the panel, not beside it: the balance is the decision, this is
-          the record. Client island — the day boundaries are the learner's. */}
+          the record. Client island — the list is a reactive Convex read. */}
       <div className="mt-10">
-        <ActivityCalendar />
+        <History />
       </div>
-
-      {/* Not a card: three quiet facts, so the panel above stays the only
-          object on the page. */}
-      <ul className="mt-8 flex flex-col gap-2.5 sm:flex-row sm:gap-8">
-        {HOW_IT_GOES.map((step) => (
-          <li
-            key={step.line}
-            className="flex items-center gap-2 text-sm text-muted-foreground"
-          >
-            <step.icon className="size-3.5 text-primary" aria-hidden />
-            {step.line}
-          </li>
-        ))}
-      </ul>
     </div>
   )
 }
