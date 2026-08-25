@@ -51,6 +51,13 @@ load if it is unset or not an absolute `https://` URL. The Clerk JWT template
 named `convex` must carry the claims `aud: convex` and `email`; without them
 Convex rejects every token as having no matching auth provider.
 
+`TUTOR_DEBIT_SECRET` lives there too (`npx convex env set TUTOR_DEBIT_SECRET
+<value>`). It is the bearer token on `POST /tutor/debit` and
+`POST /tutor/balance` in `convex/http.ts` — the seam the agent worker meters
+seconds through. Deliberately *not* a `.env.local` var and never
+`NEXT_PUBLIC_*`: anything the browser can read is a way to spend someone
+else's balance. The worker keeps its own copy in `backend/.env.local`.
+
 ## Run
 
 ```shell

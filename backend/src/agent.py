@@ -38,17 +38,19 @@ from livekit.agents import (
 from livekit.plugins import openai
 
 from analyzer import CorrectionAnalyzer, recent_context
-from arc import SessionArc
 from ask import AskCoach, register_ask_rpc
-from clock import SessionClock, report_minutes_billed
+from billing import BillingClient
+from clock import SessionClock, report_seconds_billed
 from config import (
     AGENT_NAME,
     ANALYZER_OFF,
     ANALYZER_ON,
     ATTR_ANALYZER,
+    ATTR_ELAPSED_S,
     ATTR_FALSE,
-    ATTR_MINUTES_LEFT,
+    ATTR_OUT_OF_MINUTES,
     ATTR_PAUSED,
+    ATTR_REMAINING_S,
     ATTR_SESSION_OVER,
     ATTR_TRUE,
     ATTR_TURN_SEQ,
@@ -59,12 +61,11 @@ from config import (
 from plan import JobMetadata, SessionPlan
 from prompts import (
     BRIDGE_INTENTS,
-    goodbye_instructions,
     greeting_instructions,
+    nudge_instructions,
     resume_instructions,
     stt_prompt,
     tutor_instructions,
-    wrapup_instructions,
 )
 from review import ReviewMaterial, register_review_rpc
 from state import SessionFacts, SessionState
@@ -75,13 +76,12 @@ load_dotenv(".env.local")
 
 logger = logging.getLogger("tutor.agent")
 
-# How long the closing goodbye may take before the worker stops waiting for it.
-# The session is already over; a stuck speech handle must not hold the room.
-GOODBYE_TIMEOUT_S = 20.0
-
 # The pause surface's tabs, wire value -> how the brief names it. Must match the
 # `tab` union in `frontend/lib/session/protocol.ts`.
 STUDY_TABS = {"transcript": "Transcript", "review": "Review", "ask": "Ask"}
+
+# The shortest interval between two balance re-reads on a session held at zero.
+BALANCE_RECHECK_MIN_S = 5.0
 
 # How many of a hold's questions ride back on the resume payload, and how long
 # each may be. Mirrors `MAX_RESUME_ASKS` in the frontend's protocol module; the
@@ -133,9 +133,8 @@ class TutorAgent(Agent):
         state: SessionState,
         room: rtc.Room,
         plan: SessionPlan | None = None,
-        phase_block: str = "",
     ) -> None:
-        super().__init__(instructions=tutor_instructions(cfg, plan, phase_block))
+        super().__init__(instructions=tutor_instructions(cfg, plan))
         self._cfg = cfg
         self._analyzer = analyzer
         self._state = state
@@ -194,7 +193,7 @@ async def tutor(ctx: JobContext) -> None:
             "realtime_model": cfg.realtime_model,
             "target_lang": cfg.target_lang,
             "anchor_lang": cfg.anchor_lang,
-            "max_minutes": meta.max_minutes,
+            "balance_s": meta.balance_s,
             "user_id": meta.user_id,
             **meta.plan.log_fields(),
         },
@@ -235,10 +234,12 @@ async def tutor(ctx: JobContext) -> None:
     translator = SpanTranslator(cfg)
     # The study surface (phase 4, WS4c). Both are text-only and run while the
     # session is held, which is exactly when the voice model costs nothing.
-    # `phase` is read late, on purpose: the arc below is assigned after this.
-    coach = AskCoach(cfg, meta.plan, facts, phase=lambda: arc.phase)
+    coach = AskCoach(cfg, meta.plan, facts)
     review = ReviewMaterial(cfg, meta.plan)
     usage = UsageTracker()
+    # The ledger's client. A session with no learner id (which the token route
+    # should make impossible) simply never talks to it — see `billing.py`.
+    billing = BillingClient(room=ctx.room.name, user_id=meta.user_id)
     session.on("session_usage_updated", usage.on_usage)
 
     async def _shutdown() -> None:
@@ -250,17 +251,24 @@ async def tutor(ctx: JobContext) -> None:
             except Exception:
                 logger.warning("clock shutdown failed", exc_info=True)
             try:
-                # However the session ended — clock, learner leaving, or a
-                # crash — this is the number the ledger owes a debit for.
-                report_minutes_billed(meta.user_id, clock.minutes_billed, ctx.room.name)
+                # However the session ended — the idle timeout on an
+                # out-of-minutes hold, the learner leaving, or a crash — this is
+                # the cumulative number the ledger settles against.
+                await report_seconds_billed(
+                    billing, meta.user_id, clock.seconds_billed, ctx.room.name
+                )
             except Exception:
                 logger.warning("billing report failed", exc_info=True)
             try:
                 # What it cost us, for pricing decisions: tokens, talk share,
                 # estimated dollars. Logged, never billed.
-                usage.log_summary(active_minutes=clock.minutes_billed, room=ctx.room.name)
+                usage.log_summary(active_s=clock.seconds_billed, room=ctx.room.name)
             except Exception:
                 logger.warning("usage summary failed", exc_info=True)
+        try:
+            await billing.aclose()
+        except Exception:
+            logger.warning("billing client shutdown failed", exc_info=True)
         try:
             await translator.aclose()
         except Exception:
@@ -281,13 +289,8 @@ async def tutor(ctx: JobContext) -> None:
 
     ctx.add_shutdown_callback(_shutdown)
 
-    # The arc owns the phase; the model is told which one it is in through the
-    # standing instructions, and never decides for itself. It is built before
-    # the agent because the agent opens *in* the first phase.
-    arc = _build_arc(cfg, session, state, facts, meta)
-
     await session.start(
-        agent=TutorAgent(cfg, analyzer, state, ctx.room, meta.plan, arc.brief(cfg)),
+        agent=TutorAgent(cfg, analyzer, state, ctx.room, meta.plan),
         room=ctx.room,
         room_options=room_io.RoomOptions(
             # Text input is off: this is a voice surface, not a chat box.
@@ -295,9 +298,12 @@ async def tutor(ctx: JobContext) -> None:
         ),
     )
 
-    clock = _build_clock(ctx, session, state, cfg, meta, arc)
+    # One hold, two sources: the learner's pause RPC and the clock at zero
+    # balance. Both go through this object so the two feel identical on screen.
+    hold = SessionHold(ctx, session, state, analyzer)
+    clock = _build_clock(ctx, session, state, meta, hold, billing)
 
-    await _register_pause_rpc(ctx, session, state, facts, cfg, clock, arc, analyzer)
+    await _register_pause_rpc(ctx, session, state, facts, cfg, clock, hold, billing)
     await register_translate_rpc(ctx, session, translator)
     await register_ask_rpc(ctx, session, coach)
     await register_review_rpc(ctx, review)
@@ -328,106 +334,85 @@ async def tutor(ctx: JobContext) -> None:
     await clock.start()
 
 
-def _build_arc(
-    cfg: TutorConfig,
-    session: AgentSession,
-    state: SessionState,
-    facts: SessionFacts,
-    meta: JobMetadata,
-) -> SessionArc:
-    """Wire the arc to this session. See `arc.py`.
-
-    A phase change rewrites the standing instructions rather than speaking:
-    `update_instructions` never interrupts an in-flight turn, so the model
-    simply picks the new phase up on its next one. The brief is rendered at
-    transition time, not up front, because the debrief's brief carries the
-    session facts as they stand when the debrief actually starts.
-    """
-    arc: SessionArc
-
-    async def _enter_phase() -> None:
-        await session.current_agent.update_instructions(
-            tutor_instructions(cfg, meta.plan, arc.brief(cfg, facts.summary()))
-        )
-
-    arc = SessionArc(
-        meta.max_minutes,
-        meta.plan,
-        on_phase=_enter_phase,
-        is_paused=lambda: state.paused,
-    )
-    return arc
-
-
 def _build_clock(
     ctx: JobContext,
     session: AgentSession,
     state: SessionState,
-    cfg: TutorConfig,
     meta: JobMetadata,
-    arc: SessionArc,
+    hold: SessionHold,
+    billing: BillingClient,
 ) -> SessionClock:
-    """Wire the clock's callbacks to this session. See `clock.py`."""
+    """Wire the clock's callbacks to this session. See `clock.py`.
 
-    async def _publish_minutes(minutes: int) -> None:
-        await ctx.room.local_participant.set_attributes({ATTR_MINUTES_LEFT: str(minutes)})
+    `clock` is read late inside the callbacks on purpose: the zero handler needs
+    the very number the clock is holding at the moment it fires.
+    """
+    clock: SessionClock
 
-    async def _warn() -> None:
+    async def _publish(elapsed_s: int, remaining_s: int, out_of_minutes: bool) -> None:
+        await ctx.room.local_participant.set_attributes(
+            {
+                ATTR_ELAPSED_S: str(elapsed_s),
+                ATTR_REMAINING_S: str(remaining_s),
+                ATTR_OUT_OF_MINUTES: ATTR_TRUE if out_of_minutes else ATTR_FALSE,
+            }
+        )
+
+    async def _nudge() -> None:
         # The same seam as the resume brief: state the situation, let the tutor
-        # decide how to land it. Fire-and-forget — the wrap-up is a turn in the
-        # conversation, not a barrier in front of it.
-        session.generate_reply(instructions=wrapup_instructions())
+        # decide how to land it. Fire-and-forget — finishing a thought is a turn
+        # in the conversation, not a barrier in front of it.
+        session.generate_reply(instructions=nudge_instructions())
 
-    async def _end() -> None:
-        await _end_session(ctx, session, state, cfg)
+    async def _zero() -> None:
+        """Out of minutes: stop talking, report what was used, and hold.
 
-    return SessionClock(
-        meta.max_minutes,
-        publish=_publish_minutes,
-        on_warning=_warn,
-        on_end=_end,
+        The session does NOT end. The learner buys a pack and resumes into the
+        same conversation, or leaves (decision 2026-08-24). The debit goes out
+        before the hold so the balance the frontend re-reads is already right by
+        the time the out-of-minutes card is on screen.
+        """
+        try:
+            await session.interrupt()
+        except Exception:
+            logger.warning("interrupt at zero failed", exc_info=True)
+        try:
+            await billing.debit(clock.seconds_billed)
+        except Exception:
+            logger.warning("debit at zero failed", exc_info=True)
+        try:
+            await hold.apply(True)
+        except Exception:
+            logger.exception("hold at zero failed")
+
+    async def _idle_end() -> None:
+        await _end_session(ctx, session)
+
+    clock = SessionClock(
+        meta.balance_s,
+        publish=_publish,
+        on_nudge=_nudge,
+        on_zero=_zero,
+        on_idle_end=_idle_end,
         is_paused=lambda: state.paused,
-        # The arc rides on billed (active) time: one elapsed, not two.
-        on_tick=arc.tick,
     )
+    return clock
 
 
-async def _end_session(
-    ctx: JobContext,
-    session: AgentSession,
-    state: SessionState,
-    cfg: TutorConfig,
-) -> None:
-    """Out of minutes: cut whatever is in flight, say goodbye, disconnect.
+async def _end_session(ctx: JobContext, session: AgentSession) -> None:
+    """End the session: cut whatever is in flight, mark it over, disconnect.
 
-    Every step is guarded — the disconnect at the end must happen even if the
-    model never says the last line.
+    There is no spoken goodbye any more (vision doc 2026-08-24: no scripted
+    goodbye). This runs only when a session held at zero has been abandoned for
+    `IDLE_TIMEOUT_S` — nobody is there to hear a farewell.
+
+    Every step is guarded: the disconnect at the end must happen even if the
+    steps before it fail.
     """
     try:
         await session.interrupt()
     except Exception:
-        logger.warning("interrupt before goodbye failed", exc_info=True)
-
-    if state.paused:
-        # A goodbye into a muted session is a goodbye nobody hears. Output comes
-        # back on; input stays off, because the conversation is over.
-        state.paused = False
-        session.output.set_audio_enabled(True)
-        try:
-            await ctx.room.local_participant.set_attributes({ATTR_PAUSED: ATTR_FALSE})
-        except Exception:
-            logger.warning("failed to clear paused attribute at session end", exc_info=True)
-
-    try:
-        handle = session.generate_reply(instructions=goodbye_instructions(cfg))
-        # Awaiting the handle waits for the audio to finish playing out, which
-        # is the whole point: the attribute below means "it's done", and the
-        # disconnect after it must not cut the last word.
-        await asyncio.wait_for(handle.wait_for_playout(), timeout=GOODBYE_TIMEOUT_S)
-    except asyncio.TimeoutError:
-        logger.warning("goodbye did not finish within %.0fs; closing anyway", GOODBYE_TIMEOUT_S)
-    except Exception:
-        logger.exception("goodbye failed")
+        logger.warning("interrupt before session end failed", exc_info=True)
 
     try:
         await ctx.room.local_participant.set_attributes({ATTR_SESSION_OVER: ATTR_TRUE})
@@ -440,8 +425,8 @@ async def _end_session(
         logger.warning("session close failed", exc_info=True)
 
     # Leaves the room to the learner (the summary surface is still theirs) and
-    # runs the shutdown callbacks, which is where the minutes are reported.
-    ctx.shutdown(reason="session minutes exhausted")
+    # runs the shutdown callbacks, which is where the seconds are reported.
+    ctx.shutdown(reason="out of minutes: hold abandoned")
 
 
 def _capture_pause_context(session: AgentSession, state: SessionState) -> None:
@@ -711,34 +696,33 @@ def _parse_brief(payload: str | None) -> ResumeBrief:
     return ResumeBrief(brief)
 
 
-async def _register_pause_rpc(
-    ctx: JobContext,
-    session: AgentSession,
-    state: SessionState,
-    facts: SessionFacts,
-    cfg: TutorConfig,
-    clock: SessionClock,
-    arc: SessionArc,
-    analyzer: CorrectionAnalyzer | None,
-) -> None:
-    """Pause/resume, driven by the frontend's client-side set of holds.
+class SessionHold:
+    """The hold: one boolean, edge-triggered, mirrored as `tutor.paused`.
 
-    The frontend collapses overlapping holds (explicit control, correction
-    inspection, selection-to-translate, history scroll) and sends exactly one
-    pause or resume; the worker only tracks the resulting boolean and mirrors it
-    as an attribute. Short glances never arrive here at all — the frontend
-    debounces them, because the surface freeze is client-side and instant.
+    Two things hold the session and they must take exactly the same path: the
+    learner (the pause RPC below) and the clock at zero balance. Out of minutes
+    is not a different kind of quiet — it is the study hold the frontend already
+    knows how to render, plus one extra attribute.
     """
 
-    # The last answer each side gave, so a retry gets the same answer back.
-    last_resume_ack = json.dumps({"paused": False, "resumed": False})
+    def __init__(
+        self,
+        ctx: JobContext,
+        session: AgentSession,
+        state: SessionState,
+        analyzer: CorrectionAnalyzer | None,
+    ) -> None:
+        self._ctx = ctx
+        self._session = session
+        self._state = state
+        self._analyzer = analyzer
 
-    async def _publish_paused(paused: bool) -> None:
-        await ctx.room.local_participant.set_attributes(
+    async def publish(self, paused: bool) -> None:
+        await self._ctx.room.local_participant.set_attributes(
             {ATTR_PAUSED: ATTR_TRUE if paused else ATTR_FALSE}
         )
 
-    async def _apply(paused: bool) -> bool:
+    async def apply(self, paused: bool) -> bool:
         """Edge-triggered. Returns False when the session was already there.
 
         The frontend re-sends `tutor.pause` every couple of seconds until it
@@ -748,12 +732,13 @@ async def _register_pause_rpc(
         over the truth) and re-stamp `paused_at`, and a second resume would fire
         a second `generate_reply`.
         """
+        session, state = self._session, self._state
         if state.paused == paused:
             # A retry of a transition that already ran. Re-publish the
             # acknowledgement, idempotently: the frontend keeps re-sending until
             # it sees the attribute, and the only way a retry reaches here with
             # the attribute unseen is that the publish itself failed last time.
-            await _publish_paused(paused)
+            await self.publish(paused)
             return False
         state.paused = paused
         try:
@@ -792,14 +777,48 @@ async def _register_pause_rpc(
         # re-publishes instead). It goes before the flush below because the
         # flush costs ~1s even when nothing is pending (live, 2026-08-21: eight
         # holds, all empty, all ~1005ms).
-        await _publish_paused(paused)
+        await self.publish(paused)
         logger.info("session %s", "paused" if paused else "resumed")
         if paused:
-            await _flush_open_user_turn(session, state, analyzer, ctx.room)
+            await _flush_open_user_turn(session, state, self._analyzer, self._ctx.room)
         return True
 
+
+async def _register_pause_rpc(
+    ctx: JobContext,
+    session: AgentSession,
+    state: SessionState,
+    facts: SessionFacts,
+    cfg: TutorConfig,
+    clock: SessionClock,
+    hold: SessionHold,
+    billing: BillingClient,
+) -> None:
+    """Pause/resume, driven by the frontend's client-side set of holds.
+
+    The frontend collapses overlapping holds (explicit control, correction
+    inspection, selection-to-translate, history scroll) and sends exactly one
+    pause or resume; the worker only tracks the resulting boolean and mirrors it
+    as an attribute. Short glances never arrive here at all — the frontend
+    debounces them, because the surface freeze is client-side and instant.
+
+    One resume is not a resume: a session held because the balance ran out only
+    comes back if the balance did. That check is first, and it is the seam a
+    mid-session purchase returns through.
+    """
+
+    # The last answer each side gave, so a retry gets the same answer back.
+    last_resume_ack = json.dumps({"paused": False, "resumed": False})
+    # The answer to a resume that could not be granted, likewise stable.
+    still_held_ack = json.dumps({"paused": True, "resumed": False, "out_of_minutes": True})
+    # The frontend re-sends `tutor.resume` until it observes the attribute, and
+    # while the balance is still zero it never will — so the balance re-read is
+    # throttled. A purchase takes longer than this anyway.
+    last_balance_check = 0.0
+
     async def _pause(_data: rtc.RpcInvocationData) -> str:
-        await _apply(True)
+        await hold.apply(True)
+        await clock.notify_hold_changed()
         return json.dumps({"paused": True})
 
     async def _resume(data: rtc.RpcInvocationData) -> str:
@@ -810,27 +829,42 @@ async def _register_pause_rpc(
         # re-enter with judgment — and only when it actually owes the learner
         # something. If the learner was mid-utterance, resume stays silent and
         # lets them finish.
-        nonlocal last_resume_ack
+        nonlocal last_resume_ack, last_balance_check
         brief = _parse_brief(data.payload)
-        if not await _apply(False):
+
+        if clock.out_of_minutes:
+            # Held at zero. A purchase may have landed while they were looking
+            # at the out-of-minutes card, so the balance is re-read here and
+            # nowhere else. If it is still zero, the hold simply stays: the
+            # session is alive, the room is theirs, and nothing was lost.
+            now = time.monotonic()
+            if now - last_balance_check < BALANCE_RECHECK_MIN_S:
+                return still_held_ack
+            last_balance_check = now
+            balance_s = await billing.balance()
+            if balance_s is None or not await clock.apply_balance(balance_s):
+                logger.info("out of minutes: resume refused, still held")
+                return still_held_ack
+            logger.info("out of minutes: balance restored", extra={"balance_s": balance_s})
+
+        if not await hold.apply(False):
             # A retry of a resume we already handled: same answer, no second
             # re-entry.
             return last_resume_ack
 
-        # A wrap-up brief that came due during the hold is delivered now, before
-        # any re-entry line, so the tutor re-enters already knowing it is
-        # closing. No-op unless the one-minute mark passed while paused.
+        # The stopwatch starts again the moment the hold does.
+        try:
+            await clock.notify_hold_changed()
+        except Exception:
+            logger.warning("clock republish on resume failed", exc_info=True)
+
+        # A nudge that came due during the hold is delivered now, before any
+        # re-entry line, so the tutor re-enters already knowing it is finishing
+        # the thought. No-op unless the 30s mark passed while paused.
         try:
             await clock.notify_resumed()
         except Exception:
-            logger.exception("deferred wrap-up brief failed")
-
-        # Same deferral, same reason: a phase change that came due during the
-        # hold is applied now, before any re-entry line is generated.
-        try:
-            await arc.notify_resumed()
-        except Exception:
-            logger.exception("deferred arc phase change failed")
+            logger.exception("deferred nudge failed")
 
         try:
             if not brief.present or not state.tutor_owes_reentry:

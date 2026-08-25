@@ -12,7 +12,7 @@
 
 import { v, type Infer } from "convex/values"
 
-import type { SessionPlan } from "../lib/session/contract"
+import type { Correction, SessionPlan } from "../lib/session/contract"
 import { LEVEL_VALUES, type LevelValue } from "../lib/session/plan"
 
 /** Compile-time equality — invariant, so `string` does not pass for a union. */
@@ -56,10 +56,66 @@ export const sessionPlanValidator = v.object({
   scenario: v.union(v.string(), v.null()),
   topic: v.union(v.string(), v.null()),
   tenses: v.array(v.string()),
+  // Optional, unlike their contract counterparts: rows written before the two
+  // open notes existed have no such field, and a stored session is history —
+  // it is never rewritten to match a newer plan shape.
+  focusNote: v.optional(v.union(v.string(), v.null())),
+  note: v.optional(v.union(v.string(), v.null())),
   vocab: v.array(v.string()),
   level: v.union(v.string(), v.null()),
 })
 
+/** Drops the `?` the back-compat fields carry, so the assertion below still
+ * compares the two shapes field for field. */
+type Filled<T> = { [K in keyof T]-?: Exclude<T[K], undefined> }
+
 export type SessionPlanMatchesContract = Assert<
-  Equals<Infer<typeof sessionPlanValidator>, SessionPlan>
+  Equals<Filled<Infer<typeof sessionPlanValidator>>, SessionPlan>
 >
+
+/* -------------------------------------------------------------------------- */
+/*  Correction                                                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One analyzer finding, as stored on a finished session's `outcome`. Mirrors
+ * `Correction` in `lib/session/contract.ts`.
+ *
+ * `category` and `severity` are `v.string()` rather than the contract's literal
+ * unions, for the same reason `sessionPlanValidator` widens `level`: a stored
+ * session is history. Retiring or renaming a category later must not make rows
+ * written today fail schema validation, and nothing downstream branches on an
+ * unknown category — the UI labels what it recognizes and prints the raw value
+ * otherwise.
+ */
+export const correctionValidator = v.object({
+  id: v.string(),
+  original: v.string(),
+  replacement: v.string(),
+  category: v.string(),
+  severity: v.string(),
+  explanation: v.string(),
+})
+
+/** `Correction` with the two enums widened, which is what is stored. Mapped
+ * rather than intersected so the assertion still compares field for field. */
+type StoredCorrection = {
+  [K in keyof Correction]: K extends "category" | "severity"
+    ? string
+    : Correction[K]
+}
+
+export type CorrectionMatchesContract = Assert<
+  Equals<Infer<typeof correctionValidator>, StoredCorrection>
+>
+
+/**
+ * The snapshot of a finished session — the same `SessionOutcome` the summary
+ * screen renders, minus `plan` (already a column on the row, and the plan the
+ * session STARTED with is the one worth keeping).
+ */
+export const sessionOutcomeValidator = v.object({
+  corrections: v.array(correctionValidator),
+  secondsTalked: v.union(v.number(), v.null()),
+  endedByClock: v.boolean(),
+})

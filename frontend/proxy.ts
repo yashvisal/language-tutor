@@ -2,17 +2,19 @@ import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server"
 
 /**
  * Public-first: the landing and the design playground are open, everything a
- * learner does with an account is not. Auth only — the balance gate on
- * `/session` and `/api/token` lands with the minutes step; middleware has no
- * Convex read, so a balance check here would be a second source of truth.
+ * learner does with an account is not. Auth only — the balance is checked in
+ * `/api/token`, which is the one place that can read Convex; a check here would
+ * be a second source of truth with no way to read the ledger.
+ *
+ * `/api/token` is deliberately NOT listed: `auth.protect()` answers a
+ * non-document request with a 404, and a token endpoint owes its caller a 401.
+ * The route does its own `await auth()` and says so.
  */
 const isProtectedRoute = createRouteMatcher([
   "/go(.*)",
   "/home(.*)",
   "/welcome(.*)",
-  "/settings(.*)",
   "/session(.*)",
-  "/api/token(.*)",
 ])
 
 export default clerkMiddleware(async (auth, req) => {

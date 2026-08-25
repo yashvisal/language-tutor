@@ -4,6 +4,7 @@ import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { useMutation } from "convex/react"
 
+import { Wordmark } from "@/components/app-shell/wordmark"
 import { LevelPicker } from "@/components/level-picker"
 import { Button } from "@/components/ui/button"
 import { api } from "@/convex/_generated/api"
@@ -37,8 +38,13 @@ export function WelcomeForm() {
   }
 
   return (
-    <div className="flex min-h-svh justify-center bg-background px-8 py-[clamp(4rem,16vh,9rem)]">
-      <div className="w-full max-w-md">
+    <div className="min-h-svh bg-background">
+      {/* The only chrome onboarding gets: the same wordmark as the landing and
+          the shell, so this page belongs to the same product as both. */}
+      <header className="flex h-14 items-center px-6">
+        <Wordmark href="/" />
+      </header>
+      <div className="mx-auto w-full max-w-md px-8 py-[clamp(2rem,12vh,6rem)]">
         <h1 className="text-xl tracking-[-0.015em] text-foreground">
           Where are you with Spanish?
         </h1>

@@ -49,7 +49,7 @@ export default function LandingPage() {
             className="pointer-events-none absolute top-[55%] left-1/2 -z-10 h-[40rem] w-[40rem] -translate-x-1/2 -translate-y-1/2 rounded-full bg-blue-400/25 blur-[120px] dark:bg-blue-500/15"
           />
           <h1 className="text-4xl leading-[1.05] font-semibold tracking-tight text-balance sm:text-5xl lg:text-6xl">
-            Ten minutes of Spanish, out loud.
+            Spanish, out loud. Pay for the minutes you talk.
           </h1>
           <p className="mt-4 max-w-lg text-base leading-relaxed text-balance text-muted-foreground sm:text-lg">
             A tutor that answers naturally and never talks over you. The
@@ -113,7 +113,7 @@ export default function LandingPage() {
                     </div>
                     <div className="px-1 pt-5">
                       <div className="flex items-baseline gap-3">
-                        <span className="text-xs font-medium tabular-nums text-blue-600 dark:text-blue-400">
+                        <span className="text-xs font-medium tabular-nums text-primary">
                           {step.n}
                         </span>
                         <h3 className="text-lg font-medium tracking-tight">
@@ -163,7 +163,7 @@ export default function LandingPage() {
                       className={cn(
                         "flex items-baseline gap-2 rounded-full border px-4 py-2 text-sm",
                         available
-                          ? "border-blue-500/50 text-foreground dark:border-blue-400/40"
+                          ? "border-primary/50 text-foreground"
                           : "border-border/70 text-muted-foreground"
                       )}
                     >

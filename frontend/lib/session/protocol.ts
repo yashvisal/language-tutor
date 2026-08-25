@@ -239,13 +239,26 @@ export const MAX_RESUME_ASKS = 5
 /** Participant attribute keys, all published by the agent. `paused` is mirrored
  * so pause state survives reconnects; `analyzer` tells the surface whether
  * corrections are coming at all, so a learner turn need not wait on an analyzer
- * that isn't running; `minutesLeft`/`sessionOver` are the clock, which the
- * worker owns outright — the surface renders these and never computes them. */
+ * that isn't running; the clock attributes are the meter, which the worker owns
+ * outright — the surface renders these and never computes them. */
 export const PARTICIPANT_ATTRIBUTES = {
   paused: "tutor.paused",
   analyzer: "tutor.analyzer",
-  /** Integer string. Published on start, every 30s, at one minute, and at zero. */
-  minutesLeft: "tutor.minutes_left",
+  /**
+   * Integer string: seconds of ACTIVE talking so far, holds excluded. Published
+   * every 5s while unheld and on every pause, resume, nudge and zero. This is
+   * the stopwatch the learner watches — see `session-clock.tsx`.
+   */
+  elapsedSeconds: "tutor.elapsed_s",
+  /**
+   * Integer string: seconds of balance left, published alongside `elapsed_s`.
+   * The surface only shows it in the last 30 seconds, which is the one moment a
+   * countdown is honest rather than a container to fill.
+   */
+  remainingSeconds: "tutor.remaining_s",
+  /** `"true"` while the session is HELD at a zero balance. Not an ending: the
+   * conversation waits, and more minutes resume it where it stopped. */
+  outOfMinutes: "tutor.out_of_minutes",
   /** `"true"` once the clock — not the learner — ended the session. */
   sessionOver: "tutor.session_over",
   /**
@@ -273,27 +286,29 @@ export const TARGET_LANGUAGE = "es"
 export const ANCHOR_LANGUAGE = "en"
 
 /**
- * Minutes a session is allowed to run. One credit = 10 minutes (see
- * plans/product-vision.md, 2026-08-20 #2). The token route embeds this in the
- * dispatch metadata and the worker's clock enforces it.
- *
- * TODO(credits): derive from the learner's ledger balance once auth and the
- * database land; a constant is correct only while every session is free.
- */
-export const SESSION_MAX_MINUTES = 10
-
-/**
  * The dispatch metadata the token route signs into the room config, as the
  * Python worker parses it. Snake_cased for the same reason as `ResumePayload`:
- * this is wire JSON, not a frontend type. `user_id` is null until auth lands.
+ * this is wire JSON, not a frontend type.
+ *
+ * There is no `max_minutes`: a session is not a container with a length, it is
+ * a conversation that runs while the balance lasts (plans/product-vision.md,
+ * 2026-08-24 #1). `balance_s` is what the learner had when the room was minted
+ * — a starting budget, not a limit; the worker re-reads the balance from Convex
+ * when a session held at zero is continued.
  */
 export interface SessionDispatchMetadata {
-  max_minutes: number
-  user_id: string | null
+  /** The learner's Clerk id. Signed, so the worker can bill it. */
+  user_id: string
+  /** Balance in seconds at the moment the token was minted. */
+  balance_s: number
   plan: {
     topic: string | null
     scenario: string | null
     tenses: string[]
+    /** Free text beside the forms — the thing they asked to be pushed on. */
+    focus_note: string | null
+    /** Free text beside the level — anything else the tutor should know. */
+    note: string | null
     vocab: string[]
     level: string | null
   }

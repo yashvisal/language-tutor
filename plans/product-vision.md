@@ -160,7 +160,7 @@ From reviewing the phase-1 layout explorations (aura-stage, split-columns, and t
    10 minutes" and "a session is a 1/4/4/1 arc" (2026-08-20).
 2. **Buy in fives, cheaper in packs.** Minutes are sold in 5-minute
    increments; larger packs cost less per minute. Prices are placeholders
-   until set (see `phases/phase-7-metered-conversation.md`); the ≥3×-cost
+   until set (see `phases/phase-6-metered-conversation.md`); the ≥3×-cost
    rule stands.
 3. **The only time-shaped moment is the honest one.** At ~30 seconds left the
    tutor is told to finish the thought and the surface says so; at zero the

@@ -8,6 +8,8 @@
  * @module
  */
 
+import type * as http from "../http.js";
+import type * as sessions from "../sessions.js";
 import type * as users from "../users.js";
 import type * as validators from "../validators.js";
 
@@ -18,6 +20,8 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  http: typeof http;
+  sessions: typeof sessions;
   users: typeof users;
   validators: typeof validators;
 }>;

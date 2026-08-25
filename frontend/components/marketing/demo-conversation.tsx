@@ -242,7 +242,7 @@ export function CorrectedWord({ revealed }: { revealed: boolean }) {
           "rounded-[3px] px-px underline decoration-[0.06em] underline-offset-[0.22em] transition-colors duration-500",
           revealed
             ? "text-muted-foreground line-through decoration-muted-foreground/30"
-            : "decoration-blue-500/60"
+            : "decoration-primary/60"
         )}
         aria-hidden={revealed}
       >
@@ -256,7 +256,7 @@ export function CorrectedWord({ revealed }: { revealed: boolean }) {
           width: revealed ? "auto" : 0,
         }}
         transition={{ duration: 0.4, ease: "easeOut" }}
-        className="overflow-hidden font-medium text-blue-600 dark:text-blue-400"
+        className="overflow-hidden font-medium text-primary"
         aria-hidden={!revealed}
       >
         {LEARNER_RIGHT}

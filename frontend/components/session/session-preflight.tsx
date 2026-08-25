@@ -1,37 +1,331 @@
 "use client"
 
 /**
- * The pre-flight: the one screen between a learner and speaking.
+ * The pre-flight: the one thing between a learner and speaking.
  *
- * It exists because a session with a declared intent is a better session — the
- * plan steers the tutor's prompt and weights the analyzer — but the cost of
- * asking is that nobody has said a word yet. So it is a single quiet column,
- * not a wizard: every field is optional, defaults are already chosen, and
- * "Suggest one for me" fills the whole thing in one tap. Starting with nothing
- * selected is a legitimate answer (free conversation), and the button never
+ * It is a short conversation, not a form. Three questions, one on screen at a
+ * time, each answered by typing — because what the learner types is what the
+ * tutor carries into the session. "when to use he comido vs comí" is worth more
+ * than any chip could be, and a grid of chips only ever asked the learner to
+ * configure a session before they had said anything.
+ *
+ * So: one prominent question, one text field, `1 / 3` in the footer, Skip and
+ * Continue. Answered questions collapse into quiet rows above the current one,
+ * which is what makes the card read as a conversation rather than a wizard —
+ * and clicking a row goes back to it. Nothing is required: skipping all three
+ * is a legitimate plan (free conversation), and the last step's button never
  * disables.
  *
- * Nothing here is Spanish-specific: the situations are prompt-ready phrases and
- * the focus forms come from the per-language catalog in `plan.ts`.
+ * The three answers land in `plan.topic`, `plan.focusNote` and `plan.note`.
+ * `scenario` and `tenses` stay in the contract — the catalogs and `suggestPlan`
+ * still use them — but this screen never sets them, and the level is whatever
+ * the learner's profile says.
+ *
+ * Two hosts: the dashboard's modal (`components/home/start-session.tsx`) and
+ * `/session`'s own pre-connect state (`SessionPreflight` below). Both render
+ * `PlanCards` — the questions are exported rather than copied so the two can
+ * never ask the same thing two ways.
+ *
+ * Nothing here is Spanish-specific: the focus example comes from the
+ * per-language catalog in `plan.ts`, and the language is named through
+ * `TARGET_LANGUAGE_NAME`.
  */
 
-import { useState, type ReactNode } from "react"
-import { Shuffle, X } from "lucide-react"
+import {
+  useEffect,
+  useLayoutEffect,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+  useRef,
+} from "react"
+import { AnimatePresence, motion, useReducedMotion } from "motion/react"
 
 import { Overline } from "@/components/overline"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import type { SessionPlan } from "@/lib/session/contract"
 import {
-  LEVELS,
   PLAN_LIMITS,
-  SCENARIOS,
-  suggestPlan,
-  tensesFor,
+  TARGET_LANGUAGE_NAME,
+  focusNotePlaceholder,
 } from "@/lib/session/plan"
-import { SESSION_MAX_MINUTES } from "@/lib/session/protocol"
 import { cn } from "@/lib/utils"
 
+/** The plan fields this screen can write. The rest of the plan is untouched. */
+type AnswerField = "topic" | "focusNote" | "note"
+
+interface Question {
+  field: AnswerField
+  question: string
+  hint?: string
+  placeholder: string
+  maxLength: number
+}
+
+/** Two rows of room, growing to about five before it scrolls. */
+const FIELD_LINE_HEIGHT = 24
+const FIELD_PADDING = 16
+const FIELD_MAX_HEIGHT = FIELD_LINE_HEIGHT * 5 + FIELD_PADDING
+
+/**
+ * The three questions, and the footer that walks them.
+ *
+ * The host supplies the frame (a modal, a page column) and the class names for
+ * its own padding; this owns everything inside — including the Start button,
+ * because "the last question's Continue IS Start" is a property of the
+ * sequence, not of whoever is hosting it.
+ */
+export function PlanCards({
+  plan,
+  onChange,
+  onStart,
+  starting = false,
+  startLabel = "Start",
+  className,
+  bodyClassName,
+  footerClassName,
+}: {
+  plan: SessionPlan
+  onChange: (plan: SessionPlan) => void
+  /** Fired by the last question's button with the plan as of that answer —
+   * the host's own `plan` state is one render behind at this point. The host
+   * persists and connects. */
+  onStart: (plan: SessionPlan) => void
+  starting?: boolean
+  startLabel?: string
+  className?: string
+  bodyClassName?: string
+  footerClassName?: string
+}) {
+  const [step, setStep] = useState(0)
+  const reducedMotion = useReducedMotion()
+
+  const questions: Question[] = [
+    {
+      field: "topic",
+      question: "What do you want to be ready to talk about?",
+      placeholder:
+        "A trip to Oaxaca next month, a call with my grandmother, ordering at a restaurant…",
+      maxLength: PLAN_LIMITS.topicChars,
+    },
+    {
+      field: "focusNote",
+      question: "Anything you want the tutor to push you on?",
+      hint: "Tenses, phrases, a habit you want to break.",
+      placeholder: focusNotePlaceholder(),
+      maxLength: PLAN_LIMITS.focusNoteChars,
+    },
+    {
+      field: "note",
+      question: "Anything else the tutor should know?",
+      placeholder: "I understand more than I can say. Go slow at first.",
+      maxLength: PLAN_LIMITS.noteChars,
+    },
+  ]
+
+  const last = step === questions.length - 1
+  const current = questions[step]!
+
+  const patch = (next: Partial<SessionPlan>) => onChange({ ...plan, ...next })
+
+  /**
+   * Move on. `keep` is the difference between Continue and Skip: Continue
+   * commits what was typed (trimmed, empty becomes nothing at all), Skip
+   * clears it, so a question the learner walked past never reaches the tutor
+   * as a half-typed thought.
+   */
+  const advance = (keep: boolean) => {
+    const raw = keep ? plan[current.field] : null
+    const next: SessionPlan = { ...plan, [current.field]: raw?.trim() || null }
+    onChange(next)
+    // The host's `plan` is still the previous render's; hand it this one.
+    // Firing twice is the host's problem to absorb (the connection owner
+    // ignores a start while one is in flight; a repeated push is a no-op) —
+    // a guard here outlived a failed start and made Start dead.
+    if (last) onStart(next)
+    else setStep(step + 1)
+  }
+
+  return (
+    <div className={cn("flex flex-col", className)}>
+      <div className={bodyClassName}>
+        {/* Answered questions, in the order they were asked. Quiet enough that
+            the live question is the only thing with weight on screen, and
+            clickable because "wait, I want to change that" is the whole reason
+            they stay on screen at all. */}
+        {step > 0 && (
+          <ul className="mb-5 divide-y divide-foreground/[0.06] dark:divide-white/10">
+            {questions.slice(0, step).map((answered, index) => {
+              const value = plan[answered.field]?.trim()
+              return (
+                <li key={answered.field}>
+                  <button
+                    type="button"
+                    onClick={() => setStep(index)}
+                    className="flex w-full items-baseline justify-between gap-4 py-2.5 text-left transition-colors duration-200 outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
+                  >
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-xs text-muted-foreground">
+                        {answered.question}
+                      </span>
+                      {value && (
+                        <span className="mt-0.5 block truncate text-sm text-foreground">
+                          {value}
+                        </span>
+                      )}
+                    </span>
+                    {!value && (
+                      <span className="shrink-0 rounded-full bg-foreground/[0.05] px-2 py-0.5 text-[11px] text-muted-foreground dark:bg-white/10">
+                        Skipped
+                      </span>
+                    )}
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.div
+            key={step}
+            initial={{ opacity: 0, y: reducedMotion ? 0 : 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: reducedMotion ? 0 : 0.18, ease: "easeOut" }}
+          >
+            <h2 className="text-lg leading-snug font-normal text-foreground">
+              {current.question}
+            </h2>
+            {current.hint && (
+              <p className="mt-1.5 text-xs text-muted-foreground">
+                {current.hint}
+              </p>
+            )}
+
+            <AnswerField
+              label={current.question}
+              value={plan[current.field] ?? ""}
+              placeholder={current.placeholder}
+              maxLength={current.maxLength}
+              onValueChange={(value) =>
+                patch({
+                  [current.field]: value || null,
+                } as Partial<SessionPlan>)
+              }
+              onSubmit={() => advance(true)}
+            />
+          </motion.div>
+        </AnimatePresence>
+      </div>
+
+      <div
+        className={cn(
+          "flex items-center justify-between gap-4 border-t border-foreground/[0.06] dark:border-white/10",
+          footerClassName
+        )}
+      >
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-muted-foreground tabular-nums">
+            {step + 1} / {questions.length}
+          </span>
+          {step > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setStep(step - 1)}
+              disabled={starting}
+              className="text-muted-foreground"
+            >
+              Back
+            </Button>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2">
+          {/* Skip clears this question's answer and moves on — on the last one
+              that means starting, with nothing said here. */}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => advance(false)}
+            disabled={starting}
+            className="text-muted-foreground"
+          >
+            Skip
+          </Button>
+          <Button size="lg" onClick={() => advance(true)} disabled={starting}>
+            {last ? (starting ? "Connecting…" : startLabel) : "Continue"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The answer: one field, focused the moment its question appears, growing with
+ * what is typed. Enter continues — this is a sentence, not a paragraph — and
+ * Shift+Enter is there for anyone who wants a second line anyway.
+ */
+function AnswerField({
+  value,
+  placeholder,
+  maxLength,
+  label,
+  onValueChange,
+  onSubmit,
+}: {
+  value: string
+  placeholder: string
+  maxLength: number
+  label: string
+  onValueChange: (value: string) => void
+  onSubmit: () => void
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null)
+
+  // Focus through a ref rather than the `autoFocus` attribute: inside a dialog
+  // the attribute races the focus trap, and an effect runs after it settles.
+  useEffect(() => {
+    ref.current?.focus()
+  }, [])
+
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    el.style.height = "auto"
+    el.style.height = `${Math.min(el.scrollHeight, FIELD_MAX_HEIGHT)}px`
+  }, [value])
+
+  const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key !== "Enter" || event.shiftKey) return
+    // Enter inside an IME commits the candidate, not the answer.
+    if (event.nativeEvent.isComposing) return
+    event.preventDefault()
+    onSubmit()
+  }
+
+  return (
+    <textarea
+      ref={ref}
+      rows={2}
+      value={value}
+      aria-label={label}
+      maxLength={maxLength}
+      placeholder={placeholder}
+      onChange={(event) => onValueChange(event.target.value)}
+      onKeyDown={onKeyDown}
+      style={{ maxHeight: FIELD_MAX_HEIGHT }}
+      className="mt-4 block w-full resize-none rounded-xl bg-foreground/[0.04] px-4 py-3 text-[15px] leading-6 text-foreground transition-[box-shadow,background-color] duration-200 outline-none placeholder:text-muted-foreground/70 focus-visible:bg-foreground/[0.06] focus-visible:ring-2 focus-visible:ring-primary/30 dark:bg-white/[0.06] dark:focus-visible:bg-white/[0.08]"
+    />
+  )
+}
+
+/**
+ * `/session`'s own pre-flight: the same three questions, in a page-width
+ * column, reached only without the dashboard hand-off (a bookmark, a reload).
+ */
 export function SessionPreflight({
   plan,
   onChange,
@@ -43,53 +337,15 @@ export function SessionPreflight({
 }: {
   plan: SessionPlan
   onChange: (plan: SessionPlan) => void
-  onStart: () => void
+  onStart: (plan: SessionPlan) => void
   connecting: boolean
   error: string | null
-  /** Rendered above the first question, inside the same column — `/home` puts
-   * the balance line here rather than floating it over the layout. */
+  /** Rendered above the first question, inside the same column — `/session`
+   * puts its way back to `/home` here. */
   above?: ReactNode
-  /** For hosts that already provide their own page frame (the app shell). */
+  /** For hosts that already provide their own page frame. */
   className?: string
 }) {
-  // Free text is revealed rather than always shown: an empty input next to the
-  // situations reads as a second, competing question. Derived rather than
-  // purely stateful, so a plan that arrives after mount (the stored one) opens
-  // its own input.
-  const [topicToggled, setTopicToggled] = useState(false)
-  const topicOpen = topicToggled || plan.topic !== null
-  const [vocabDraft, setVocabDraft] = useState("")
-
-  const patch = (next: Partial<SessionPlan>) => onChange({ ...plan, ...next })
-
-  const toggleTense = (value: string) =>
-    patch({
-      tenses: plan.tenses.includes(value)
-        ? plan.tenses.filter((t) => t !== value)
-        : plan.tenses.length < PLAN_LIMITS.maxTenses
-          ? [...plan.tenses, value]
-          : plan.tenses,
-    })
-
-  const addVocab = () => {
-    const value = vocabDraft.trim().slice(0, PLAN_LIMITS.vocabChars)
-    if (!value || plan.vocab.includes(value)) {
-      setVocabDraft("")
-      return
-    }
-    if (plan.vocab.length >= PLAN_LIMITS.maxVocab) return
-    patch({ vocab: [...plan.vocab, value] })
-    setVocabDraft("")
-  }
-
-  const suggest = () => {
-    const suggested = suggestPlan(plan.level)
-    setTopicToggled(false)
-    onChange(suggested)
-  }
-
-  const tenses = tensesFor()
-
   return (
     <div
       className={cn(
@@ -99,214 +355,31 @@ export function SessionPreflight({
     >
       <div className="w-full max-w-xl">
         {above}
-        <div className="flex items-start justify-between gap-6">
-          <div>
-            <Overline>Before you start</Overline>
-            <h1 className="mt-3 text-xl tracking-[-0.015em] text-foreground">
-              What do you want to talk about?
-            </h1>
-            <p className="mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">
-              {SESSION_MAX_MINUTES} minutes of Spanish, with corrections when
-              you finish a thought. Everything below is optional.
-            </p>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={suggest}
-            className="mt-1 shrink-0 gap-1.5"
-          >
-            <Shuffle />
-            Suggest one for me
-          </Button>
-        </div>
+        <Overline>Before you start</Overline>
+        <p className="mt-3 max-w-sm text-sm leading-relaxed text-muted-foreground">
+          {TARGET_LANGUAGE_NAME} out loud, with corrections when you finish a
+          thought. Three quick questions first — skip any.
+        </p>
 
-        <Field label="Situation">
-          <div className="flex flex-wrap gap-1.5">
-            {SCENARIOS.map((option) => (
-              <Chip
-                key={option.value}
-                selected={plan.scenario === option.value}
-                onClick={() => {
-                  const selected = plan.scenario === option.value
-                  setTopicToggled(false)
-                  // A situation and a topic are two answers to one question.
-                  patch({
-                    scenario: selected ? null : option.value,
-                    topic: null,
-                  })
-                }}
-              >
-                {option.label}
-              </Chip>
-            ))}
-            <Chip
-              selected={topicOpen}
-              onClick={() => {
-                setTopicToggled(!topicOpen)
-                if (topicOpen) patch({ topic: null })
-                else patch({ scenario: null })
-              }}
-            >
-              Something else…
-            </Chip>
-          </div>
-          {topicOpen && (
-            <Input
-              autoFocus
-              value={plan.topic ?? ""}
-              maxLength={PLAN_LIMITS.topicChars}
-              onChange={(e) => {
-                // Typing is itself the toggle: without this, clearing the last
-                // character would drop `topic` to null and unmount the input
-                // under the learner's cursor.
-                setTopicToggled(true)
-                patch({ topic: e.target.value || null })
-              }}
-              placeholder="Anything — my trip to Oaxaca, why I quit my job…"
-              aria-label="Topic"
-              className="mt-3 h-9"
-            />
-          )}
-        </Field>
+        <PlanCards
+          plan={plan}
+          onChange={onChange}
+          onStart={onStart}
+          starting={connecting}
+          startLabel="Start talking"
+          className="mt-8"
+          footerClassName="mt-8 pt-6"
+        />
 
-        {tenses.length > 0 && (
-          <Field label="Focus" hint="The tutor will steer toward these forms">
-            <div className="flex flex-wrap gap-1.5">
-              {tenses.map((option) => (
-                <Chip
-                  key={option.value}
-                  selected={plan.tenses.includes(option.value)}
-                  onClick={() => toggleTense(option.value)}
-                >
-                  {option.label}
-                </Chip>
-              ))}
-            </div>
-          </Field>
-        )}
-
-        <Field label="Vocabulary" hint="Themes to work in">
-          <div className="flex flex-wrap items-center gap-1.5">
-            {plan.vocab.map((theme) => (
-              <span
-                key={theme}
-                className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/5 py-1 pr-1 pl-3 text-sm text-foreground"
-              >
-                {theme}
-                <button
-                  type="button"
-                  onClick={() =>
-                    patch({ vocab: plan.vocab.filter((v) => v !== theme) })
-                  }
-                  aria-label={`Remove ${theme}`}
-                  className="rounded-full p-0.5 text-muted-foreground transition-colors hover:text-foreground"
-                >
-                  <X className="size-3" />
-                </button>
-              </span>
-            ))}
-            {plan.vocab.length < PLAN_LIMITS.maxVocab && (
-              <Input
-                value={vocabDraft}
-                maxLength={PLAN_LIMITS.vocabChars}
-                onChange={(e) => setVocabDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key !== "Enter") return
-                  e.preventDefault()
-                  addVocab()
-                }}
-                onBlur={addVocab}
-                placeholder={
-                  plan.vocab.length ? "Add another…" : "food, travel…"
-                }
-                aria-label="Add a vocabulary theme"
-                className="h-8 w-44 rounded-full px-3"
-              />
-            )}
-          </div>
-        </Field>
-
-        <Field label="Where you are">
-          <div className="flex flex-wrap gap-1.5">
-            {LEVELS.map((option) => (
-              <Chip
-                key={option.value}
-                selected={plan.level === option.value}
-                onClick={() => patch({ level: option.value })}
-              >
-                {option.label}
-              </Chip>
-            ))}
-          </div>
-        </Field>
-
-        <div className="mt-10 flex items-center gap-4 border-t border-border/50 pt-6">
-          <Button size="lg" onClick={onStart} disabled={connecting}>
-            {connecting ? "Connecting…" : "Start talking"}
-          </Button>
-          <p className="text-xs text-muted-foreground/70">
-            Microphone required. Pausing to study doesn’t use your minutes.
-          </p>
-        </div>
+        <p className="mt-4 text-xs text-muted-foreground">
+          Microphone required. Pausing to study doesn’t use your minutes.
+        </p>
         {error && (
-          <p role="alert" className="mt-4 text-xs text-destructive">
+          <p role="alert" className="mt-3 text-xs text-destructive">
             {error}
           </p>
         )}
       </div>
     </div>
-  )
-}
-
-/** A labelled block. Sections are separated by space and a small label — no
- * cards, no boxes: the page is one column of questions. */
-function Field({
-  label,
-  hint,
-  children,
-}: {
-  label: string
-  hint?: string
-  children: ReactNode
-}) {
-  return (
-    <section className="mt-9">
-      <div className="mb-3 flex items-baseline gap-2">
-        <Overline>{label}</Overline>
-        {hint && (
-          <span className="text-xs text-muted-foreground/50">{hint}</span>
-        )}
-      </div>
-      {children}
-    </section>
-  )
-}
-
-/** The one selection primitive on this screen: a quiet outline that fills with
- * the identity color when chosen. */
-function Chip({
-  selected,
-  onClick,
-  children,
-}: {
-  selected: boolean
-  onClick: () => void
-  children: ReactNode
-}) {
-  return (
-    <button
-      type="button"
-      aria-pressed={selected}
-      onClick={onClick}
-      className={cn(
-        "rounded-full border px-3 py-1 text-sm transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
-        selected
-          ? "border-primary/40 bg-primary/10 text-foreground"
-          : "border-border/70 text-muted-foreground hover:border-border hover:text-foreground"
-      )}
-    >
-      {children}
-    </button>
   )
 }

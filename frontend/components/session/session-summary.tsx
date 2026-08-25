@@ -3,23 +3,31 @@
 /**
  * After the conversation.
  *
- * Two facts and two doors. The facts: how many minutes went, and what the
+ * Two facts and two doors. The facts: how long the learner talked, and what the
  * analyzer caught — the first time the session's corrections are seen all at
- * once rather than one utterance at a time. The doors: talk again, or buy more
- * minutes.
+ * once rather than one utterance at a time. The doors: talk again, or go
+ * home.
  *
  * Corrections are grouped by category because a category is a pattern a learner
  * can act on, where a flat list is a scorecard. No count of "mistakes", no
  * score, no streak: this is a record of what the tutor noticed, not a grade.
  */
 
+import Link from "next/link"
 import { MoveRight } from "lucide-react"
 
+import { Overline } from "@/components/overline"
 import { CATEGORY_STYLES } from "@/components/session/correction-mark"
 import { Button } from "@/components/ui/button"
 import { CATEGORY_LABELS, type SessionOutcome } from "@/lib/session/contract"
 import { groupCorrections } from "@/lib/session/reducer"
 import { cn } from "@/lib/utils"
+
+/** `m:ss` — the same reading the stopwatch showed, so the two agree. */
+function clock(seconds: number): string {
+  const whole = Math.max(0, Math.round(seconds))
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`
+}
 
 export function SessionSummary({
   outcome,
@@ -29,25 +37,23 @@ export function SessionSummary({
   onStartAnother: () => void
 }) {
   const groups = groupCorrections(outcome.corrections)
-  const { minutesUsed } = outcome
+  const { secondsTalked } = outcome
 
   return (
     <div className="flex min-h-svh justify-center bg-background px-8 py-[clamp(3rem,12vh,7rem)]">
       <div className="w-full max-w-xl">
-        <p className="text-[10px] tracking-[0.14em] text-muted-foreground/50 uppercase">
+        <Overline>
           {outcome.endedByClock ? "Time's up" : "Session ended"}
-        </p>
+        </Overline>
         <h1 className="mt-3 text-xl tracking-[-0.015em] text-foreground">
-          {minutesUsed === null
+          {secondsTalked === null
             ? "That's the session."
-            : `You talked for ${minutesUsed} ${
-                minutesUsed === 1 ? "minute" : "minutes"
-              }.`}
+            : `You talked for ${clock(secondsTalked)}.`}
         </h1>
         <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-          {minutesUsed === null
+          {secondsTalked === null
             ? "Nice work."
-            : "Minutes are counted while you're talking — time spent paused is free."}
+            : "That's what you were charged for — time spent paused is free."}
         </p>
 
         <section className="mt-10 border-t border-border/50 pt-8">
@@ -59,9 +65,7 @@ export function SessionSummary({
             <div className="space-y-8">
               {groups.map(({ category, corrections }) => (
                 <div key={category}>
-                  <p className="text-[10px] tracking-[0.14em] text-muted-foreground/50 uppercase">
-                    {CATEGORY_LABELS[category]}
-                  </p>
+                  <Overline>{CATEGORY_LABELS[category]}</Overline>
                   <ul className="mt-3 space-y-3">
                     {corrections.map((correction) => (
                       <li key={correction.id}>
@@ -87,7 +91,7 @@ export function SessionSummary({
                         </p>
                         {correction.explanation && (
                           <p
-                            className="mt-1 text-xs leading-relaxed text-muted-foreground/80"
+                            className="mt-1 text-xs leading-relaxed text-muted-foreground"
                             lang="en"
                           >
                             {correction.explanation}
@@ -106,12 +110,17 @@ export function SessionSummary({
           <Button size="lg" onClick={onStartAnother}>
             Start another session
           </Button>
-          {/* TODO(stripe): Checkout for credit packs ($3.99 single, 5 for
-              $15.99, 12 for $34.99), webhook writes the ledger grant. Disabled
-              until payments land — the affordance is here so the summary's
-              shape is the real one. */}
-          <Button size="lg" variant="ghost" disabled>
-            Buy more minutes
+          {/* The way out. `/session` was a cul-de-sac otherwise — browser-back
+              was the only route home from the end of a conversation. Buying
+              minutes lands here when payments do; a disabled button promising
+              a purchase nobody can make was worse than no button. */}
+          <Button
+            size="lg"
+            variant="ghost"
+            render={<Link href="/home" />}
+            nativeButton={false}
+          >
+            Back to home
           </Button>
         </div>
       </div>

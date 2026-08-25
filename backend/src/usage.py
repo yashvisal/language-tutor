@@ -5,7 +5,7 @@ learner's speech and the room's silence, billed once per turn) and output (the
 tutor's speech) — measured 2026-08-21 on gpt-realtime-2.1. The tutor's talk
 share is the half we control. Everything else is context for the ledger and
 for pricing decisions. Prices are estimates for logging only — the
-ledger bills minutes, never tokens.
+ledger bills seconds, never tokens.
 """
 
 from __future__ import annotations
@@ -37,7 +37,11 @@ class UsageTracker:
     def on_usage(self, ev: Any) -> None:
         self._usage = getattr(ev, "usage", None)
 
-    def summary(self, *, active_minutes: int, room: str) -> dict[str, Any]:
+    def summary(self, *, active_s: int, room: str) -> dict[str, Any]:
+        # The ledger's unit is seconds (phase 6); the cost lines want minutes,
+        # so this is the one place the conversion happens — as a float, because
+        # rounding a 90-second session to "1 minute" doubles its apparent cost.
+        active_minutes = active_s / 60.0
         audio_in = audio_in_cached = audio_out = text_in = text_out = 0
         stt_seconds = 0.0
         usage = self._usage
@@ -68,7 +72,8 @@ class UsageTracker:
         tutor_minutes = audio_out / OUTPUT_AUDIO_TOKENS_PER_MIN
         return {
             "room": room,
-            "active_minutes": active_minutes,
+            "active_s": active_s,
+            "active_minutes": round(active_minutes, 2),
             "audio_in_tokens": audio_in,
             "audio_in_cached_tokens": audio_in_cached,
             "audio_out_tokens": audio_out,
@@ -85,10 +90,8 @@ class UsageTracker:
             else None,
         }
 
-    def log_summary(self, *, active_minutes: int, room: str) -> None:
+    def log_summary(self, *, active_s: int, room: str) -> None:
         try:
-            logger.info(
-                "session usage", extra=self.summary(active_minutes=active_minutes, room=room)
-            )
+            logger.info("session usage", extra=self.summary(active_s=active_s, room=room))
         except Exception:
             logger.warning("usage summary failed", exc_info=True)

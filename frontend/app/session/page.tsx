@@ -24,10 +24,13 @@ import {
   useState,
   useSyncExternalStore,
 } from "react"
+import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
+import { ArrowLeft } from "lucide-react"
 import { RoomAudioRenderer } from "@livekit/components-react"
 
 import { ConversationStage } from "@/components/session/conversation-stage"
+import { OutOfMinutesScreen } from "@/components/session/out-of-minutes"
 import { SessionPreflight } from "@/components/session/session-preflight"
 import { SessionSummary } from "@/components/session/session-summary"
 import { STAGE_AURA_CLASS, TutorAura } from "@/components/session/tutor-aura"
@@ -98,18 +101,49 @@ function Session() {
     )
   }
 
+  // The token route refused: no room was ever opened, so there is nothing to
+  // pre-flight. The card is the whole screen, and it is the same card a session
+  // held at zero shows over the conversation.
+  if (live.outOfMinutes && live.connection !== "live") {
+    return <OutOfMinutesScreen />
+  }
+
+  // Handed off from the dashboard, or already dialling: the learner chose to
+  // start, so the only honest screen is the stage warming up — not the form
+  // they just filled in flashing past on its way to the conversation.
+  if (autostart || live.connection === "connecting") {
+    return (
+      <div className="flex h-svh flex-col items-center justify-center gap-6 bg-background">
+        <TutorAura state="connecting" className={STAGE_AURA_CLASS} />
+        <p className="text-sm text-muted-foreground">Connecting…</p>
+      </div>
+    )
+  }
+
   if (live.connection !== "live") {
     return (
       <SessionPreflight
+        above={
+          // Reached without the hand-off — a bookmark, a reload — so this is
+          // the only screen the learner can see. It needs a way back.
+          <Link
+            href="/home"
+            className="mb-8 inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors duration-200 hover:text-foreground"
+          >
+            <ArrowLeft className="size-3.5" />
+            Back to home
+          </Link>
+        }
         plan={plan}
         onChange={setEdited}
-        connecting={live.connection === "connecting"}
+        // Never true here — a connecting session rendered the stage above.
+        connecting={false}
         error={live.error}
-        onStart={() => {
+        onStart={(finalPlan) => {
           // Persisted at the moment of use, so a repeat session opens on the
           // plan that was actually spoken — not on an abandoned edit.
-          savePlan(plan)
-          live.connect(plan)
+          savePlan(finalPlan)
+          live.connect(finalPlan)
         }}
       />
     )
@@ -126,7 +160,9 @@ function Session() {
         muted={live.muted}
         onToggleMute={live.toggleMute}
         onEnd={live.disconnect}
-        minutesLeft={live.minutesLeft}
+        elapsedSeconds={live.elapsedSeconds}
+        remainingSeconds={live.remainingSeconds}
+        outOfMinutes={live.outOfMinutes}
         translate={live.translate}
         study={live.study}
         focusTenses={live.plan?.tenses}

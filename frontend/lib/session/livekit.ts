@@ -15,6 +15,20 @@ export {
   TEXT_STREAM_TOPICS,
 } from "./protocol"
 
+/**
+ * The message a 402 from the token route travels on. The LiveKit SDK gives the
+ * surface an `Error` from `start()`, not the response, so the one fact the
+ * surface has to act on — this is a balance, not a fault — rides in the text
+ * and is recognised by `isOutOfMinutes` rather than by string-matching at the
+ * call site.
+ */
+const OUT_OF_MINUTES_MESSAGE = "tutor:out_of_minutes"
+
+/** Whether a failed connect failed because the learner has no minutes left. */
+export function isOutOfMinutes(error: unknown): boolean {
+  return String(error).includes(OUT_OF_MINUTES_MESSAGE)
+}
+
 let pendingPlan: SessionPlan | null = null
 
 /**
@@ -50,6 +64,9 @@ export const tutorTokenSource = TokenSource.literal(async () => {
     // ignored there anyway).
     body: JSON.stringify({ session_plan: pendingPlan }),
   })
+  // Not a failure: the learner is out of minutes, and the surface has a screen
+  // for that. Everything else is a fault worth showing as one.
+  if (response.status === 402) throw new Error(OUT_OF_MINUTES_MESSAGE)
   if (!response.ok) {
     throw new Error(
       `Could not start the session (${response.status}). Try again.`

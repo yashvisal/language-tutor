@@ -1,24 +1,27 @@
 """The session clock. The worker's clock is authoritative (phase 4, WS2).
 
-A credit buys minutes of live conversation, so *something* has to own the
-number and it cannot be the browser. The worker starts a wall clock when the
-session starts, publishes the minutes left as a participant attribute (the
-frontend displays that number; it never computes it), asks the tutor to wrap up
-about a minute before the end, and at zero says one short goodbye and closes
-the session.
+Minutes are money, so *something* has to own the number and it cannot be the
+browser. The learner arrives with a balance in seconds (dispatch metadata from
+the token route); the worker starts a wall clock, meters the seconds the
+conversation is actually active, publishes elapsed and remaining as participant
+attributes (the frontend displays them; it never computes them), nudges the
+tutor to finish the thought at 30 s left, and **at zero holds the session** —
+it does not end it.
 
-Three deliberate semantics:
+Four deliberate semantics:
 
 - **Pause time is not billed.** The clock accrues only while the session is
   unheld: a learner studying a correction is not spending their minutes
-  (decision 2026-08-20, reversing the earlier 'pause billed' call).
-- **The wrap-up brief waits for a resumed conversation.** If the learner is
-  paused when the one-minute mark passes there is nobody to hear it, so the
-  brief is deferred and delivered on resume instead — the same seam the
-  conversational resume uses.
-- **Active time is the session's heartbeat.** `on_tick` publishes it once per
-  tick, which is what the session arc advances on (see `arc.py`): one clock,
-  one notion of elapsed, and the arc cannot drift from the billing.
+  (decision 2026-08-20).
+- **Zero is a hold, not an ending.** The conversation stops and waits: buy more
+  and continue in the same room, or leave (decision 2026-08-24). Only an
+  abandoned hold ends the session, after `IDLE_TIMEOUT_S`.
+- **The budget can grow.** A purchase mid-session re-reads the balance and
+  `apply_balance()` moves the budget out from under the same elapsed time, so
+  the conversation continues rather than restarting.
+- **The nudge waits for a resumed conversation.** If the learner is paused when
+  the 30 s mark passes there is nobody to hear it, so the brief is deferred and
+  delivered on resume instead — the same seam the conversational resume uses.
 
 The clock talks to the outside world only through the callbacks it is given,
 which is what makes it exercisable with fakes.
@@ -28,69 +31,80 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import time
 from collections.abc import Awaitable, Callable
 
+from billing import BillingClient
+
 logger = logging.getLogger("tutor.clock")
 
-# How long before the end the tutor is told to start closing. One minute is
-# roughly two exchanges at this tutor's turn length.
-WARNING_S = 60.0
+# How close to zero the tutor is told to finish the thought. Half a minute is
+# about one exchange at this tutor's turn length — enough to land a sentence,
+# too short to start anything.
+NUDGE_S = 30.0
 
-# The frontend's balance pill updates on this cadence. Cheap (an attribute
-# update), and coarse enough not to look like a stopwatch.
-PUBLISH_INTERVAL_S = 30.0
+# The frontend's stopwatch updates on this cadence, plus immediately on every
+# transition that changes what it should say (hold, resume, nudge, zero).
+PUBLISH_INTERVAL_S = 5.0
 
-# Loop granularity. Fine enough that the warning and the end land within a
-# second of their mark, coarse enough to be free.
+# How long a session held at zero waits before the worker gives up on it. The
+# learner has gone to buy minutes, or has gone.
+IDLE_TIMEOUT_S = 600.0
+
+# Loop granularity. Fine enough that the nudge and zero land within a second of
+# their mark, coarse enough to be free.
 TICK_S = 1.0
 
 
 class SessionClock:
-    """Wall-clock budget enforcement for one session.
+    """Balance enforcement for one session.
 
-    State machine (one direction only, each transition fires once):
+    State, all one-directional except the last:
 
-        running --(remaining <= WARNING_S)--> warned --(remaining <= 0)--> ended
+        running --(remaining <= NUDGE_S)--> nudged --(remaining <= 0)--> held
+        held --(apply_balance with room left)--> running
 
-    plus one holding state: if the session is paused when the warning is due,
-    the transition to `warned` still happens (it never fires twice) but the
-    brief itself is held until `notify_resumed()`.
+    plus one deferral: if the session is paused when the nudge is due, the
+    transition still happens (it never fires twice) but the brief itself is
+    held until `notify_resumed()`.
     """
 
     def __init__(
         self,
-        max_minutes: int,
+        balance_s: int,
         *,
-        publish: Callable[[int], Awaitable[None]],
-        on_warning: Callable[[], Awaitable[None]],
-        on_end: Callable[[], Awaitable[None]],
+        publish: Callable[[int, int, bool], Awaitable[None]],
+        on_nudge: Callable[[], Awaitable[None]],
+        on_zero: Callable[[], Awaitable[None]],
+        on_idle_end: Callable[[], Awaitable[None]],
         is_paused: Callable[[], bool],
-        on_tick: Callable[[float], Awaitable[None]] | None = None,
-        warning_s: float = WARNING_S,
+        nudge_s: float = NUDGE_S,
         publish_interval_s: float = PUBLISH_INTERVAL_S,
+        idle_timeout_s: float = IDLE_TIMEOUT_S,
         tick_s: float = TICK_S,
     ) -> None:
-        self._budget_s = max(0.0, max_minutes * 60.0)
+        self._budget_s = float(max(0, balance_s))
         self._publish = publish
-        self._on_warning = on_warning
-        self._on_end = on_end
+        self._on_nudge = on_nudge
+        self._on_zero = on_zero
+        self._on_idle_end = on_idle_end
         self._is_paused = is_paused
-        self._on_tick = on_tick
-        self._warning_s = warning_s
+        self._nudge_s = nudge_s
         self._publish_interval_s = publish_interval_s
+        self._idle_timeout_s = idle_timeout_s
         self._tick_s = tick_s
 
         self._started_at: float | None = None
         # Billed time is ACTIVE time: the clock accrues between ticks only while
         # the session is not held. A learner studying a correction is not
-        # spending their minutes (decision 2026-08-20, reversing 'pause billed').
+        # spending their minutes (decision 2026-08-20).
         self._active_s = 0.0
         self._last_tick_at: float | None = None
         self._last_publish_at = 0.0
-        self._warned = False
-        self._warning_held = False
+        self._nudged = False
+        self._nudge_held = False
+        self._out_of_minutes = False
+        self._held_at: float | None = None
         self._ended = False
         self._task: asyncio.Task[None] | None = None
 
@@ -105,38 +119,33 @@ class SessionClock:
         return self._ended
 
     @property
+    def out_of_minutes(self) -> bool:
+        """True while the session is held at zero balance."""
+        return self._out_of_minutes
+
+    @property
     def elapsed_s(self) -> float:
         """Active (unpaused) seconds — what the learner is billed for."""
         return self._active_s
 
     @property
     def remaining_s(self) -> float:
-        if self._started_at is None:
-            return self._budget_s
         return max(0.0, self._budget_s - self.elapsed_s)
 
     @property
-    def minutes_left(self) -> int:
-        """What the frontend shows. Rounded up, so "1" means "still talking"."""
-        return max(0, math.ceil(self.remaining_s / 60))
-
-    @property
-    def minutes_billed(self) -> int:
-        """Actual minutes used, rounded up — the ledger's debit (never over budget)."""
-        elapsed = min(self.elapsed_s, self._budget_s)
-        if elapsed <= 0:
-            return 0
-        return max(1, math.ceil(elapsed / 60))
+    def seconds_billed(self) -> int:
+        """Actual active seconds used — the ledger's debit. Exact, never rounded."""
+        return int(min(self.elapsed_s, self._budget_s))
 
     # --- lifecycle -------------------------------------------------------
 
     async def start(self) -> None:
-        """Start the clock and publish the opening balance."""
+        """Start the clock and publish the opening numbers."""
         if self._started_at is not None:
             return
         self._started_at = time.monotonic()
         self._last_tick_at = self._started_at
-        await self._publish_now()
+        await self.publish_now()
         self._task = asyncio.create_task(self._run(), name="tutor-session-clock")
 
     async def aclose(self) -> None:
@@ -152,11 +161,40 @@ class SessionClock:
             pass
 
     async def notify_resumed(self) -> None:
-        """Deliver a wrap-up brief that came due while the session was paused."""
-        if not self._warning_held or self._ended:
+        """Deliver a nudge that came due while the session was paused."""
+        if not self._nudge_held or self._ended:
             return
-        self._warning_held = False
-        await self._fire_warning()
+        self._nudge_held = False
+        await self._fire_nudge()
+
+    async def notify_hold_changed(self) -> None:
+        """A pause or resume just landed: republish immediately.
+
+        The stopwatch on screen stops and starts with the hold, so the learner
+        must not wait up to a publish interval to see it.
+        """
+        await self.publish_now()
+
+    async def apply_balance(self, balance_s: int) -> bool:
+        """Re-budget from a freshly read balance. Returns True if there is room.
+
+        The balance Convex reports is what is left *after* everything this
+        session has already debited, so the new budget is the elapsed time plus
+        that number: the same conversation continues with more room, rather
+        than a new clock starting at zero.
+        """
+        self._budget_s = self._active_s + float(max(0, balance_s))
+        if self.remaining_s <= 0:
+            await self.publish_now()
+            return False
+        self._out_of_minutes = False
+        self._held_at = None
+        if self.remaining_s > self._nudge_s:
+            # A fresh pack earns a fresh nudge.
+            self._nudged = False
+            self._nudge_held = False
+        await self.publish_now()
+        return True
 
     # --- the loop --------------------------------------------------------
 
@@ -168,8 +206,7 @@ class SessionClock:
                 if self._last_tick_at is not None and not self._is_paused():
                     self._active_s += now - self._last_tick_at
                 self._last_tick_at = now
-                await self._fire_tick()
-                await self._evaluate()
+                await self._evaluate(now)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -177,75 +214,94 @@ class SessionClock:
             # simply runs unmetered and the shutdown path still bills it.
             logger.exception("session clock stopped unexpectedly")
 
-    async def _fire_tick(self) -> None:
-        """Hand the active elapsed time to whoever rides on it (the arc).
-
-        Guarded like every other callback: a subscriber that raises must not
-        stop the clock, because the clock is what ends the session.
-        """
-        if self._on_tick is None:
+    async def _evaluate(self, now: float) -> None:
+        if self._out_of_minutes:
+            # Held at zero. Nothing accrues; the only question left is whether
+            # the learner is coming back.
+            if self._held_at is not None and now - self._held_at >= self._idle_timeout_s:
+                await self._idle_end()
             return
-        try:
-            await self._on_tick(self.elapsed_s)
-        except Exception:
-            logger.exception("clock tick subscriber failed")
 
-    async def _evaluate(self) -> None:
         remaining = self.remaining_s
 
         if remaining <= 0:
-            await self._publish_now()
-            await self._end()
+            await self._hold_at_zero(now)
             return
 
-        if not self._warned and remaining <= self._warning_s:
-            self._warned = True
-            await self._publish_now()
+        if not self._nudged and remaining <= self._nudge_s:
+            self._nudged = True
+            await self.publish_now()
             if self._is_paused():
                 # Nobody is listening. Hold it for the resume.
-                self._warning_held = True
-                logger.info("wrap-up brief held: session is paused")
+                self._nudge_held = True
+                logger.info("nudge held: session is paused")
             else:
-                await self._fire_warning()
+                await self._fire_nudge()
             return
 
-        if time.monotonic() - self._last_publish_at >= self._publish_interval_s:
-            await self._publish_now()
+        if now - self._last_publish_at >= self._publish_interval_s:
+            await self.publish_now()
 
-    async def _publish_now(self) -> None:
+    async def publish_now(self) -> None:
         self._last_publish_at = time.monotonic()
         try:
-            await self._publish(self.minutes_left)
+            await self._publish(int(self.elapsed_s), int(self.remaining_s), self._out_of_minutes)
         except Exception:
-            logger.warning("failed to publish minutes left", exc_info=True)
+            logger.warning("failed to publish the clock", exc_info=True)
 
-    async def _fire_warning(self) -> None:
-        logger.info("one minute left: sending the wrap-up brief")
+    async def _fire_nudge(self) -> None:
+        logger.info("nudge sent", extra={"remaining_s": int(self.remaining_s)})
         try:
-            await self._on_warning()
+            await self._on_nudge()
         except Exception:
-            logger.exception("wrap-up brief failed")
+            logger.exception("nudge failed")
 
-    async def _end(self) -> None:
+    async def _hold_at_zero(self, now: float) -> None:
+        self._out_of_minutes = True
+        self._held_at = now
+        self._nudge_held = False
+        logger.info("out of minutes: holding", extra={"seconds_billed": self.seconds_billed})
+        try:
+            await self._on_zero()
+        except Exception:
+            logger.exception("out-of-minutes hold failed")
+        await self.publish_now()
+
+    async def _idle_end(self) -> None:
         if self._ended:
             return
         self._ended = True
-        logger.info("session time elapsed", extra={"minutes_billed": self.minutes_billed})
+        logger.info(
+            "out of minutes: idle timeout, ending the session",
+            extra={"seconds_billed": self.seconds_billed},
+        )
         try:
-            await self._on_end()
+            await self._on_idle_end()
         except Exception:
             logger.exception("session end sequence failed")
 
 
-def report_minutes_billed(user_id: str | None, minutes: int, room: str) -> None:
+async def report_seconds_billed(
+    billing: BillingClient | None,
+    user_id: str | None,
+    seconds: int,
+    room: str,
+) -> None:
     """The ledger seam: what this session owes, reported once at teardown.
 
-    TODO(phase 5, minutes): POST this to the signed Convex HTTP action — the
-    only writer of debit rows (see plans/phases/phase-5-product-shell.md).
-    Until it exists this logs, so the number is already in the record and the
-    call site never has to move.
+    The number is the session's CUMULATIVE active seconds; the Convex action is
+    idempotent per (room, seq) and debits only the delta since the last report,
+    so reporting the same total twice is free and reporting a total after a
+    mid-session debit charges exactly the difference.
+
+    Retried once, because this is the last chance to bill the session, and
+    never raised: a failed debit is a logged fact, not a crash on the way out.
     """
     logger.info(
-        "session minutes billed",
-        extra={"user_id": user_id, "minutes": minutes, "room": room},
+        "session seconds billed",
+        extra={"user_id": user_id, "seconds": seconds, "room": room},
     )
+    if billing is None or not billing.enabled:
+        return
+    if await billing.debit(seconds) is None:
+        await billing.debit(seconds)

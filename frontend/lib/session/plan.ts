@@ -72,6 +72,39 @@ export function tensesFor(language: string = TARGET_LANGUAGE): PlanOption[] {
 }
 
 /**
+ * Display names for the languages we can be configured for. The pre-flight
+ * says the name out loud ("Where are you with Spanish right now?"), and a
+ * hardcoded "Spanish" in that sentence is exactly the architectural
+ * Spanish-ness the vision doc rules out (decision #3, 2026-08-06).
+ */
+export const LANGUAGE_NAMES: Record<string, string> = {
+  es: "Spanish",
+  en: "English",
+}
+
+export const TARGET_LANGUAGE_NAME =
+  LANGUAGE_NAMES[TARGET_LANGUAGE] ?? TARGET_LANGUAGE
+
+/**
+ * The example that makes "anything you want the tutor to push you on?" a real
+ * question rather than an empty box — necessarily language-specific, so it
+ * lives in a per-language catalog like the forms above rather than inline in
+ * the component.
+ */
+export const FOCUS_NOTE_PLACEHOLDER_BY_LANGUAGE: Record<string, string> = {
+  es: "e.g. when to use he comido vs comí",
+}
+
+export function focusNotePlaceholder(
+  language: string = TARGET_LANGUAGE
+): string {
+  return (
+    FOCUS_NOTE_PLACEHOLDER_BY_LANGUAGE[language] ??
+    "e.g. a form you always get wrong"
+  )
+}
+
+/**
  * The level values, as literal types. This is the catalog's one home: the
  * Convex argument validator (`convex/validators.ts`) is built from these very
  * strings, so a level the UI can offer is a level the database will accept and
@@ -106,6 +139,8 @@ export const EMPTY_PLAN: SessionPlan = {
   scenario: null,
   topic: null,
   tenses: [],
+  focusNote: null,
+  note: null,
   vocab: [],
   level: DEFAULT_LEVEL,
 }
@@ -122,8 +157,13 @@ export const EMPTY_PLAN: SessionPlan = {
  * the route calls `boundPlan`, the UI enforces the same caps as input limits.
  */
 export const PLAN_LIMITS = {
-  topicChars: 120,
+  topicChars: 140,
   scenarioChars: 80,
+  // The two open notes are sentences, not essays — long enough for "when to
+  // use he comido vs comí", short enough that nobody writes the tutor's
+  // prompt for it.
+  focusNoteChars: 140,
+  noteChars: 140,
   levelChars: 60,
   tenseChars: 40,
   maxTenses: 6,
@@ -165,6 +205,8 @@ export function boundPlan(input: unknown): SessionPlan {
       PLAN_LIMITS.maxTenses,
       PLAN_LIMITS.tenseChars
     ),
+    focusNote: boundString(raw.focusNote, PLAN_LIMITS.focusNoteChars),
+    note: boundString(raw.note, PLAN_LIMITS.noteChars),
     vocab: boundList(raw.vocab, PLAN_LIMITS.maxVocab, PLAN_LIMITS.vocabChars),
     level: boundString(raw.level, PLAN_LIMITS.levelChars),
   }
@@ -204,6 +246,11 @@ export function suggestPlan(
     scenario: pick(SCENARIOS).value,
     topic: null,
     tenses: focus,
+    // A suggestion fills the choices, never the open notes: inventing a
+    // sentence the learner did not say and handing it to the tutor as
+    // "what they asked about" would be a lie.
+    focusNote: null,
+    note: null,
     vocab: [pick(SUGGESTED_VOCAB)],
     level: level ?? DEFAULT_LEVEL,
   }

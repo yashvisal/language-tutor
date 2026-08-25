@@ -38,7 +38,7 @@ import { useCallback, useEffect, useRef, type ReactNode } from "react"
 import { AnimatePresence, motion } from "motion/react"
 
 import { StudyOverlay } from "@/components/session/study-overlay"
-import { MinutesPill } from "@/components/session/minutes-pill"
+import { SessionClock } from "@/components/session/session-clock"
 import { Caret, HeroWords } from "@/components/session/hero-utterance"
 import { SettledText } from "@/components/session/correction-mark"
 import { SessionControls } from "@/components/session/session-controls"
@@ -101,10 +101,17 @@ export interface ConversationStageProps {
    */
   interimSegmentId?: string
   /**
-   * Minutes the worker says remain. Absent (replay, or a worker with no clock)
-   * means no pill at all — see `MinutesPill`.
+   * The meter, as the worker publishes it. Absent (replay, or a worker with no
+   * clock) means no pill at all — see `SessionClock`.
    */
-  minutesLeft?: number | null
+  elapsedSeconds?: number | null
+  remainingSeconds?: number | null
+  /**
+   * The balance ran out and the worker is holding the conversation. The study
+   * surface says so and stops offering to resume; nothing else changes, because
+   * nothing else has: the conversation is still there.
+   */
+  outOfMinutes?: boolean
   /**
    * Translates a selected span. Omitted where nothing can answer — the overlay
    * simply never opens then, rather than opening onto an error.
@@ -135,7 +142,9 @@ export function ConversationStage({
   onToggleMute,
   onEnd,
   interimSegmentId,
-  minutesLeft,
+  elapsedSeconds,
+  remainingSeconds,
+  outOfMinutes = false,
   translate,
   study,
   focusTenses,
@@ -385,6 +394,7 @@ export function ConversationStage({
             // Closing is resuming ("close and resume"), so it drops every hold,
             // not just this one — the surface must never close onto a session
             // that is still held by something the learner can no longer see.
+            outOfMinutes={outOfMinutes}
             onClose={() => holds.forEach(release)}
             restoreFocusTo={studyTrigger}
           />
@@ -406,7 +416,11 @@ export function ConversationStage({
       )}
 
       <div inert={studyOpen}>
-        <MinutesPill minutesLeft={minutesLeft ?? null} />
+        <SessionClock
+          elapsedSeconds={elapsedSeconds ?? null}
+          remainingSeconds={remainingSeconds ?? null}
+          held={paused}
+        />
         <SessionControls
           paused={paused}
           studyOpen={studyOpen}
@@ -418,7 +432,12 @@ export function ConversationStage({
           // the same thing about either pause. Resuming drops every hold —
           // including a `control` hold the producer adopted from an agent that
           // reconnected paused, which has no surface of its own.
-          onTogglePause={() => (paused ? holds.forEach(release) : openStudy())}
+          // Out of minutes there is nothing to resume to, so the gesture only
+          // opens the surface that says so. (A resume RPC would be harmless —
+          // the worker stays held — but offering it would be a lie.)
+          onTogglePause={() =>
+            paused && !outOfMinutes ? holds.forEach(release) : openStudy()
+          }
           onEnd={onEnd}
         />
       </div>

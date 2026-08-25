@@ -26,13 +26,11 @@ the study surface (while held — voice is idle and unbilled)
   └─ per question                      → Luna, coaching persona, invisible cap
 
 the session clock (authoritative)
-  ├─ every tick                        → active seconds → the session arc
-  ├─ every 30s                         → tutor.minutes_left
-  ├─ ~60s left                         → wrap-up brief to the tutor
-  └─ zero                              → goodbye, tutor.session_over, disconnect
-
-the session arc (1/4/4/1 of the budget)
-  └─ each phase boundary               → Agent.update_instructions() (never an interruption)
+  ├─ every 5s unheld, and on every hold/resume → tutor.elapsed_s / tutor.remaining_s
+  ├─ 30s left                          → nudge brief to the tutor (finish the thought)
+  ├─ zero                              → debit, then HOLD (tutor.out_of_minutes) — no ending
+  ├─ resume while held at zero         → re-read the balance; continue, or stay held
+  └─ 10 min abandoned at zero          → tutor.session_over, disconnect
 ```
 
 Design rules worth keeping:
@@ -60,13 +58,16 @@ Design rules worth keeping:
 - **Facts are stated, never scripted.** Resume briefs say what happened and
   remind the model of its standing instructions. They never contain the line to
   say — that lives in `TUTOR_INSTRUCTIONS` as policy.
-- **The worker owns the phase, not the model.** The arc advances on the
-  clock's active seconds and lands as an instruction update, so a phase change
-  never interrupts a turn and the model never decides for itself that the
-  role-play has started. See "The session arc".
+- **The tutor has ONE standing instruction block.** The timed session arc
+  (frame / guided / scene / debrief) was deleted 2026-08-24: phases riding on
+  elapsed seconds could not see whether the learner had produced a sentence, so
+  consent had to be written into every brief — four English consent gates in the
+  first 90 seconds. The tutor now opens in the target language with one question
+  and supports on evidence. `Agent.update_instructions()` survives as a seam.
 - **The worker owns the clock.** Minutes are money; the browser never decides
-  when a session ends. The worker meters active (unheld) time, publishes what
-  is left, and ends the session itself. See "The session clock".
+  when the time runs out. The worker meters active (unheld) time, publishes what
+  is spent and what is left, and holds the session at zero. See "The session
+  clock".
 - **Study is text; speech is metered.** The pause tabs (Transcript / Review /
   Ask) run entirely on the cheap text model while the realtime model sits idle
   and the clock is stopped. What returns to the voice model on resume is a
@@ -91,9 +92,9 @@ Design rules worth keeping:
 | `src/review.py`    | `tutor.review` RPC: the Review tab's material, made once       |
 | `src/conjugation/` | The deterministic conjugation engine (registry + `es`)         |
 | `src/state.py`     | Pause state (+ what it interrupted) and rolling session facts  |
-| `src/plan.py`      | Dispatch metadata: minutes budget, user, and the session plan   |
-| `src/clock.py`     | The authoritative session clock + the minutes-billed seam       |
-| `src/arc.py`       | The session arc: phase windows, scenario beats, phase changes    |
+| `src/plan.py`      | Dispatch metadata: the balance, the user, and the session plan  |
+| `src/clock.py`     | The authoritative session clock + the seconds-billed seam       |
+| `src/billing.py`   | The Convex ledger's client: `/tutor/debit`, `/tutor/balance`    |
 
 ## Setup
 
@@ -111,6 +112,8 @@ LIVEKIT_URL=wss://<project>.livekit.cloud
 LIVEKIT_API_KEY=...
 LIVEKIT_API_SECRET=...
 OPENAI_API_KEY=...          # realtime model, STT, analyzer, translate
+CONVEX_SITE_URL=https://<deployment>.convex.site   # the ledger's HTTP actions
+TUTOR_DEBIT_SECRET=...      # bearer token for /tutor/debit and /tutor/balance
 
 # optional — defaults shown
 TUTOR_TARGET_LANG=es
@@ -126,6 +129,10 @@ TUTOR_ANALYZER_MODEL=gpt-5.6-luna
 TUTOR_ANALYZER_ENABLED=true
 TUTOR_TRANSLATE_MODEL=gpt-5.6-luna
 ```
+
+Without `CONVEX_SITE_URL` and `TUTOR_DEBIT_SECRET` — or for a session
+dispatched with no `user_id` — the worker skips every ledger call and meters
+against the dispatched `balance_s` alone. Nothing else changes.
 
 `TUTOR_ANALYZER_ENABLED=false` is published to the frontend as the
 `tutor.analyzer` attribute, so the UI skips the analyzing phase rather than
@@ -164,8 +171,11 @@ agent will never join.
 | `tutor.corrections` (text stream)        | One JSON `analysis.complete` payload per settled learner turn   |
 | `tutor.paused` (participant attribute)   | `"true"` / `"false"`                                            |
 | `tutor.analyzer` (participant attribute) | `"on"` / `"off"` — whether corrections are enabled at all       |
-| `tutor.minutes_left` (participant attribute) | Whole minutes remaining, as a string — the balance pill's only source |
-| `tutor.session_over` (participant attribute) | `"true"` once the clock ended the session and the goodbye finished |
+| `tutor.elapsed_s` (participant attribute) | Active seconds so far, as a string — the stopwatch's only source; it stops while held |
+| `tutor.remaining_s` (participant attribute) | `balance_s - elapsed_s`, floored at 0, as a string |
+| `tutor.out_of_minutes` (participant attribute) | `"true"` only while the session is held at zero |
+| `tutor.turn_seq` (participant attribute) | A counter, bumped on every committed learner turn — the UI closes the bubble on it |
+| `tutor.session_over` (participant attribute) | `"true"` immediately before the worker disconnects |
 | `lk.agent.state` (participant attribute) | Agent state, published by the SDK                               |
 | RPC `tutor.pause` / `tutor.resume`       | Frontend → worker, one logical call per state change (retries are idempotent) |
 | RPC `tutor.translate`                    | Frontend → worker, one selected span → its anchor translation   |
@@ -241,7 +251,7 @@ what reaches the voice model is the resume brief, and only the resume brief.
 
 Luna answers through the Responses API at `reasoning.effort: none`, in the
 anchor language, with short target-language examples. Its context is the session
-plan, the current arc phase, `SessionFacts.summary()`, the last ~10 turns of the
+plan, `SessionFacts.summary()`, the last ~10 turns of the
 spoken conversation, and the client-sent thread (last 16 messages, re-trimmed
 worker-side because it is untrusted input on its way into a prompt).
 
@@ -322,7 +332,7 @@ string carrying everything the worker needs to know about *this* session:
 
 ```json
 {
-  "max_minutes": 10,
+  "balance_s": 1380,
   "user_id": "user_2abc...",
   "plan": {
     "topic": "last weekend",
@@ -334,101 +344,67 @@ string carrying everything the worker needs to know about *this* session:
 }
 ```
 
-Every field is optional and the whole payload is parsed defensively in
-`src/plan.py`: an absent, empty, or unparseable payload runs a 10-minute session
-with no plan, and wrong-typed fields are dropped rather than fatal.
-`max_minutes` is clamped to 1–120; plan strings are whitespace-collapsed,
-length-capped, and deduplicated.
+`balance_s` is the learner's balance in seconds at session start — the budget
+the clock meters against. Every field is optional and the whole payload is
+parsed defensively in `src/plan.py`: an absent, empty, or unparseable payload
+runs a 10-minute development session with no plan, and wrong-typed fields are
+dropped rather than fatal. `balance_s` is clamped to 0–86400; plan strings are
+whitespace-collapsed, length-capped, and deduplicated.
 
-The plan feeds four consumers, and each reads it differently:
+The plan feeds three consumers, and each reads it differently:
 
 | Consumer                | What it does with the plan                                    |
 | ----------------------- | ------------------------------------------------------------- |
 | `tutor_instructions`    | A "this session" block: steer towards the topic/scenario, use and elicit the focus forms, work the vocab in — never announced, never a drill. An empty plan asks the tutor to suggest something light itself. |
-| `arc.py` (the session arc) | Picks the scene's beats from the scenario (or the topic, or a generic fallback) and names the situation in every phase brief. |
-| `greeting_instructions` | With a scenario, the tutor opens *inside* it (it plays its side of the scene lightly); with a topic, it opens on the topic; otherwise the standing greeting. |
+| `greeting_instructions` | With a scenario, the tutor opens *inside* it in the target language, with one easy question; with a topic, it opens on the topic. With no plan it asks — in the anchor language, the one anchor-language opening left — what they want to talk about, and the answer becomes the subject. |
 | `analyzer_instructions` | A focus note: weight corrections towards the focus tenses and vocab, still report clear errors elsewhere. The scenario is deliberately excluded — it tells the tutor who to be, not the analyzer what to look at. |
 
 Tense names and vocab themes are opaque strings chosen by the frontend for the
 configured target language and passed straight through. Nothing here is
 Spanish-specific.
 
-## The session arc
-
-Straight role-play for a whole session is bad pedagogy, and a realtime model
-asked to sustain one rambles to fill the time. So a session is a gradual
-release through four phases, proportioned **1 / 4 / 4 / 1** of `max_minutes`
-(a two-minute test session walks all four in the same proportions):
-
-| Phase       | Share | Language                                     | What the tutor does                                                                 |
-| ----------- | ----- | -------------------------------------------- | ----------------------------------------------------------------------------------- |
-| **frame**   | 1     | anchor (one modelled target-language line)   | Name the situation and the focus form in a sentence or two, model ONE example, invite ONE try. Applied, never a lecture. |
-| **guided**  | 4     | bilingual, exactly split                      | Hand ONE intent in the anchor language ("tell the waiter you'd like the soup"), the learner produces the target language, the tutor answers in character. "Doing bits together." |
-| **scene**   | 4     | target (anchor only as a short bridge)        | The role-play for real, played through BEATS with natural ends. Entry by consent. The in-scene rule from the plan block applies: be the person, say only their line. |
-| **debrief** | 1     | anchor                                        | Two things that went well, one thing to remember, drawn from `SessionFacts.summary()`. No goodbye — that is the clock's. |
-
-Mechanics, all in `src/arc.py`:
-
-- **Time-driven, on ACTIVE time.** The clock's `on_tick` hands the arc its
-  active (unheld) seconds each tick — one elapsed for billing and for the arc,
-  so they cannot drift. Paused time advances neither.
-- **Transitions are instruction updates.** A boundary rewrites the standing
-  prompt's `CURRENT PHASE` block via `Agent.update_instructions()`, which does
-  not interrupt an in-flight turn: the model picks the new phase up on its next
-  one. Nothing is spoken to force a transition.
-- **Paused at a boundary defers.** The phase change is held and applied on
-  `tutor.resume`, immediately before any re-entry line — the same deferral the
-  clock uses for its wrap-up brief.
-- **Consent lives in the brief, not the worker.** The worker cannot hear the
-  learner say "yes", so the gated phases' briefs carry the whole gate: ask if
-  they are ready; if yes, begin; if they want to skip ahead, skip; if they want
-  to stay, stay a little and move on.
-- **The arc is a guide, never a lock.** Every brief — and the standing
-  instructions — tell the tutor to follow a learner who asks a question,
-  switches language, skips ahead, or wanders off, including mid-scene, and to
-  come back when it is natural.
-- **Beats are backend-side**, keyed by the scenario strings in
-  `frontend/lib/session/plan.ts`. Language-neutral English descriptions the
-  model renders in the target language; an unknown scenario or a free-text
-  topic falls back to a generic three-beat arc (open → develop → close).
-
-Each transition logs `arc phase` with the phase name and the active seconds, so
-the arc is visible in live logs.
-
-The greeting is the frame phase's opener: it keeps its own all-English rule
-(hardened after a live failure — see `GREETING_*` in `prompts.py`), and the
-frame's example-and-one-try follows in the turns after it. At the other end the
-debrief hands off to the clock: it says what went well and stops, and the
-wrap-up brief and the exact-output goodbye close the session.
-
 ## The session clock
 
-The worker's clock is authoritative (phase 4, WS2 — the frontend displays the
-number, it never computes it). `src/clock.py` ticks on an interval and adds each
-elapsed interval to its active time only while the session is unheld — paused
-time is not billed. `minutes_billed` and the session arc's phases both ride that
-accumulated active time:
+Minutes are metered, not scheduled (vision doc, 2026-08-24). The learner arrives
+with a balance in seconds and talks for as long as they want and it allows;
+`src/clock.py` ticks on an interval and adds each elapsed interval to its active
+time only while the session is unheld. The clock is authoritative — the frontend
+displays its numbers and never computes its own.
 
 | Moment                          | What happens                                                |
 | ------------------------------- | ----------------------------------------------------------- |
-| session start (greeting requested) | `tutor.minutes_left` published; the clock starts          |
-| every tick                      | The active elapsed seconds go to `on_tick` — the session arc rides on them |
-| every 30s                       | `tutor.minutes_left` republished (whole minutes, rounded up) |
-| ~60s left                       | A situation brief through the same seam as the resume brief: "about one minute of session time left, bring it to a natural close" — facts, not a script, and it never mentions the clock to the learner |
-| ~60s left **while paused**      | The brief is *held* and delivered on `tutor.resume` instead — nobody hears a wrap-up into a muted session |
-| zero                            | `session.interrupt()`, one short bilingual goodbye (exact-output instruction, like the resume bridge), and the worker waits for it to finish playing |
-| after the goodbye               | `tutor.session_over` = `"true"`, `session.aclose()`, then `ctx.shutdown()` — the learner keeps the room and their post-session surface |
+| session start (greeting requested) | The clock starts; `tutor.elapsed_s` / `tutor.remaining_s` published |
+| every 5s while unheld           | Both republished — a stopwatch counting up, not a countdown |
+| every pause and resume          | Republished immediately, so the stopwatch visibly stops and starts with the hold |
+| 30s left                        | One nudge brief through the same seam as the resume brief: finish the thought, start nothing new, do **not** say goodbye or mention the time — the surface already shows it |
+| 30s left **while paused**       | The nudge is *held* and delivered on `tutor.resume` instead — nobody hears it into a muted session |
+| zero                            | `session.interrupt()`, a debit for the seconds so far, then the **same hold a learner pause takes** plus `tutor.out_of_minutes` = `"true"`. The session does not end. |
+| `tutor.resume` while held at zero | The balance is re-read (`/tutor/balance`, at most once every 5s). More minutes → the budget grows under the same elapsed time and the conversation continues; still zero → the hold stays, acked as `{"paused": true, "resumed": false, "out_of_minutes": true}` |
+| 10 minutes abandoned at zero    | `tutor.session_over` = `"true"`, `session.aclose()`, `ctx.shutdown()` — no goodbye; nobody is there to hear one |
 
 **Pause time is not billed.** The clock accrues only while the session is not
 held — a learner studying a correction is not spending minutes (decision
 2026-08-20, reversing the earlier 'pause billed' call).
 
-At teardown — clock, learner leaving, or a crash — the worker calls
-`report_minutes_billed(user_id, minutes, room)` with the actual minutes used,
-rounded up. Today that only logs `session minutes billed`; it is the seam for
-the signed Convex HTTP action (phase 5) that will be the only writer of ledger
-debit rows. Credit pricing and the economics behind
-`max_minutes` live in `plans/phases/phase-4-sellable-sessions.md`.
+### The ledger seam
+
+`src/billing.py` is the only thing in the worker that talks to Convex, over two
+signed calls (`Authorization: Bearer $TUTOR_DEBIT_SECRET`, against
+`$CONVEX_SITE_URL`):
+
+| Call | Body | Answer |
+| --- | --- | --- |
+| `POST /tutor/debit` | `{"room", "userId", "seconds", "seq"}` | `{"balanceSeconds"}` |
+| `POST /tutor/balance` | `{"userId"}` | `{"balanceSeconds"}` |
+
+`seconds` is always the session's **cumulative** active seconds and `seq`
+increments per call; the action is idempotent per `(room, seq)` and debits only
+the delta since the last report, so the worker never tracks what it has already
+billed. Debits go out at zero (before the hold) and at teardown, where
+`report_seconds_billed()` logs `session seconds billed` and retries once. Every
+failure is logged and swallowed — a ledger write must never reach the
+conversation. Pack pricing lives in
+`plans/phases/phase-6-metered-conversation.md`.
 
 ## Pause semantics
 

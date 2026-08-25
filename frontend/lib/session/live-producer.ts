@@ -51,6 +51,7 @@ import {
   useState,
 } from "react"
 import { ConnectionState, Track, type Room } from "livekit-client"
+import { useMutation } from "convex/react"
 import {
   useAgent,
   useSession,
@@ -60,6 +61,7 @@ import {
   type TrackReference,
 } from "@livekit/components-react"
 
+import { api } from "@/convex/_generated/api"
 import type {
   Correction,
   PauseReason,
@@ -77,6 +79,7 @@ import {
   RPC_METHODS,
   STREAM_ATTRIBUTES,
   TEXT_STREAM_TOPICS,
+  isOutOfMinutes,
   setPendingSessionPlan,
   tutorTokenSource,
 } from "./livekit"
@@ -85,7 +88,6 @@ import {
   ASK_TIMEOUT_MS,
   MAX_RESUME_ASKS,
   REVIEW_TIMEOUT_MS,
-  SESSION_MAX_MINUTES,
   TRANSLATE_TIMEOUT_MS,
 } from "./protocol"
 import type {
@@ -285,6 +287,14 @@ export function attributeCorrections(
   return bySegment
 }
 
+/** A participant attribute holding an integer, or null if it holds anything
+ * else. Clamped at zero: a negative clock is a bug on the wire, not a fact. */
+function intAttribute(value: string | undefined): number | null {
+  if (value === undefined) return null
+  const parsed = Number.parseInt(value, 10)
+  return Number.isNaN(parsed) ? null : Math.max(0, parsed)
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Hook                                                                      */
 /* -------------------------------------------------------------------------- */
@@ -302,11 +312,19 @@ export interface LiveSession {
   connect: (plan: SessionPlan) => void
   disconnect: () => void
   /**
-   * Minutes the worker says remain. Null until the agent publishes the clock —
-   * the surface renders this attribute and never computes it, because the
-   * worker's clock is what actually ends the session.
+   * Seconds of ACTIVE talking so far, as the worker meters them. Null until the
+   * agent publishes the clock — the surface renders this attribute and never
+   * computes it, because the worker's meter is what actually spends the money.
    */
-  minutesLeft: number | null
+  elapsedSeconds: number | null
+  /** Seconds of balance left. Only shown in the last 30 seconds; see the clock. */
+  remainingSeconds: number | null
+  /**
+   * The learner has no minutes. True in both shapes of that fact: the token
+   * route refused to start a session (402), or the worker is holding a live one
+   * at zero. Neither is an error — both are the same screen.
+   */
+  outOfMinutes: boolean
   /** The session that just ended, until the learner starts another. */
   outcome: SessionOutcome | null
   /** Dismiss the summary; the surface returns to the pre-flight. */
@@ -367,33 +385,50 @@ export function useLiveSession(): LiveSession {
   /* -- the clock ---------------------------------------------------------- */
 
   /**
-   * The worker publishes minutes left on start, every 30s, at one minute and at
-   * zero. Anything unparseable is treated as absent: a missing pill is quieter
-   * than a wrong one.
+   * The worker publishes elapsed and remaining seconds together — every 5s
+   * while unheld, and on every pause, resume, nudge and zero. Anything
+   * unparseable is treated as absent: a missing clock is quieter than a wrong
+   * one, and the clock interpolates between these readings itself.
    */
-  const minutesAttribute =
-    agent.attributes?.[PARTICIPANT_ATTRIBUTES.minutesLeft]
-  const parsedMinutes =
-    minutesAttribute === undefined
-      ? null
-      : Number.parseInt(minutesAttribute, 10)
-  const minutesLeft =
-    parsedMinutes === null || Number.isNaN(parsedMinutes)
-      ? null
-      : Math.max(0, parsedMinutes)
+  const elapsedSeconds = intAttribute(
+    agent.attributes?.[PARTICIPANT_ATTRIBUTES.elapsedSeconds]
+  )
+  const remainingSeconds = intAttribute(
+    agent.attributes?.[PARTICIPANT_ATTRIBUTES.remainingSeconds]
+  )
 
   /**
    * The last clock reading, kept because the summary is built at the moment the
    * agent leaves — by which time its attributes have left with it.
    */
-  const minutesSeen = useRef<number | null>(null)
+  const elapsedSeen = useRef<number | null>(null)
   useEffect(() => {
-    if (minutesLeft !== null) minutesSeen.current = minutesLeft
-  }, [minutesLeft])
+    if (elapsedSeconds !== null) elapsedSeen.current = elapsedSeconds
+  }, [elapsedSeconds])
+
+  /**
+   * Zero balance, mid-conversation: the worker holds rather than ends, so this
+   * is a state the session sits in, not a teardown.
+   *
+   * It opens the study surface with a `"history"` hold, which is the same hold
+   * every deliberate stop uses. Deliberate: the out-of-minutes card belongs on
+   * the hold surface (the conversation is still there, still readable, and the
+   * Review tab is what the last minutes were for), and a bare `"control"` hold
+   * would freeze the stage with nothing on top of it to explain why.
+   */
+  const heldAtZero =
+    agent.attributes?.[PARTICIPANT_ATTRIBUTES.outOfMinutes] === ATTRIBUTE_TRUE
+  useEffect(() => {
+    if (!heldAtZero) return
+    dispatch({ type: "session.paused", reason: "history" })
+  }, [heldAtZero])
 
   /* -- ending, and the session that just ended ---------------------------- */
 
   const [outcome, setOutcome] = useState<SessionOutcome | null>(null)
+
+  /** Persists the snapshot below. Declared here so `finish` closes over it. */
+  const recordFinish = useMutation(api.sessions.finish)
 
   /** The plan this room was started with, for the summary. */
   const plan = useRef<SessionPlan | null>(null)
@@ -420,18 +455,36 @@ export function useLiveSession(): LiveSession {
     (endedByClock: boolean) => {
       if (ended.current) return
       ended.current = true
-      const left = minutesSeen.current
-      setOutcome({
+      const talked = elapsedSeen.current
+      const outcome: SessionOutcome = {
         plan: plan.current ?? EMPTY_PLAN,
         // The worker owns the meter; with no reading there is nothing honest
-        // to show, so the summary says nothing about minutes.
-        minutesUsed:
-          left === null ? null : Math.max(0, SESSION_MAX_MINUTES - left),
+        // to show, so the summary says nothing about the time.
+        secondsTalked: talked === null ? null : Math.max(0, talked),
         endedByClock,
         corrections: sessionCorrections(latest.current),
-      })
+      }
+      setOutcome(outcome)
+
+      // …and the same snapshot to Convex, for History on `/home`. The
+      // corrections only ever existed in this browser, so this is the moment
+      // they are persisted or lost. Fire-and-forget on purpose: the summary
+      // the learner is about to read renders from local state, and a failed
+      // write must not take it down. `room.name` is empty on a session that
+      // never connected — nothing to record.
+      const name = room.name
+      if (name) {
+        void recordFinish({
+          room: name,
+          outcome: {
+            corrections: outcome.corrections,
+            secondsTalked: outcome.secondsTalked,
+            endedByClock: outcome.endedByClock,
+          },
+        }).catch(() => {})
+      }
     },
-    [setOutcome]
+    [setOutcome, recordFinish, room]
   )
 
   const clearOutcome = useCallback(() => setOutcome(null), [setOutcome])
@@ -450,9 +503,17 @@ export function useLiveSession(): LiveSession {
   /* -- connect / disconnect ---------------------------------------------- */
 
   const [error, setError] = useState<string | null>(null)
+  /** The token route refused for a zero balance. Not an error message: a state. */
+  const [refused, setRefused] = useState(false)
+
+  /** A start in flight. `useSession` stays Disconnected while the token is
+   * fetched, so nothing upstream can tell a second Start from the first. */
+  const starting = useRef(false)
 
   const connect = useCallback(
     (sessionPlan: SessionPlan) => {
+      if (starting.current) return
+      starting.current = true
       setError(null)
       setOutcome(null)
       // The plan has to reach the token source before `start()` mints the
@@ -461,13 +522,22 @@ export function useLiveSession(): LiveSession {
       plan.current = sessionPlan
       setActivePlan(sessionPlan)
       ended.current = false
-      minutesSeen.current = null
+      elapsedSeen.current = null
+      setRefused(false)
       // The microphone is the whole point of the surface: publish on connect
       // rather than making the learner find a button.
       session
         .start({ tracks: { microphone: { enabled: true } } })
         .catch((err: unknown) => {
+          if (isOutOfMinutes(err)) {
+            setRefused(true)
+            return
+          }
           setError(err instanceof Error ? err.message : String(err))
+        })
+        .finally(() => {
+          // Settled either way: a refused or failed start can be tried again.
+          starting.current = false
         })
     },
     [session, setError, setOutcome]
@@ -1047,7 +1117,9 @@ export function useLiveSession(): LiveSession {
     error,
     connect,
     disconnect,
-    minutesLeft,
+    elapsedSeconds,
+    remainingSeconds,
+    outOfMinutes: refused || heldAtZero,
     outcome,
     clearOutcome,
     muted,

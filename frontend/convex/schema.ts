@@ -1,14 +1,18 @@
 import { defineSchema, defineTable } from "convex/server"
 import { v } from "convex/values"
 
-import { levelValidator, sessionPlanValidator } from "./validators"
+import {
+  levelValidator,
+  sessionOutcomeValidator,
+  sessionPlanValidator,
+} from "./validators"
 
 /**
  * The product shell's four tables. Only `users` and `creditLedger` are written
  * at this step; `sessions` and `purchases` are declared now so the shape is
  * settled in one place and the later steps (minutes, packs) only add writers.
  *
- * The one structural rule: **balance is `sum(creditLedger.minutes)`**, never a
+ * The one structural rule: **balance is `sum(creditLedger.seconds)`**, never a
  * mutable field on `users`. An append-only ledger makes every grant and debit
  * auditable, and `ref` is the idempotency key — a replayed Stripe webhook or a
  * retried worker debit finds its own row and does nothing.
@@ -43,11 +47,16 @@ export default defineSchema({
       v.literal("debit"),
       v.literal("adjustment")
     ),
-    /** Signed: grants are positive, debits negative. */
-    minutes: v.number(),
+    /**
+     * Signed SECONDS: grants are positive, debits negative. Seconds, not
+     * minutes, because the meter bills the seconds actually spoken — see
+     * `lib/billing.ts`.
+     */
+    seconds: v.number(),
     /**
      * Unique per entry by convention, enforced by every writer checking this
-     * index first: `signup:<clerkId>`, a Stripe session id, or a room name.
+     * index first: `signup:<clerkId>`, a Stripe session id, or `<room>:<seq>`
+     * for a worker debit.
      */
     ref: v.string(),
     createdAt: v.number(),
@@ -63,11 +72,28 @@ export default defineSchema({
     startedAt: v.number(),
     // Absent until the worker reports the session finished.
     endedAt: v.optional(v.number()),
-    minutesBilled: v.optional(v.number()),
+    /** Cumulative seconds this room has been billed for; the debit action's
+     * high-water mark, so a re-reported total debits only the delta. */
+    secondsBilled: v.optional(v.number()),
+    /**
+     * How many corrections the analyzer produced, denormalized off `outcome`
+     * so a list of sessions never has to read the corrections to count them.
+     * Rows finished before `outcome` existed still carry only this.
+     */
     corrections: v.optional(v.number()),
+    /**
+     * The finished session, as the summary screen saw it — written once by
+     * `sessions.finish` when the client's `SessionOutcome` is produced. Absent
+     * on a session in progress, and on any session that ended before this
+     * field existed (history is never backfilled with guesses).
+     */
+    outcome: v.optional(sessionOutcomeValidator),
   })
     .index("by_room", ["room"])
-    .index("by_user", ["userId"]),
+    .index("by_user", ["userId"])
+    // History reads one learner's recent sessions newest-first; `by_user`
+    // alone would make it collect a lifetime of rows to show thirty.
+    .index("by_user_startedAt", ["userId", "startedAt"]),
 
   purchases: defineTable({
     userId: v.id("users"),
