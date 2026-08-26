@@ -1,0 +1,71 @@
+# The checks that have to pass before anything merges: the same four commands
+# per half that you run locally (see the README's "Checks" section).
+#
+# `pnpm build` is deliberately NOT here. The build needs real Clerk and Convex
+# environment variables to prerender, so a build job would either fail on every
+# PR or need production secrets exposed to forks. Typecheck, lint and the test
+# suite catch what CI can honestly catch; the build is verified by the deploy.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# One run per ref: a push that supersedes an in-flight run cancels it rather
+# than queueing behind it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+
+      # Version comes from `frontend/package.json`'s `packageManager` field, so
+      # CI and every local machine use the same pnpm.
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: frontend/package.json
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm typecheck
+
+      - run: pnpm lint
+
+      - run: pnpm test
+
+  backend:
+    name: backend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version-file: backend/.python-version
+          enable-cache: true
+
+      - run: uv sync --frozen
+
+      - run: uv run ruff check src tests
+
+      - run: uv run ruff format --check src tests
+
+      - run: uv run pytest -q

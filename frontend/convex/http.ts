@@ -1,4 +1,5 @@
 import { httpRouter } from "convex/server"
+import { verifyWebhook } from "@clerk/backend/webhooks"
 
 import { httpAction } from "./_generated/server"
 import { internal } from "./_generated/api"
@@ -233,6 +234,46 @@ import { parseBalanceBody, parseDebitBody, parseSummaryBody } from "./wire"
  * as an argument rather than from `ctx.auth`, which is only safe behind the
  * token check above.
  *
+ * ## `POST /clerk/webhook` — a different door entirely
+ *
+ * Not part of the worker contract above, and it does not share a single line
+ * of it. The caller is **Clerk**, not the worker; the transport is a **Svix /
+ * Standard Webhooks signature**, not an M2M bearer; the body is Clerk's event
+ * envelope, not ours. It lives in this file because this file is where Convex
+ * HTTP routes live, and nowhere else — read the two halves separately.
+ *
+ * **Why it exists.** Clerk owns identity, so Clerk is the only half that knows
+ * an account is gone. Without this route, deleting a learner at Clerk left
+ * their `users`, `creditLedger` and `sessions` rows here forever (audit B5) —
+ * including the learner speech retained in `sessions.outcome.corrections` and
+ * `sessions.transcript`. The Privacy page promises deletion; this route is how
+ * the promise is kept.
+ *
+ * | | |
+ * |---|---|
+ * | Method | `POST` |
+ * | Auth | `svix-id` / `svix-timestamp` / `svix-signature`, verified against `CLERK_WEBHOOK_SIGNING_SECRET` on the Convex deployment (`npx convex env set`). Verification is `verifyWebhook` from `@clerk/backend/webhooks` — HMAC-SHA256 over `<id>.<timestamp>.<body>`, constant-time compare, 5-minute timestamp tolerance. |
+ * | Endpoint to register | `<convex site url>/clerk/webhook`, subscribed to `user.deleted`. |
+ *
+ * Responses:
+ *
+ * | status | body | meaning |
+ * |--------|------|---------|
+ * | `200`  | `{ "ok": true }` | Verified. Either the deletion was scheduled, or the event was not one we act on — Clerk is told the same thing either way, because an event we ignore is not a delivery failure. |
+ * | `400`  | `{ "error": "<why>" }` | Verified, but the envelope is unusable (a `user.deleted` with no `data.id`, or a body over the ceiling). |
+ * | `401`  | `{ "error": "unauthorized" }` | Missing or bad signature — **or `CLERK_WEBHOOK_SIGNING_SECRET` unset**. A deployment that cannot verify accepts nothing; the same fail-closed rule as the M2M routes. |
+ *
+ * `user.deleted` runs `internal.users.deleteByClerkId` with `data.id` — the
+ * Clerk id, which is what `users.clerkId` is keyed on. That mutation is
+ * idempotent (an unknown id is a `200` and a no-op) and self-rescheduling in
+ * batches, so a re-delivery is harmless and a heavy account still completes.
+ * **Every other event type is a `200` and nothing else**, so subscribing the
+ * endpoint to more events by accident cannot break it.
+ *
+ * Nothing from the payload is logged beyond the event type and the Clerk id:
+ * a Clerk event envelope carries email addresses and profile data, and this
+ * deployment's logs are not the place for them.
+ *
  * ## Where the rules live
  *
  * This file is the contract and the runtime: the token check, the body-size
@@ -257,6 +298,12 @@ const MAX_BODY_BYTES = 4096
  * debit route's 4 KB to fit a transcript would widen the smaller, more
  * valuable seam for nothing. */
 const MAX_SUMMARY_BODY_BYTES = 262144
+
+/** `/clerk/webhook`'s ceiling. Clerk's event envelopes are a few KB and the
+ * signature is over the exact bytes, so this can only be checked against the
+ * declared `Content-Length` before `verifyWebhook` consumes the body — a
+ * ceiling on absurdity rather than a tight bound. */
+const MAX_WEBHOOK_BODY_BYTES = 65536
 
 const encoder = new TextEncoder()
 
@@ -403,9 +450,66 @@ const summary = httpAction(async (ctx, request) => {
   return ok({ ok: true })
 })
 
+/**
+ * Clerk's `user.deleted`, and the reason the Privacy page can promise
+ * deletion. See the contract section above; the two things worth repeating
+ * here are that the secret is read per request (a rotated one takes effect
+ * without a redeploy, and a deployment missing it fails closed on every call
+ * rather than on whichever call booted the isolate), and that a verified
+ * event we do not act on is still a `200` — telling Clerk "failed" for an
+ * event we simply ignore would make it retry forever.
+ */
+const clerkWebhook = httpAction(async (ctx, request) => {
+  const signingSecret = process.env.CLERK_WEBHOOK_SIGNING_SECRET
+  if (!signingSecret) {
+    console.error("/clerk/webhook: CLERK_WEBHOOK_SIGNING_SECRET is not set")
+    return unauthorized()
+  }
+
+  // The one bound that can be checked without consuming the body — which
+  // `verifyWebhook` needs whole, because the signature is over the exact
+  // bytes. Clerk's envelopes are a few KB; this is only a ceiling on absurdity.
+  const declared = Number(request.headers.get("Content-Length") ?? "")
+  if (Number.isFinite(declared) && declared > MAX_WEBHOOK_BODY_BYTES) {
+    return badRequest("body too large")
+  }
+
+  let event
+  try {
+    event = await verifyWebhook(request, { signingSecret })
+  } catch (error) {
+    // Server-side only, and deliberately just the reason: an unverified body
+    // is a stranger's, and nothing in it belongs in these logs.
+    console.error("/clerk/webhook: signature verification failed", error)
+    return unauthorized()
+  }
+
+  if (event.type !== "user.deleted") {
+    // Verified and uninteresting. Acknowledged so Clerk stops retrying it.
+    console.log(`/clerk/webhook: ignoring ${event.type}`)
+    return ok({ ok: true })
+  }
+
+  const clerkId = event.data.id
+  if (typeof clerkId !== "string" || clerkId.length === 0) {
+    // Clerk types `data.id` as optional on the deleted-object envelope. A
+    // delete with nothing to delete is malformed, not something to retry.
+    console.error("/clerk/webhook: user.deleted with no id")
+    return badRequest("user.deleted is missing data.id")
+  }
+
+  // The type and the id, and nothing else — see the contract note on logging.
+  console.log(`/clerk/webhook: user.deleted ${clerkId}`)
+  await ctx.runMutation(internal.users.deleteByClerkId, { clerkId })
+  return ok({ ok: true })
+})
+
 const http = httpRouter()
 http.route({ path: "/tutor/debit", method: "POST", handler: debit })
 http.route({ path: "/tutor/balance", method: "POST", handler: balance })
 http.route({ path: "/tutor/summary", method: "POST", handler: summary })
+// Not an M2M route: Svix-signed by Clerk, and the only one here whose caller
+// is not the worker.
+http.route({ path: "/clerk/webhook", method: "POST", handler: clerkWebhook })
 
 export default http

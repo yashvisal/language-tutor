@@ -115,20 +115,67 @@ keep the quotes. Rotating the instance's signing key means setting this again:
 because verification is offline there is no JWKS cache to expire on its own, and
 until the var is updated every worker token is refused.
 
+### Account deletion: `CLERK_WEBHOOK_SIGNING_SECRET`
+
+| var (on the Convex deployment)  | what it is                                                                                                                       |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `CLERK_WEBHOOK_SIGNING_SECRET`  | `whsec_…` — the Svix signing secret for the Clerk webhook endpoint below. `POST /clerk/webhook` answers `401` to everything while it is unset. |
+
+Clerk owns identity, so Clerk is the only half that knows an account is gone.
+`POST /clerk/webhook` (in `convex/http.ts`, its own section of the contract
+block) is the route that hears it: on `user.deleted` it runs
+`internal.users.deleteByClerkId`, which removes the learner's `creditLedger`
+rows, their `sessions` rows — transcripts and corrections included — and the
+`users` row, in batches that reschedule until the account is drained. Every
+other event type is acknowledged and ignored.
+
+This is the one route here that is **not** M2M: the transport is a Svix
+signature (`svix-id` / `svix-timestamp` / `svix-signature`), verified with
+`verifyWebhook` from `@clerk/backend/webhooks`. Set it up per Clerk instance:
+
+1. Clerk dashboard -> **Webhooks** -> **Add Endpoint**.
+2. Endpoint URL: `<convex site url>/clerk/webhook` — the **site** URL
+   (`https://<deployment>.convex.site`), not the `.convex.cloud` API one. Print
+   it with `npx convex env get CONVEX_SITE_URL`, or read it off the Convex
+   dashboard.
+3. Subscribe to **`user.deleted`** (and nothing else — the route ignores the
+   rest anyway, and a narrow subscription is one less payload in the logs).
+4. Copy the endpoint's **Signing Secret** (`whsec_…`) and set it:
+
+```shell
+npx convex env set CLERK_WEBHOOK_SIGNING_SECRET whsec_...
+```
+
+Without it the route fails closed — `401`, nothing deleted — which is the
+correct behaviour for a deployment that cannot tell Clerk from a stranger, but
+it also means account deletion silently does nothing until the secret is set.
+Verify with the dashboard's **Send test event** after setting it.
+
 ## The money seam
 
 Three pieces, and they only work together:
 
 **`POST /api/token`** is the only gate. It authenticates with Clerk, reads the
-balance, refuses a zero one with **402** and a learner who already has a
-conversation open with **409**, mints the room and the participant identity
-itself (the request body is read for `session_plan` and nothing else), signs
+balance, refuses a zero one with **402**, a learner who already has a
+conversation open with **409**, and a learner who has started more than
+`MAX_STARTS_PER_HOUR` (12) conversations in the last rolling hour with **429**
+`{ code: "rate_limited" }` — the free grant is per Clerk id, and without that
+ceiling a script mints rooms until the grants run out (audit B12). The limit is
+counted in `sessions.start` off the `by_user_startedAt` index, after the
+open-session check, so a second tab still hears "already open". Its half of the
+fix that is not code is at Clerk: bot protection and required email
+verification on the production instance. It mints the room and the participant
+identity itself (the request body is read for `session_plan` and nothing else),
+signs
 the learner's Clerk id and balance into the agent's dispatch metadata, and only
 then writes the `sessions` row the worker will debit against.
 
 **`convex/http.ts`** is the worker's three routes — `POST /tutor/debit`,
 `POST /tutor/balance` and `POST /tutor/summary`, all behind the Clerk M2M
-token check in `convex/m2m.ts`, all machine-to-machine with no CORS.
+token check in `convex/m2m.ts`, all machine-to-machine with no CORS. (The
+fourth route in that file, `POST /clerk/webhook`, is not part of this seam: its
+caller is Clerk, its transport is a Svix signature, and it spends nothing —
+see "Account deletion" above.)
 **The comment block at the top of that file is the wire contract**: exact paths,
 field names, types, bounds and status codes, written for whoever is on the
 Python side. Read it before changing either half. `http.ts` itself keeps only

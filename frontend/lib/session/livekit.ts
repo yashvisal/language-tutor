@@ -47,6 +47,19 @@ export const OPEN_SESSION_MESSAGE =
   "You already have a conversation open in another tab. End it there, or wait a moment."
 
 /**
+ * What a 429 from the token route says out loud.
+ *
+ * Same shape as the 409 above — prose, not a code, because there is no screen
+ * and nothing to buy — but a different fact: `sessions.start` refuses once a
+ * learner has started `MAX_STARTS_PER_HOUR` conversations inside an hour. The
+ * limit exists to stop a script burning free grants (audit B12), so the
+ * sentence has to be readable by the one legitimate learner who ever sees it:
+ * it says what happened and that waiting fixes it, and it does not accuse.
+ */
+export const RATE_LIMITED_MESSAGE =
+  "You've started a lot of conversations in the last hour. Give it a little while."
+
+/**
  * The Clerk session behind the tab expired between loading the page and
  * pressing Start. Not a fault and not something a retry fixes — the learner
  * has to sign in again — so it travels as prose with an action beside it
@@ -92,7 +105,8 @@ export interface StartFailure {
  * pass through untouched and only pick up an action.
  *
  * Deliberately NOT here: the 402, which is a screen (`isOutOfMinutes`), and
- * the 409, which is already a whole sentence (`OPEN_SESSION_MESSAGE`).
+ * the 409 and 429, which are already whole sentences (`OPEN_SESSION_MESSAGE`,
+ * `RATE_LIMITED_MESSAGE`).
  */
 export function describeStartError(error: unknown): StartFailure {
   switch (deviceFailure(error)) {
@@ -110,7 +124,11 @@ export function describeStartError(error: unknown): StartFailure {
   }
   // Our own prose — the 409 sentence, the 5xx line — reaches the learner as
   // written. Anything else is an SDK string, and an SDK string is not English.
-  if (message === OPEN_SESSION_MESSAGE || message === SERVER_ERROR_MESSAGE) {
+  if (
+    message === OPEN_SESSION_MESSAGE ||
+    message === RATE_LIMITED_MESSAGE ||
+    message === SERVER_ERROR_MESSAGE
+  ) {
     return { message, action: null }
   }
   return { message: START_FAILED_MESSAGE, action: null }
@@ -172,6 +190,9 @@ export const tutorTokenSource = TokenSource.literal(async () => {
   // and both would spend the same balance (see `sessions.start`). Nothing to
   // retry until they end it, so this is prose rather than a status code.
   if (response.status === 409) throw new Error(OPEN_SESSION_MESSAGE)
+  // Nor is this: the learner has started too many conversations in the last
+  // hour. Nothing to retry until the window rolls, so prose again.
+  if (response.status === 429) throw new Error(RATE_LIMITED_MESSAGE)
   // The Clerk session died under the tab. `route.ts` answers 401 for exactly
   // that, and "Try again" was the wrong advice: retrying signs nobody in.
   if (response.status === 401) throw new Error(SIGNED_OUT_MESSAGE)

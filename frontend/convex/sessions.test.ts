@@ -8,8 +8,11 @@ import type { sessionPlanValidator } from "./validators"
 import {
   DELTA_CAP_PREFIX,
   MAX_DELTA_PER_CALL_S,
+  MAX_STARTS_PER_HOUR,
   OPEN_SESSION_PREFIX,
   OPEN_SESSION_WINDOW_MS,
+  RATE_LIMIT_PREFIX,
+  START_WINDOW_MS,
 } from "../lib/billing"
 
 /**
@@ -196,6 +199,115 @@ describe("sessions.start", () => {
       .mutation(api.sessions.start, { room: "room-b", plan: PLAN })
 
     expect(await sessionsOf(t, userB)).toHaveLength(1)
+  })
+})
+
+/**
+ * The hourly start limit (audit B12).
+ *
+ * The grant is per Clerk id and signup is instant, so the only thing between
+ * a script and N accounts x ten free minutes is how fast one account can mint
+ * rooms. These tests are written as the two populations the number has to
+ * separate: a learner who really does start a dozen conversations, and one
+ * who is not a learner.
+ *
+ * Every start here is closed before the next, so what is being tested is the
+ * rate limit and never the one-open-session guard sitting in front of it.
+ */
+describe("sessions.start rate limit", () => {
+  /** Start a conversation and close it, the way a learner who finishes one and
+   * begins another leaves the table. */
+  async function startAndEnd(t: TestConvex, clerkId: string, room: string) {
+    await t
+      .withIdentity({ subject: clerkId })
+      .mutation(api.sessions.start, { room, plan: PLAN })
+    await t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("sessions")
+        .withIndex("by_room", (q) => q.eq("room", room))
+        .unique()
+      await ctx.db.patch(row!._id, { endedAt: Date.now() })
+    })
+  }
+
+  test("allows the whole hour's allowance and refuses the one after it", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+
+    for (let i = 0; i < MAX_STARTS_PER_HOUR; i++) {
+      await startAndEnd(t, "user_owner", `room-${i}`)
+    }
+    // The limit is a ceiling on a *scripted* rate, so the last legitimate
+    // start has to land: a learner retrying a failed connect a few times must
+    // never meet it.
+    expect(await sessionsOf(t, userId)).toHaveLength(MAX_STARTS_PER_HOUR)
+
+    await expect(
+      t
+        .withIdentity({ subject: "user_owner" })
+        .mutation(api.sessions.start, { room: "room-over", plan: PLAN })
+    ).rejects.toThrow(new RegExp(RATE_LIMIT_PREFIX))
+    // Refused means nothing written: a refused start must not itself count
+    // toward the window, or the limit would never lift.
+    expect(await sessionsOf(t, userId)).toHaveLength(MAX_STARTS_PER_HOUR)
+  })
+
+  test("starts older than the window do not count", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+
+    // A full allowance, but yesterday's. The window rolls; it is not a quota.
+    const old = Date.now() - START_WINDOW_MS - 60_000
+    await t.run(async (ctx) => {
+      for (let i = 0; i < MAX_STARTS_PER_HOUR; i++) {
+        await ctx.db.insert("sessions", {
+          userId,
+          room: `old-${i}`,
+          plan: PLAN,
+          startedAt: old,
+          endedAt: old + 60_000,
+        })
+      }
+    })
+
+    await t
+      .withIdentity({ subject: "user_owner" })
+      .mutation(api.sessions.start, { room: "room-today", plan: PLAN })
+    expect(await sessionsOf(t, userId)).toHaveLength(MAX_STARTS_PER_HOUR + 1)
+  })
+
+  test("one learner's starts are not counted against another's", async () => {
+    const t = setup()
+    await makeLearner(t, "user_a")
+    const userB = await makeLearner(t, "user_b")
+
+    for (let i = 0; i < MAX_STARTS_PER_HOUR; i++) {
+      await startAndEnd(t, "user_a", `a-${i}`)
+    }
+
+    // The limit is per learner, and it is read off `by_user_startedAt` with
+    // the user id fixed — a busy neighbour cannot lock anyone else out.
+    await t
+      .withIdentity({ subject: "user_b" })
+      .mutation(api.sessions.start, { room: "b-0", plan: PLAN })
+    expect(await sessionsOf(t, userB)).toHaveLength(1)
+  })
+
+  test("a second tab still hears 'already open', not the limit", async () => {
+    const t = setup()
+    await makeLearner(t, "user_owner")
+
+    // The allowance is exactly used up AND the last one is still running.
+    // Both refusals apply; the learner must get the one they can act on.
+    for (let i = 0; i < MAX_STARTS_PER_HOUR - 1; i++) {
+      await startAndEnd(t, "user_owner", `room-${i}`)
+    }
+    const as = t.withIdentity({ subject: "user_owner" })
+    await as.mutation(api.sessions.start, { room: "room-open", plan: PLAN })
+
+    await expect(
+      as.mutation(api.sessions.start, { room: "room-next", plan: PLAN })
+    ).rejects.toThrow(new RegExp(OPEN_SESSION_PREFIX))
   })
 })
 

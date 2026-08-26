@@ -1,12 +1,14 @@
 import { v } from "convex/values"
 
 import {
+  internalMutation,
   internalQuery,
   mutation,
   query,
   type MutationCtx,
   type QueryCtx,
 } from "./_generated/server"
+import { internal } from "./_generated/api"
 import type { Doc } from "./_generated/dataModel"
 import { ledgerKindValidator, levelValidator } from "./validators"
 import { minutesFromSeconds, SIGNUP_GRANT_SECONDS } from "../lib/billing"
@@ -224,5 +226,83 @@ export const balanceByClerkId = internalQuery({
     const user = await userByClerkId(ctx, args.clerkId)
     if (user === null) return { balanceSeconds: 0 }
     return { balanceSeconds: await secondsFor(ctx, user._id) }
+  },
+})
+
+/* -------------------------------------------------------------------------- */
+/*  Account deletion                                                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * How many rows of one table one call may delete.
+ *
+ * A Convex mutation is a transaction with a bounded read/write budget, so
+ * "delete everything this learner ever wrote" is not one call — a heavy user
+ * has thousands of ledger rows. The batch is deliberately well under the
+ * limit and the mutation re-schedules itself until there is nothing left, so
+ * deletion completes for an account of any size instead of failing at the one
+ * size that matters most.
+ */
+const DELETE_BATCH = 200
+
+/**
+ * Erase a learner, by their Clerk id. The Convex half of account deletion.
+ *
+ * Called only from `POST /clerk/webhook` (`convex/http.ts`) on Clerk's
+ * `user.deleted` event, which is the only place that knows the account is
+ * gone: Clerk owns identity, and before this route existed deleting a Clerk
+ * user left the `users`, `creditLedger` and `sessions` rows here forever
+ * (audit B5). The Privacy page promises deletion; this is the promise.
+ *
+ * Internal, and it must stay internal: it takes the id to erase as an
+ * argument rather than from `ctx.auth`, which is only safe behind a verified
+ * Clerk webhook signature.
+ *
+ * **Idempotent.** An id with no row is a no-op, not an error — Clerk retries a
+ * webhook it did not get a 2xx for, and the second delivery of a delete that
+ * already succeeded must be a success too.
+ *
+ * **Bounded, and it finishes.** Up to `DELETE_BATCH` rows per table per call;
+ * if either table filled its batch there may be more, so it schedules itself
+ * again and leaves the `users` row in place. The `users` row is deleted last
+ * and only on the pass that drains both tables, so the row is also the marker
+ * for "this deletion is still in flight" — a crash between batches leaves an
+ * account that a re-delivery (or the next `user.deleted`) can still find.
+ *
+ * **`purchases` is not swept here** because nothing writes it yet: the Stripe
+ * rail is phase 8. Whoever adds the first writer adds the third batch here,
+ * and the test below is where they will notice they have to.
+ */
+export const deleteByClerkId = internalMutation({
+  args: { clerkId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const user = await userByClerkId(ctx, args.clerkId)
+    // Unknown id: nothing to do, and that is a success. See the note above.
+    if (user === null) return null
+
+    const ledger = await ctx.db
+      .query("creditLedger")
+      .withIndex("by_user", (q) => q.eq("userId", user._id))
+      .take(DELETE_BATCH)
+    for (const entry of ledger) await ctx.db.delete(entry._id)
+
+    const sessions = await ctx.db
+      .query("sessions")
+      .withIndex("by_user", (q) => q.eq("userId", user._id))
+      .take(DELETE_BATCH)
+    for (const session of sessions) await ctx.db.delete(session._id)
+
+    if (ledger.length === DELETE_BATCH || sessions.length === DELETE_BATCH) {
+      // A full batch means there may be more. `runAfter(0, ...)` is scheduled
+      // inside this transaction, so it is committed with the deletions or not
+      // at all — there is no window where the batch lands and the follow-up
+      // is lost.
+      await ctx.scheduler.runAfter(0, internal.users.deleteByClerkId, args)
+      return null
+    }
+
+    await ctx.db.delete(user._id)
+    return null
   },
 })

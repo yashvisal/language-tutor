@@ -22,8 +22,11 @@ import {
 import {
   DELTA_CAP_PREFIX,
   MAX_DELTA_PER_CALL_S,
+  MAX_STARTS_PER_HOUR,
   OPEN_SESSION_PREFIX,
   OPEN_SESSION_WINDOW_MS,
+  RATE_LIMIT_PREFIX,
+  START_WINDOW_MS,
 } from "../lib/billing"
 
 /**
@@ -46,7 +49,7 @@ import {
 /**
  * Called by `/api/token` after auth, the balance check, and the mint.
  *
- * Two refusals, both of them money:
+ * Three refusals, all of them money:
  *
  * 1. **Someone else's room.** A row is keyed on the room, and the room owns
  *    the debit's high-water mark. Returning `null` for an existing row without
@@ -60,6 +63,16 @@ import {
  *    newest row with no `endedAt`, younger than `OPEN_SESSION_WINDOW_MS`, is
  *    that reservation. Thrown with `OPEN_SESSION_PREFIX` so the route can
  *    answer 409 (a state the learner can act on) rather than 500 (a fault).
+ * 3. **Too many starts in an hour.** The free grant is per Clerk id and
+ *    signup is instant, so without this a script mints rooms until the grants
+ *    run out (audit B12). Counted off `by_user_startedAt` — the same index the
+ *    guard above reads — so there is no counter to keep in sync and the read
+ *    is bounded by `MAX_STARTS_PER_HOUR`, not by how many rows the learner has.
+ *
+ * The order of 2 and 3 is deliberate: a learner with a second tab open hears
+ * "you already have one running", which is a thing they can act on, even if
+ * they are also near the hourly limit. Swapping them would answer a real state
+ * with a scolding.
  */
 /**
  * The plan a row adopted by a worker report gets: empty, because nobody knows
@@ -110,6 +123,22 @@ export const start = mutation({
     ) {
       throw new Error(
         `${OPEN_SESSION_PREFIX} this learner already has a conversation open`
+      )
+    }
+
+    // `take(MAX_STARTS_PER_HOUR)` rather than a count: the only question is
+    // whether there are at least that many, so the read stops at the answer
+    // and a learner with ten thousand rows costs the same as one with twelve.
+    const since = Date.now() - START_WINDOW_MS
+    const recent = await ctx.db
+      .query("sessions")
+      .withIndex("by_user_startedAt", (q) =>
+        q.eq("userId", user._id).gte("startedAt", since)
+      )
+      .take(MAX_STARTS_PER_HOUR)
+    if (recent.length >= MAX_STARTS_PER_HOUR) {
+      throw new Error(
+        `${RATE_LIMIT_PREFIX} ${MAX_STARTS_PER_HOUR} sessions started in the last hour`
       )
     }
 

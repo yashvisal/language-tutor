@@ -8,7 +8,7 @@ import {
 } from "livekit-server-sdk"
 
 import { api } from "@/convex/_generated/api"
-import { OPEN_SESSION_PREFIX } from "@/lib/billing"
+import { OPEN_SESSION_PREFIX, RATE_LIMIT_PREFIX } from "@/lib/billing"
 import { MissingEnvVarError, requireServerEnv } from "@/lib/env"
 import type { SessionPlan } from "@/lib/session/contract"
 import { boundPlan } from "@/lib/session/plan"
@@ -55,6 +55,10 @@ import {
  * - **409** `{ error, code: "open_session" }` — this learner already has a
  *   conversation running (another tab). Two tabs would each budget the *whole*
  *   balance and the ledger would go negative; `sessions.start` is the guard.
+ * - **429** `{ error, code: "rate_limited" }` — this learner has started more
+ *   than `MAX_STARTS_PER_HOUR` conversations in the last hour. The free grant
+ *   is per Clerk id, so this is what stands between a script and N accounts x
+ *   ten free minutes (audit B12).
  */
 
 /** Token lifetime. Only needs to outlive connect + any reconnect attempt, but
@@ -252,6 +256,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { error: "A conversation is already running", code: "open_session" },
         { status: 409 }
+      )
+    }
+    // The hourly start limit. Also a state rather than a fault, and also
+    // carried by a message prefix: 429 so the client can say "give it a
+    // while" instead of "something went wrong on our side".
+    if (String(error).includes(RATE_LIMIT_PREFIX)) {
+      return NextResponse.json(
+        { error: "Too many sessions started recently", code: "rate_limited" },
+        { status: 429 }
       )
     }
     console.error("/api/token: could not record the session", error)

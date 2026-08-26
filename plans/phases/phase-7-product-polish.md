@@ -8,10 +8,10 @@ first; nothing here reopens a settled decision.*
 
 ## Status (2026-08-25)
 
-Steps 1–4 built and pushed (`51e6cab`, `20dfccf`, `5eb55c7`, `22a2043`)
-with the M2M swap (`d91a968`). Not yet run live. Sequence agreed with Yash
-(2026-08-25): finish step 5 → Yash's e2e test → CodeRabbit triage → merge
-→ **phase 8: Sentry, deployment, billing**.
+Steps 1–5 built and pushed (`51e6cab`, `20dfccf`, `5eb55c7`, `22a2043`,
+step 5 on top) with the M2M swap (`d91a968`). **Build complete; not yet
+run live.** Next, in order (agreed 2026-08-25): Yash's e2e test → CodeRabbit
+triage → merge → `phase-8-launch.md` (Sentry, deployment, billing).
 
 ## Steps (each one reviewed hand-off; each leaves the app working)
 

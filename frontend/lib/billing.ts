@@ -96,3 +96,42 @@ export const MAX_DELTA_PER_CALL_S = 3600
 /** Prefix on the error `sessions.debit` throws for that refusal, so the HTTP
  * action can answer 400 (a bad request) rather than 500 (a fault). */
 export const DELTA_CAP_PREFIX = "delta-cap:"
+
+/* -------------------------------------------------------------------------- */
+/*  The session-start rate limit                                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * How many conversations one learner may START in a rolling hour.
+ *
+ * The free grant is per Clerk id and signup is instant, so nothing but this
+ * stands between a script and N accounts x ten free minutes (audit B12). The
+ * other half of that fix is at Clerk — bot protection and required email
+ * verification — and belongs to the production instance, not to the code.
+ *
+ * Twelve, because the two populations have to be separable by this number
+ * alone. A real learner starts a handful of conversations in an hour and may
+ * retry a failed start a few times on top of that; twelve is well above
+ * anything that is not deliberate. A script minting rooms to burn grants does
+ * hundreds, and hits it in seconds.
+ *
+ * Counted off `sessions.by_user_startedAt`, which already exists for History
+ * and the open-session guard — no new table, no counter to keep in sync, and
+ * the count is bounded by this number rather than by how many rows there are.
+ */
+export const MAX_STARTS_PER_HOUR = 12
+
+/** The window those starts are counted over. */
+export const START_WINDOW_MS = 60 * 60 * 1000
+
+/**
+ * Prefix on the error `sessions.start` throws when the limit is hit, so the
+ * token route can answer 429 rather than 500 — the same trick, and for the
+ * same reason, as `OPEN_SESSION_PREFIX` above: a Convex mutation failure
+ * reaches the route as text and a marker is the only thing in it that survives.
+ *
+ * Ordering matters and is tested: the open-session check runs FIRST. A second
+ * tab is a thing the learner can act on ("end it there"), and it must keep
+ * saying so even for a learner who is also near the hourly limit.
+ */
+export const RATE_LIMIT_PREFIX = "rate-limit:"
