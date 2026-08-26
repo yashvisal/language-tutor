@@ -51,6 +51,35 @@ first; nothing here reopens a settled decision.*
 - A worker with a `user_id` and no reachable ledger refuses the job unless
   `TUTOR_ALLOW_UNMETERED=1` (local development only).
 
+### Worker → Convex auth is Clerk M2M (Yash, 2026-08-25), its own commit after step 2
+
+Replaces `TUTOR_DEBIT_SECRET`. Two Clerk machines per instance —
+`tutor-worker` and `tutor-ledger`, worker scoped to ledger. Dev instance:
+created 2026-08-25 (`mch_3IRAojvF…` worker, `mch_3IRAoYry…` ledger); prod
+gets its own two when we get there.
+
+- **Mint**: the worker creates one JWT-format M2M token per job
+  (`POST https://api.clerk.com/v1/m2m_tokens`, bearer = the worker's
+  machine secret key `CLERK_WORKER_MACHINE_SECRET_KEY`, body
+  `{ token_format: "jwt", seconds_until_expiration: 10800 }`) and sends it
+  as the bearer on `/tutor/*`. A **401 from Convex re-mints once** and
+  retries; it never kills the job. JWTs cannot be revoked individually —
+  revocation is rotating the worker's machine key, and the 3 h expiry is
+  the window.
+- **Verify** (Convex `http.ts`): `@clerk/backend`'s `m2m.verify` with
+  `CLERK_JWT_KEY` (the instance's public JWKS key as PEM — no secret key
+  on Convex; offline, no per-call cost). Fall back to hand-rolled WebCrypto
+  RS256 only if the import fights the Convex runtime — and then with a
+  JWKS cache TTL and key-rollover handling, never cached forever. Then
+  **both ends**: `sub === TUTOR_WORKER_MACHINE_ID` **and** `scopes`
+  includes `TUTOR_LEDGER_MACHINE_ID`. Otherwise any machine scoped to the
+  ledger later could debit.
+- **Request guards stay, same commit** — M2M proves *who*, not that a
+  given debit is legit: the `<room>:<jobId>:<seq>` idempotency ref, the
+  cumulative ceiling (86 400 s), plus a **hard cap on what one call may add
+  to `secondsBilled`** (the periodic debit is every 60 s, so a single delta
+  above 3 600 s is a bug or an attack — reject it).
+
 ## Decisions still needed from Yash
 
 (a) payment rail — Stripe-direct or Clerk Billing; (b) goal capture and
