@@ -5,9 +5,12 @@ arithmetic — `billed_before + active` — so that is what these check, plus th
 two states that decide whether a session may continue: `enabled`, and the
 unacknowledged zero-hold debit.
 
-The transport is faked at `_post_json`, which is the last place the payload is
-still a dict: everything above it (the ref's ingredients, the cumulative
-total, the sequence number) is exercised for real.
+The transport is faked at two depths. Most checks stub `_post_json`, the last
+place the payload is still a dict, so everything above it (the ref's
+ingredients, the cumulative total, the sequence number, the failure ceiling) is
+exercised for real. The auth checks stub one layer lower — the aiohttp session
+itself — because what is at stake there is which URL, which body and which
+bearer actually go out.
 
 Run either way:
 
@@ -26,21 +29,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from billing import (  # noqa: E402
     BALANCE_PATH,
+    CLERK_API_URL_DEFAULT,
     DEBIT_PATH,
     MAX_ABOUT_CHARS,
     MAX_BODY_BYTES,
+    MAX_CONSECUTIVE_DEBIT_FAILURES,
     MAX_CORRECTIONS,
     MAX_REVIEW_TABLES,
     MAX_REVIEW_VOCAB,
     MAX_TRANSCRIPT_TURNS,
     MAX_TURN_CHARS,
+    MINT_PATH,
     SUMMARY_PATH,
+    TOKEN_TTL_S,
     BillingClient,
 )
 from clock import report_seconds_billed  # noqa: E402
 
 SITE = "https://example.convex.site"
-SECRET = "shhh"
+# Shaped like a real Clerk machine secret key, and just as fictional.
+MACHINE_KEY = "ak_test_not_a_real_key"
 
 
 class FakeLedger:
@@ -67,7 +75,7 @@ def make(
     *,
     user_id: str | None = "user_abc",
     site_url: str = SITE,
-    secret: str = SECRET,
+    machine_key: str = MACHINE_KEY,
     job_id: str = "JOB_1",
 ) -> BillingClient:
     client = BillingClient(
@@ -75,7 +83,7 @@ def make(
         user_id=user_id,
         job_id=job_id,
         site_url=site_url,
-        secret=secret,
+        machine_key=machine_key,
     )
     client._post_json = ledger  # type: ignore[method-assign]
     return client
@@ -93,8 +101,8 @@ async def test_no_learner_no_http() -> None:
     assert ledger.calls == []
 
 
-async def test_no_site_url_or_secret_no_http() -> None:
-    for kwargs in ({"site_url": ""}, {"secret": ""}):
+async def test_no_site_url_or_machine_key_no_http() -> None:
+    for kwargs in ({"site_url": ""}, {"machine_key": ""}):
         ledger = FakeLedger()
         client = make(ledger, **kwargs)  # type: ignore[arg-type]
         assert not client.enabled
@@ -490,6 +498,233 @@ async def test_a_long_explanation_is_cut_not_dropped() -> None:
     await client.summary(corrections=[{**CORRECTION, "explanation": "x" * 900}])
     (body,) = _summaries(ledger)
     assert len(body["corrections"][0]["explanation"]) == 500
+
+
+# --- auth: minting, the bearer, and the one re-mint a 401 buys -------------
+
+
+class FakeResponse:
+    def __init__(self, status: int, body: object) -> None:
+        self.status = status
+        self._body = body
+
+    async def __aenter__(self) -> FakeResponse:
+        if isinstance(self._body, Exception):
+            raise self._body
+        return self
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+    async def json(self) -> object:
+        return self._body
+
+    async def text(self) -> str:
+        return self._body if isinstance(self._body, str) else json.dumps(self._body)
+
+
+class FakeHTTP:
+    """Stands in for the aiohttp session: records requests, answers a script."""
+
+    def __init__(self, script: list[tuple[int, object]]) -> None:
+        self.script = script
+        self.requests: list[dict] = []
+
+    def post(
+        self, url: str, *, json: object = None, headers: dict | None = None, **_: object
+    ) -> FakeResponse:
+        self.requests.append({"url": url, "body": json, "headers": headers or {}})
+        status, body = self.script.pop(0) if self.script else (200, {"balanceSeconds": 100})
+        return FakeResponse(status, body)
+
+    def bearers(self, path: str) -> list[str | None]:
+        return [r["headers"].get("Authorization") for r in self.requests if r["url"].endswith(path)]
+
+    def count(self, path: str) -> int:
+        return len([r for r in self.requests if r["url"].endswith(path)])
+
+
+def wired(script: list[tuple[int, object]], **kwargs: str) -> tuple[BillingClient, FakeHTTP]:
+    """A client whose transport is faked one layer below `_post_json`."""
+    client = BillingClient(
+        room="room_xyz",
+        user_id="user_abc",
+        job_id="JOB_1",
+        site_url=SITE,
+        machine_key=MACHINE_KEY,
+        **kwargs,
+    )
+    http = FakeHTTP(script)
+    client._client = lambda: http  # type: ignore[method-assign,assignment,return-value]
+    return client, http
+
+
+MINTED = (201, {"token": "jwt_one"})
+REMINTED = (201, {"token": "jwt_two"})
+BALANCE_OK = (200, {"balanceSeconds": 100})
+
+
+async def test_the_mint_request_is_the_agreed_shape() -> None:
+    client, http = wired([MINTED, BALANCE_OK])
+    assert await client.debit(30) == 100
+    mint, debit = http.requests
+    assert mint["url"] == f"{CLERK_API_URL_DEFAULT}{MINT_PATH}"
+    assert mint["body"] == {"token_format": "jwt", "seconds_until_expiration": TOKEN_TTL_S}
+    # The machine key goes to Clerk and to nowhere else.
+    assert mint["headers"]["Authorization"] == f"Bearer {MACHINE_KEY}"
+    assert debit["url"] == f"{SITE}{DEBIT_PATH}"
+    assert debit["headers"]["Authorization"] == "Bearer jwt_one"
+
+
+async def test_clerk_api_url_is_overridable() -> None:
+    client, http = wired([MINTED, BALANCE_OK], clerk_api_url="https://clerk.example.test/")
+    await client.debit(30)
+    assert http.requests[0]["url"] == f"https://clerk.example.test{MINT_PATH}"
+
+
+async def test_one_token_serves_the_whole_job() -> None:
+    client, http = wired([MINTED, BALANCE_OK, BALANCE_OK, BALANCE_OK])
+    for _ in range(3):
+        await client.debit(30)
+    assert http.count(MINT_PATH) == 1
+    assert http.bearers(DEBIT_PATH) == ["Bearer jwt_one"] * 3
+
+
+async def test_a_401_re_mints_once_and_retries_the_call() -> None:
+    """An expired JWT under a long session is the ordinary case, not a fault."""
+    client, http = wired([MINTED, (401, {}), REMINTED, (200, {"balanceSeconds": 50})])
+    assert await client.debit(30) == 50
+    assert http.bearers(DEBIT_PATH) == ["Bearer jwt_one", "Bearer jwt_two"]
+    assert http.count(MINT_PATH) == 2
+    # A call that landed on the retry is not a failure.
+    assert client.consecutive_failures == 0
+
+
+async def test_a_failed_re_mint_after_a_401_counts_as_a_failure() -> None:
+    client, http = wired([MINTED, (401, {}), (500, "clerk is down")])
+    assert await client.debit(30) is None
+    assert client.consecutive_failures == 1
+    # No second attempt at the ledger with a token that does not exist.
+    assert http.count(DEBIT_PATH) == 1
+
+
+async def test_a_401_on_the_retry_is_a_failure_not_a_second_re_mint() -> None:
+    """A fresh token the ledger still refuses is configuration, not expiry."""
+    client, http = wired([MINTED, (401, {}), REMINTED, (401, {})])
+    assert await client.debit(30) is None
+    assert http.count(MINT_PATH) == 2
+    assert http.count(DEBIT_PATH) == 2
+    assert client.consecutive_failures == 1
+
+
+async def test_a_400_is_counted_and_never_retried() -> None:
+    """Convex's per-call cap: one report may add at most 3600s to the room's
+    total. Re-sending the same body would only be refused again."""
+    client, http = wired([MINTED, (400, "delta 7200 exceeds the 3600s per-call cap")])
+    assert await client.debit(7200) is None
+    assert http.count(DEBIT_PATH) == 1
+    assert http.count(MINT_PATH) == 1
+    assert client.consecutive_failures == 1
+
+
+async def test_a_mint_that_answers_no_token_is_a_failed_call() -> None:
+    client, http = wired([(201, {"object": "machine_to_machine_token"})])
+    assert await client.debit(30) is None
+    assert http.count(DEBIT_PATH) == 0
+    assert client.consecutive_failures == 1
+
+
+async def test_a_transport_exception_is_a_failure_not_a_raise() -> None:
+    client, _http = wired([MINTED, (0, TimeoutError("convex hung"))])
+    assert await client.debit(30) is None
+    assert client.consecutive_failures == 1
+
+
+# --- the failure ceiling --------------------------------------------------
+
+
+async def test_a_success_resets_the_failure_count() -> None:
+    ledger = FakeLedger([None, None, None, {"balanceSeconds": 10}, None])
+    client = make(ledger)
+    for _ in range(3):
+        await client.debit(60)
+    assert client.consecutive_failures == 3
+    assert await client.debit(60) == 10
+    assert client.consecutive_failures == 0
+    await client.debit(60)
+    assert client.consecutive_failures == 1
+    assert not client.ceiling_reached
+
+
+async def test_five_consecutive_failures_end_the_session_exactly_once() -> None:
+    ends: list[str] = []
+
+    async def on_ceiling() -> None:
+        ends.append("ended")
+
+    ledger = FakeLedger([None] * 10)
+    client = make(ledger)
+    client.set_ceiling_handler(on_ceiling)
+
+    for _ in range(MAX_CONSECUTIVE_DEBIT_FAILURES):
+        assert await client.debit(60) is None
+    assert client.ceiling_reached
+    assert ends == ["ended"]
+    assert len(ledger.debits) == MAX_CONSECUTIVE_DEBIT_FAILURES
+
+    # No sixth attempt, ever — that is the whole point of the ceiling.
+    assert await client.debit(120) is None
+    assert len(ledger.debits) == MAX_CONSECUTIVE_DEBIT_FAILURES
+    assert ends == ["ended"]
+
+
+async def test_the_teardown_debit_after_the_ceiling_makes_no_request() -> None:
+    """The accepted under-bill (Yash, 2026-08-25): the last minutes of a session
+    whose ledger died never bill, and the Convex cron closes the row. Neither
+    the teardown debit nor its single retry goes out."""
+    ledger = FakeLedger([None] * 10)
+    client = make(ledger)
+    for _ in range(MAX_CONSECUTIVE_DEBIT_FAILURES):
+        await client.debit(60)
+    before = len(ledger.debits)
+    await report_seconds_billed(client, "user_abc", 600, "room_xyz")
+    assert len(ledger.debits) == before
+
+
+async def test_the_ceiling_handler_runs_outside_the_debit_lock() -> None:
+    """It ends the session, whose teardown debits — a held lock would deadlock."""
+    ledger = FakeLedger([None] * 10)
+    client = make(ledger)
+
+    async def on_ceiling() -> None:
+        # Exactly what the teardown does, from inside the handler.
+        await asyncio.wait_for(report_seconds_billed(client, "user_abc", 60, "room_xyz"), 1.0)
+
+    client.set_ceiling_handler(on_ceiling)
+    for _ in range(MAX_CONSECUTIVE_DEBIT_FAILURES):
+        await client.debit(60)
+    assert client.ceiling_reached
+
+
+async def test_a_failing_ceiling_handler_never_raises_into_the_session() -> None:
+    async def on_ceiling() -> None:
+        raise RuntimeError("the session was already gone")
+
+    client = make(FakeLedger([None] * 10))
+    client.set_ceiling_handler(on_ceiling)
+    for _ in range(MAX_CONSECUTIVE_DEBIT_FAILURES):
+        assert await client.debit(60) is None
+    assert client.ceiling_reached
+
+
+async def test_a_failed_balance_read_never_counts_toward_the_ceiling() -> None:
+    """The only balance read that can fail into a running session is the one at
+    job start, and that already refuses the job (`agent._open_ledger`)."""
+    client = make(FakeLedger([None] * 10))
+    for _ in range(MAX_CONSECUTIVE_DEBIT_FAILURES + 2):
+        assert await client.balance() is None
+    assert client.consecutive_failures == 0
+    assert not client.ceiling_reached
 
 
 def main() -> int:

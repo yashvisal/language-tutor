@@ -124,7 +124,7 @@ LIVEKIT_API_KEY=...
 LIVEKIT_API_SECRET=...
 OPENAI_API_KEY=...          # realtime model, STT, analyzer, translate
 CONVEX_SITE_URL=https://<deployment>.convex.site   # the ledger's HTTP actions
-TUTOR_DEBIT_SECRET=...      # bearer token for /tutor/debit and /tutor/balance
+CLERK_WORKER_MACHINE_SECRET_KEY=ak_...   # mints the M2M token for /tutor/*
 
 # optional — defaults shown
 TUTOR_TARGET_LANG=es
@@ -141,7 +141,18 @@ TUTOR_ANALYZER_ENABLED=true
 TUTOR_TRANSLATE_MODEL=gpt-5.6-luna
 TUTOR_HOLD_IDLE_S=600               # any hold this long ends the session
 TUTOR_ALLOW_UNMETERED=0             # local development ONLY — see below
+TUTOR_ENV=                          # set to `production` on the prod worker
+CLERK_API_URL=https://api.clerk.com # only for a Clerk instance on another host
 ```
+
+`TUTOR_ENV` is a free string and only `production` means anything. Set it on
+the production worker and nowhere else: with it set, `TUTOR_ALLOW_UNMETERED`
+makes `TutorConfig.from_env()` raise `UnmeteredProductionError` and the worker
+**refuses to boot**. Without it, a worker that holds a machine key
+(`CLERK_WORKER_MACHINE_SECRET_KEY`) — i.e. one that can debit a real ledger —
+logs one warning at boot that its environment is undeclared. Explicit over heuristic (phase 7):
+dev and prod share LiveKit Cloud and a `*.convex.site` host, and a Clerk
+machine key carries no test/live marker, so nothing here can be inferred.
 
 `OPENAI_API_KEY` is asserted non-empty at config load: the worker refuses to
 start rather than failing inside a plugin mid-session. `TUTOR_MIN_ENDPOINT_S`
@@ -150,8 +161,9 @@ unparseable or out-of-range value, exactly like `TUTOR_REALTIME_SPEED` — as
 does `TUTOR_HOLD_IDLE_S` (bounded 60s–4h, default 600).
 
 **Metering fails closed** (audit B10, 2026-08-25). A job dispatched with a
-`user_id` and no reachable ledger — `CONVEX_SITE_URL` or `TUTOR_DEBIT_SECRET`
-unset, or the opening balance read failing — is **refused**: an error log, then
+`user_id` and no reachable ledger — `CONVEX_SITE_URL` or
+`CLERK_WORKER_MACHINE_SECRET_KEY` unset, or the opening balance read failing —
+is **refused**: an error log, then
 `ctx.shutdown()`. It used to fail open, which meant one wrong variable in
 production gave every learner unlimited free sessions and nothing paged.
 `TUTOR_ALLOW_UNMETERED=1` overrides that (a warning per session, nothing
@@ -161,7 +173,10 @@ route in front of it — and still meters against the dispatched `balance_s`.
 
 The opening balance read is also where the budget comes from: `balanceSeconds`
 as read at job start beats the `balance_s` the token route signed into dispatch
-metadata minutes earlier, and metadata is only the fallback.
+metadata minutes earlier, and metadata is only the fallback. It is also the
+job's first ledger call, so it is what mints the M2M token — and it is
+deliberately **outside** the debit failure ceiling below, because a failure
+here already refuses the whole job.
 
 `TUTOR_ANALYZER_ENABLED=false` is published to the frontend as the
 `tutor.analyzer` attribute, so the UI skips the analyzing phase rather than
@@ -428,12 +443,12 @@ held — a learner studying a correction is not spending minutes (decision
 
 ### The ledger seam
 
-`src/billing.py` is the only thing in the worker that talks to Convex, over three
-signed calls (`Authorization: Bearer $TUTOR_DEBIT_SECRET`, against
-`$CONVEX_SITE_URL`):
+`src/billing.py` is the only thing in the worker that talks to Convex, over
+three authenticated calls against `$CONVEX_SITE_URL`:
 
 | Call | Body | Answer |
 | --- | --- | --- |
+| *auth, every call* | `Authorization: Bearer <Clerk M2M JWT>` | 401 → one re-mint, one retry |
 | `POST /tutor/debit` | `{"room", "userId", "jobId", "seconds", "seq"}` | `{"balanceSeconds"}` |
 | `POST /tutor/balance` | `{"userId", "room"}` (room optional) | `{"balanceSeconds", "secondsBilled"}` |
 | `POST /tutor/summary` | `{"room", "userId", "jobId", "about"?, "transcript"?, "review"?, "corrections"?}` | `{"ok": true}` |
@@ -441,9 +456,56 @@ signed calls (`Authorization: Bearer $TUTOR_DEBIT_SECRET`, against
 Convex keys the debit on `ref = <room>:<jobId>:<seq>` and answers a replay with
 the same body. `secondsBilled` is the **room's** already-billed high-water mark
 (0 for a room nobody has billed, or when `room` is omitted). `seconds` is
-bounded 0–86400 and the whole body stays well under Convex's 4 KB limit. A 401
-means the secret is wrong; a 500 means the room belongs to another learner or
-the id is unknown — both are refusals, and both are logged at error level.
+bounded 0–86400 and the whole body stays well under Convex's 4 KB limit, and
+**one call may add at most 3600s** to `secondsBilled` (the cadence is 60s, so a
+larger delta is a bug or an attack): Convex answers 400 and bills nothing. A
+400 is never retried unchanged — the same body would only be refused again — it
+is logged at error level with Convex's reason and counted toward the ceiling
+below. A 500 means the room belongs to another learner or the id is unknown;
+also a refusal, also error level.
+
+#### Auth: Clerk machine-to-machine (2026-08-25)
+
+Replaces the shared `TUTOR_DEBIT_SECRET`. **Two Clerk machines per instance** —
+`tutor-worker` and `tutor-ledger`, with the worker **scoped to** the ledger.
+The dev instance's pair was created 2026-08-25; production gets its own two,
+and its own `CLERK_WORKER_MACHINE_SECRET_KEY`, at the ship step.
+
+At job start the worker POSTs its machine secret key (`ak_…`, environment only,
+never logged) to `POST $CLERK_API_URL/v1/m2m_tokens` with
+`{"token_format": "jwt", "seconds_until_expiration": 10800}` and sends the JWT
+that comes back as the bearer on every `/tutor/*` call — one token per job, 5s
+budget on the mint. Convex verifies it offline against the instance's JWKS
+(`CLERK_JWT_KEY`; no secret key on Convex, no per-call cost) and checks **both
+ends**: subject is the worker machine *and* scopes include the ledger machine.
+Anything it rejects is a 401.
+
+A **401 re-mints once and retries that one call** — an expired JWT under a
+four-hour session is the ordinary case, not a fault, and it never kills the
+job. A failed re-mint, or a 401 on the retry (a fresh token the ledger still
+refuses is a *configuration* fault: wrong machine, or missing scope), is a
+failed call. Individual JWTs cannot be revoked: revocation is rotating the
+worker's machine key, and the 3h expiry is the window.
+
+#### When debits fail
+
+Consecutive failed debits are counted — any non-200, any timeout, any
+exception; **one success resets the count**. At **five** (about five minutes at
+the 60s cadence) the worker logs an ERROR, sets the `ledger_failed` hold on
+`SessionState` (so `clock_held` stops the meter, like `model_failed`), **stops
+debiting for good**, and ends the session through the ordinary
+`tutor.session_over` path so the learner lands on a summary.
+
+The consequence is accepted and deliberate (Yash, 2026-08-25): the teardown
+debit of that session does not go out either — neither it nor its single retry
+— so its **last ~5 minutes never bill** and Convex's reconciliation cron closes
+the row. Bounded, learner-favouring, and the alternative is worse: a ceiling-
+free retry loop is exactly how a worker runs for hours unbilled with nobody
+paging. **Do not turn this into a retry loop that keeps the job alive.** The
+`/tutor/summary` post at teardown is still attempted once (it may fail too;
+that costs a History entry, not money).
+
+The balance read is outside the count — see the fail-closed note above.
 
 `seconds` is the **room's** cumulative active seconds, not the job's:
 `billed_before + this job's active seconds`, where `billed_before` is the

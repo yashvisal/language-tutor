@@ -58,6 +58,14 @@ class SessionState:
     # normal `session_over` path — but the seconds between the socket dying and
     # the shutdown landing must not be billed as tutoring.
     model_failed: bool = False
+    # The fourth hold source, and the other one that never releases: the
+    # ledger stopped answering. Five consecutive failed debits (phase 7 step 1,
+    # `billing.MAX_CONSECUTIVE_DEBIT_FAILURES`) mean the worker can no longer
+    # tell anyone what this conversation costs, so it stops the meter and ends
+    # the session rather than talking on unbilled. The seconds between the last
+    # landed debit and the shutdown are not billed — accepted, learner-
+    # favouring, and the Convex reconciliation cron closes the row.
+    ledger_failed: bool = False
     # The last bridge intent used, so consecutive resumes never repeat a line.
     last_bridge_intent: str | None = None
 
@@ -78,7 +86,7 @@ class SessionState:
     @property
     def clock_held(self) -> bool:
         """Every reason the meter is not running. The clock's only question."""
-        return self.paused or self.learner_absent or self.model_failed
+        return self.paused or self.learner_absent or self.model_failed or self.ledger_failed
 
     def clear_pause_context(self) -> None:
         self.paused_at = None

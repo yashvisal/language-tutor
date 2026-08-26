@@ -425,7 +425,12 @@ async def _open_ledger(
 
     The successful path is also where the budget comes from: the balance read
     here is fresher than the one the token route signed into dispatch metadata,
-    and `seconds_billed` seeds the room-cumulative total (audit B3).
+    and `seconds_billed` seeds the room-cumulative total (audit B3). It is also
+    what mints the job's M2M token, since it is the job's first ledger call.
+
+    This read is deliberately outside the debit failure ceiling
+    (`billing.MAX_CONSECUTIVE_DEBIT_FAILURES`): a failure here already refuses
+    the whole job, which is a stronger answer than counting toward five.
     """
     if not meta.user_id:
         logger.info(
@@ -435,7 +440,7 @@ async def _open_ledger(
         return meta.balance_s
 
     if not billing.enabled:
-        reason = "CONVEX_SITE_URL or TUTOR_DEBIT_SECRET is not set"
+        reason = "CONVEX_SITE_URL or CLERK_WORKER_MACHINE_SECRET_KEY is not set"
     else:
         read = await billing.balance()
         if read is not None:
@@ -461,7 +466,8 @@ async def _open_ledger(
 
     logger.error(
         "refusing this job: the learner is metered but the ledger is unreachable (%s). "
-        "Set CONVEX_SITE_URL and TUTOR_DEBIT_SECRET, or TUTOR_ALLOW_UNMETERED=1 for "
+        "Set CONVEX_SITE_URL and CLERK_WORKER_MACHINE_SECRET_KEY, or "
+        "TUTOR_ALLOW_UNMETERED=1 for "
         "local development.",
         reason,
         extra={"user_id": meta.user_id, "room": ctx.room.name, "job_id": ctx.job.id},
@@ -751,6 +757,26 @@ def _build_clock(
 
     async def _idle_end() -> None:
         await _end_session(ctx, session)
+
+    async def _ledger_ceiling() -> None:
+        """The debits stopped landing: hold the meter and end the session.
+
+        Called once, by `BillingClient` itself, after
+        `MAX_CONSECUTIVE_DEBIT_FAILURES` consecutive failures. `ledger_failed`
+        is a hold source that never releases (like `model_failed`): a worker
+        that cannot tell anyone what this conversation costs must not go on
+        talking, and must not sit in a retry loop that keeps the job alive.
+        The learner lands on the summary through the ordinary `session_over`
+        path; the last minutes go unbilled and Convex's cron closes the row.
+        """
+        state.ledger_failed = True
+        try:
+            await clock.notify_hold_changed()
+        except Exception:
+            logger.warning("clock republish on ledger failure failed", exc_info=True)
+        await _end_session(ctx, session, reason="ledger failure ceiling reached")
+
+    billing.set_ceiling_handler(_ledger_ceiling)
 
     clock = SessionClock(
         budget_s,

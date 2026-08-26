@@ -290,7 +290,7 @@ def billing_client(ledger: Ledger, *, user_id: str | None = "user_abc") -> Billi
         user_id=user_id,
         job_id="JOB_1",
         site_url="https://example.convex.site",
-        secret="shhh",
+        machine_key="ak_test_not_a_real_key",
     )
     client._post_json = ledger  # type: ignore[method-assign]
     return client

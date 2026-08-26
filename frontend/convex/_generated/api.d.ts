@@ -10,6 +10,7 @@
 
 import type * as crons from "../crons.js";
 import type * as http from "../http.js";
+import type * as m2m from "../m2m.js";
 import type * as sessions from "../sessions.js";
 import type * as users from "../users.js";
 import type * as validators from "../validators.js";
@@ -23,6 +24,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   crons: typeof crons;
   http: typeof http;
+  m2m: typeof m2m;
   sessions: typeof sessions;
   users: typeof users;
   validators: typeof validators;

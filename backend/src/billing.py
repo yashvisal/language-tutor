@@ -1,6 +1,7 @@
 """The money seam: the worker reports seconds, Convex owns the ledger.
 
-Two signed HTTP calls, both against `CONVEX_SITE_URL` with a bearer secret:
+Three authenticated HTTP calls, all against `CONVEX_SITE_URL`, all bearing a
+Clerk machine-to-machine JWT the worker mints once per job (see "auth" below):
 
 - `POST /tutor/debit` — "this ROOM has used N cumulative active seconds so
   far". The action is idempotent per `ref = <room>:<jobId>:<seq>` and debits
@@ -50,6 +51,33 @@ Four rules hold here:
 - **No learner id, no HTTP.** A session dispatched without a `user_id` (which
   the token route should make impossible, and which the worker now refuses
   outright unless `TUTOR_ALLOW_UNMETERED=1`) reports nothing.
+
+**Auth is Clerk M2M** (decision 2026-08-25, phase 7 step 1), replacing the
+shared `TUTOR_DEBIT_SECRET`. At job start the worker POSTs its machine secret
+key (`CLERK_WORKER_MACHINE_SECRET_KEY`, kept in the worker's environment and
+never logged) to `POST $CLERK_API_URL/v1/m2m_tokens` with
+`{token_format: "jwt", seconds_until_expiration: 10800}`, and sends the JWT it
+gets back as the bearer on every `/tutor/*` call. Convex verifies it offline
+against the instance's JWKS and checks both ends — subject is the worker
+machine, scopes include the ledger machine — so a leaked bearer is a three-hour
+window on one machine's identity rather than a forever-secret. A **401 re-mints
+once and retries that call**; a token minted at 00:00 on a four-hour session
+expires under it, and the re-mint is what carries it through.
+
+**The failure ceiling.** A debit that does not land is revenue on the floor,
+but a worker that retries forever is worse: that is how a job runs for hours
+unbilled with nothing paging. So consecutive debit failures are counted (any
+non-200, any timeout, any exception; one success resets the count), and at
+`MAX_CONSECUTIVE_DEBIT_FAILURES` the client stops debiting and calls the
+ceiling handler, which holds the clock and ends the session. The consequence is
+accepted and deliberate (Yash, 2026-08-25): the teardown debit of that session
+does not go out either, so its last ~5 minutes never bill and Convex's
+reconciliation cron closes the row. Bounded, learner-favouring, and **not** a
+retry loop that keeps the job alive.
+
+The balance read is outside the count on purpose: the only balance read that
+can fail into a running session is the one at job start, and that already
+refuses the job (`agent._open_ledger`).
 """
 
 from __future__ import annotations
@@ -58,6 +86,7 @@ import asyncio
 import json
 import logging
 import os
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 import aiohttp
@@ -72,6 +101,37 @@ CONNECT_TIMEOUT_S = 2.0
 DEBIT_PATH = "/tutor/debit"
 BALANCE_PATH = "/tutor/balance"
 SUMMARY_PATH = "/tutor/summary"
+
+# Clerk's machine-to-machine token endpoint, and the shape of the one request
+# the worker makes against it. Overridable only for tests and for a Clerk
+# instance on another host; there is no second API in practice.
+CLERK_API_URL_DEFAULT = "https://api.clerk.com"
+MINT_PATH = "/v1/m2m_tokens"
+# Three hours. Long enough that the overwhelming majority of sessions never
+# re-mint; short enough that a leaked JWT — which cannot be revoked
+# individually, only by rotating the machine key — expires on its own.
+TOKEN_TTL_S = 10800
+# The mint sits in front of the job's first ledger call, so it is bounded like
+# every other call on this seam.
+MINT_TIMEOUT_S = 5.0
+
+# How many consecutive failed debits end the session. Five at the 60s cadence
+# is about five minutes of a ledger that cannot be reached — long enough to
+# ride out a deploy or a blip, short enough that nothing runs unbilled for an
+# hour. See the module docstring for what is knowingly given up here.
+MAX_CONSECUTIVE_DEBIT_FAILURES = 5
+
+# How much of a rejected response body is logged. Enough to read Convex's
+# reason (the 400 for a >3600s delta says so in words); short enough that a
+# hostile or broken endpoint cannot flood the logs.
+MAX_ERROR_BODY_CHARS = 300
+
+
+class _Unauthorized:
+    """Sentinel: the ledger answered 401, so the token may simply be stale."""
+
+
+UNAUTHORIZED = _Unauthorized()
 
 # The summary's bounds, all of them the wire contract's (phase 7 step 2), and
 # all re-applied here because the ledger answers 400 and the whole record is
@@ -133,7 +193,8 @@ class BillingClient:
         user_id: str | None,
         job_id: str = "",
         site_url: str | None = None,
-        secret: str | None = None,
+        machine_key: str | None = None,
+        clerk_api_url: str | None = None,
     ) -> None:
         self._room = room
         self._user_id = user_id
@@ -143,9 +204,24 @@ class BillingClient:
         if site_url is None:
             site_url = os.environ.get("CONVEX_SITE_URL", "")
         self._site_url = site_url.strip().rstrip("/")
-        self._secret = (
-            secret if secret is not None else os.environ.get("TUTOR_DEBIT_SECRET", "")
+        # The worker's Clerk machine secret key (`ak_...`). It never goes
+        # anywhere but Clerk's mint endpoint, and it is never logged.
+        self._machine_key = (
+            machine_key
+            if machine_key is not None
+            else os.environ.get("CLERK_WORKER_MACHINE_SECRET_KEY", "")
         ).strip()
+        if clerk_api_url is None:
+            clerk_api_url = os.environ.get("CLERK_API_URL", "") or CLERK_API_URL_DEFAULT
+        self._clerk_api_url = clerk_api_url.strip().rstrip("/") or CLERK_API_URL_DEFAULT
+        # The minted JWT for this job. One per job, re-minted only on a 401.
+        self._token: str | None = None
+        self._mint_lock = asyncio.Lock()
+        # The failure ceiling. `_consecutive_failures` counts debits only;
+        # `_ceiling_reached` is one-way and stops the seam dead.
+        self._consecutive_failures = 0
+        self._ceiling_reached = False
+        self._on_ceiling: Callable[[], Awaitable[None]] | None = None
         self._seq = 0
         # The room's high-water mark before this job started. Set once, at job
         # start, from the balance read — never refreshed, because every later
@@ -161,7 +237,26 @@ class BillingClient:
     @property
     def enabled(self) -> bool:
         """Whether this session can talk to the ledger at all."""
-        return bool(self._user_id and self._site_url and self._secret)
+        return bool(self._user_id and self._site_url and self._machine_key)
+
+    @property
+    def ceiling_reached(self) -> bool:
+        """True once consecutive debit failures ended the session's billing."""
+        return self._ceiling_reached
+
+    @property
+    def consecutive_failures(self) -> int:
+        return self._consecutive_failures
+
+    def set_ceiling_handler(self, handler: Callable[[], Awaitable[None]] | None) -> None:
+        """What to do when the debits stop landing: hold the clock, end it.
+
+        Set after construction because the client is built before the session
+        it will have to end. Called at most once, and outside the debit lock —
+        the handler ends the session, whose teardown debits, and an asyncio
+        lock is not reentrant.
+        """
+        self._on_ceiling = handler
 
     @property
     def billed_before(self) -> int:
@@ -201,10 +296,23 @@ class BillingClient:
 
         `None` means the call did not happen or did not succeed — never an
         exception, and never a reason to change what the session is doing.
+
+        Except once. Five consecutive failures trip the ceiling: this call
+        stops debiting for good and hands the session to the ceiling handler,
+        because the alternative — retrying every minute for the rest of a
+        two-hour conversation — is a worker running unbilled with nobody
+        looking. After that every call here returns `None` without a request,
+        including the teardown's, which is the accepted under-bill.
         """
         if not self.enabled:
             return None
+        if self._ceiling_reached:
+            # Deliberately silent-ish: the ERROR was logged when the ceiling
+            # tripped, and the teardown path calls this twice on the way out.
+            logger.debug("debit skipped: the ledger failure ceiling was reached")
+            return None
         active = int(max(0, active_seconds))
+        tripped = False
         async with self._lock:
             self._seq += 1
             seq = self._seq
@@ -220,24 +328,58 @@ class BillingClient:
                 payload["final"] = True
             balance = await self._post(DEBIT_PATH, payload)
             if balance is None:
+                self._consecutive_failures += 1
                 # ERROR, not warning: a debit that does not land is revenue on
                 # the floor, and nothing downstream notices (audit B10).
                 logger.error(
                     "debit failed",
-                    extra={"seq": seq, "seconds": seconds, "jobId": self._job_id},
+                    extra={
+                        "seq": seq,
+                        "seconds": seconds,
+                        "jobId": self._job_id,
+                        "consecutive_failures": self._consecutive_failures,
+                    },
                 )
                 if zero_hold:
                     self._unacked_zero_s = active
-                return None
-            if self._unacked_zero_s is not None:
-                # Any successful debit reports a total that covers the seconds
-                # the zero hold failed to report, so the debt is settled.
-                self._unacked_zero_s = None
-            logger.info(
-                "debit reported",
-                extra={"seq": seq, "seconds": seconds, "balance_s": balance},
-            )
-            return balance
+                if self._consecutive_failures >= MAX_CONSECUTIVE_DEBIT_FAILURES:
+                    self._ceiling_reached = True
+                    tripped = True
+            else:
+                # One landed call means the seam is alive; the count starts over.
+                self._consecutive_failures = 0
+                if self._unacked_zero_s is not None:
+                    # Any successful debit reports a total that covers the
+                    # seconds the zero hold failed to report: debt settled.
+                    self._unacked_zero_s = None
+                logger.info(
+                    "debit reported",
+                    extra={"seq": seq, "seconds": seconds, "balance_s": balance},
+                )
+        if tripped:
+            # Outside the lock: the handler ends the session, whose teardown
+            # calls back into `debit`.
+            await self._fire_ceiling()
+        return balance
+
+    async def _fire_ceiling(self) -> None:
+        logger.error(
+            "the ledger failure ceiling was reached: holding the clock and ending "
+            "the session. This session's remaining seconds will not be billed; "
+            "the Convex reconciliation cron closes the row.",
+            extra={
+                "room": self._room,
+                "jobId": self._job_id,
+                "consecutive_failures": self._consecutive_failures,
+            },
+        )
+        handler = self._on_ceiling
+        if handler is None:
+            return
+        try:
+            await handler()
+        except Exception:
+            logger.exception("the ledger ceiling handler failed")
 
     async def summary(
         self,
@@ -317,25 +459,131 @@ class BillingClient:
 
     def _client(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
+            # No default Authorization header: the bearer is a minted JWT that
+            # can change under a 401, and the mint call carries a different
+            # credential entirely. Every request sets its own.
             self._session = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_S, connect=CONNECT_TIMEOUT_S),
-                headers={"Authorization": f"Bearer {self._secret}"},
             )
         return self._session
 
-    async def _post_json(self, path: str, payload: dict) -> object | None:
+    async def _mint(self) -> str | None:
+        """Mint one JWT-format M2M token from the worker's machine key.
+
+        Never logs the key or the token. `None` on any failure, which the
+        callers turn into a failed ledger call — the ceiling counts it like any
+        other.
+        """
+        if not self._machine_key:
+            return None
+        url = f"{self._clerk_api_url}{MINT_PATH}"
+        body = {"token_format": "jwt", "seconds_until_expiration": TOKEN_TTL_S}
+        try:
+            async with self._client().post(
+                url,
+                json=body,
+                headers={"Authorization": f"Bearer {self._machine_key}"},
+                timeout=aiohttp.ClientTimeout(total=MINT_TIMEOUT_S, connect=CONNECT_TIMEOUT_S),
+            ) as response:
+                # Clerk answers 201 Created; accept 200 too rather than depend
+                # on which one this endpoint happens to use.
+                if response.status not in (200, 201):
+                    detail = (await response.text())[:MAX_ERROR_BODY_CHARS]
+                    logger.error(
+                        "minting the worker's M2M token returned %d: %s",
+                        response.status,
+                        detail,
+                    )
+                    return None
+                minted = await response.json()
+        except Exception:
+            logger.error("minting the worker's M2M token failed", exc_info=True)
+            return None
+        token = minted.get("token") if isinstance(minted, dict) else None
+        if not isinstance(token, str) or not token:
+            logger.error("the mint response carried no token")
+            return None
+        logger.info(
+            "minted the worker's M2M token",
+            extra={"ttl_s": TOKEN_TTL_S, "room": self._room, "jobId": self._job_id},
+        )
+        return token
+
+    async def _bearer(self) -> str | None:
+        """The current token, minting one the first time it is asked for."""
+        async with self._mint_lock:
+            if self._token is None:
+                self._token = await self._mint()
+            return self._token
+
+    async def _remint(self, stale: str) -> str | None:
+        """Replace a token the ledger just refused. Mints at most once per 401.
+
+        If another call already re-minted while this one waited for the lock,
+        its token is the fresh one and this call simply uses it.
+        """
+        async with self._mint_lock:
+            if self._token is not None and self._token != stale:
+                return self._token
+            self._token = await self._mint()
+            return self._token
+
+    async def _send(self, path: str, payload: dict, token: str) -> object | None:
         url = f"{self._site_url}{path}"
         try:
-            async with self._client().post(url, json=payload) as response:
+            async with self._client().post(
+                url, json=payload, headers={"Authorization": f"Bearer {token}"}
+            ) as response:
+                if response.status == 401:
+                    return UNAUTHORIZED
                 if response.status != 200:
-                    # A 401 here means the worker's secret is wrong and every
-                    # session is running free: error level, always (audit B10).
-                    logger.error("ledger call returned %d", response.status, extra={"path": path})
+                    detail = (await response.text())[:MAX_ERROR_BODY_CHARS]
+                    # ERROR, always (audit B10). A 400 is the ledger refusing
+                    # the body itself — most likely the >3600s per-call delta
+                    # cap — and re-sending the same body would only be refused
+                    # again, so nothing here retries it.
+                    logger.error(
+                        "ledger call returned %d: %s",
+                        response.status,
+                        detail,
+                        extra={"path": path, "retried": False},
+                    )
                     return None
                 return await response.json()
         except Exception:
             logger.error("ledger call failed", exc_info=True, extra={"path": path})
             return None
+
+    async def _post_json(self, path: str, payload: dict) -> object | None:
+        """One authenticated call, with the single re-mint a 401 is allowed.
+
+        A 401 is the one status worth retrying: it means the JWT expired under
+        a long session (or the instance rotated), not that the request was
+        wrong. Exactly one re-mint and exactly one retry — a failed re-mint or
+        a second 401 is a failed call, and the caller counts it.
+        """
+        token = await self._bearer()
+        if token is None:
+            return None
+        body = await self._send(path, payload, token)
+        if not isinstance(body, _Unauthorized):
+            return body
+        logger.warning("ledger call returned 401: re-minting once", extra={"path": path})
+        fresh = await self._remint(token)
+        if fresh is None:
+            logger.error("re-minting after a 401 failed", extra={"path": path})
+            return None
+        body = await self._send(path, payload, fresh)
+        if isinstance(body, _Unauthorized):
+            # A freshly minted token the ledger still refuses is a
+            # configuration fault: the wrong machine, or the wrong scope.
+            logger.error(
+                "the ledger refused a freshly minted token: check the worker "
+                "machine id and its scope on the ledger machine",
+                extra={"path": path},
+            )
+            return None
+        return body
 
     async def _post(self, path: str, payload: dict) -> int | None:
         body = await self._post_json(path, payload)

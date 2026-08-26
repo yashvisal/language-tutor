@@ -4,6 +4,7 @@ import { httpAction } from "./_generated/server"
 import { internal } from "./_generated/api"
 import { SUMMARY_LIMITS } from "./validators"
 import { DELTA_CAP_PREFIX, MAX_DELTA_PER_CALL_S } from "../lib/billing"
+import { verifyWorkerToken } from "./m2m"
 
 /**
  * The worker's seam into the ledger — and the wire contract the Python worker
@@ -17,13 +18,31 @@ import { DELTA_CAP_PREFIX, MAX_DELTA_PER_CALL_S } from "../lib/billing"
  * cloud/API URL. All three routes are `POST`, all take and return
  * `application/json`, all require:
  *
- *     Authorization: Bearer <TUTOR_DEBIT_SECRET>
+ *     Authorization: Bearer <a Clerk M2M JWT>
  *
- * The secret lives on the Convex deployment (`npx convex env set`), never in
- * `.env.local`: the browser must never be able to spend or read someone else's
- * balance. Every route checks it *before* reading the body, so an
- * unauthenticated caller cannot probe for a valid user id or room, and the
- * comparison is constant-time so it cannot be probed a byte at a time either.
+ * The bearer is a **Clerk machine-to-machine token in JWT format**, minted by
+ * the worker's machine (`tutor-worker`) once per job with a 3 h expiry and
+ * scoped to the ledger's machine (`tutor-ledger`). Convex verifies it
+ * **offline** against `CLERK_JWT_KEY` — the instance's JWKS public key as PEM,
+ * set on the Convex deployment (`npx convex env set`) — and then checks both
+ * ends: `subject === TUTOR_WORKER_MACHINE_ID` **and** `scopes` contains
+ * `TUTOR_LEDGER_MACHINE_ID`. Subject alone would let any machine scoped to the
+ * ledger debit; scope alone would let any token the worker minted for another
+ * audience through. See `convex/m2m.ts`. There is no shared secret any more:
+ * `TUTOR_DEBIT_SECRET` is gone from both halves.
+ *
+ * Nothing here is in `.env.local`: the browser must never be able to spend or
+ * read someone else's balance. Every route verifies the token *before* reading
+ * the body, so an unauthenticated caller cannot probe for a valid user id or
+ * room, and every failure is the same `401 {"error":"unauthorized"}` — the
+ * reason is logged server-side only.
+ *
+ * **Rotation.** JWTs cannot be revoked one at a time; the 3 h expiry is the
+ * blast radius, and revoking the worker wholesale means rotating its machine
+ * secret key at Clerk. Rotating the *instance's* signing key means updating
+ * `CLERK_JWT_KEY` here — because verification is offline there is no JWKS
+ * fetch and therefore no cache that expires on its own: until that env var is
+ * updated, every worker token fails closed.
  *
  * These routes are deliberately **machine-to-machine**: no CORS headers, no
  * `OPTIONS` handler, no preflight. A browser cannot call them, and that is the
@@ -78,7 +97,7 @@ import { DELTA_CAP_PREFIX, MAX_DELTA_PER_CALL_S } from "../lib/billing"
  * |--------|------|---------|
  * | `200`  | `{ "balanceSeconds": 463 }` | Debited (or already debited — same body). `balanceSeconds` is the learner's balance **after** this debit, in seconds, and may be negative. |
  * | `400`  | `{ "error": "<why>" }` | Malformed body, oversized body, a field outside the constraints above, or a report that would add more than `MAX_DELTA_PER_CALL_S` (3600 s) to `secondsBilled` — nothing billed, the mark unmoved. Never retry unchanged. |
- * | `401`  | `{ "error": "unauthorized" }` | Missing/incorrect bearer secret. |
+ * | `401`  | `{ "error": "unauthorized" }` | Missing, malformed, expired, or wrongly-scoped bearer token. |
  * | `500`  | Convex error text | The mutation threw: an unknown `userId`, or a `room` belonging to a different learner. Not retryable as-is. |
  *
  * ## `POST /tutor/balance`
@@ -176,7 +195,7 @@ import { DELTA_CAP_PREFIX, MAX_DELTA_PER_CALL_S } from "../lib/billing"
  * |--------|------|---------|
  * | `200`  | `{ "ok": true }` | Recorded. |
  * | `400`  | `{ "error": "<why>" }` | Malformed or oversized body, an unknown `role`, or a field over its bound. Never retry unchanged. |
- * | `401`  | `{ "error": "unauthorized" }` | Missing/incorrect bearer secret. |
+ * | `401`  | `{ "error": "unauthorized" }` | Missing, malformed, expired, or wrongly-scoped bearer token. |
  * | `500`  | Convex error text | An unknown `userId`, or a `room` belonging to a different learner. Not retryable as-is. |
  *
  * Over a bound is a `400` here, at the wire, where the worker can read the
@@ -187,7 +206,7 @@ import { DELTA_CAP_PREFIX, MAX_DELTA_PER_CALL_S } from "../lib/billing"
  *
  * The mutations and queries these call are `internal*`: they take a learner id
  * as an argument rather than from `ctx.auth`, which is only safe behind the
- * secret check above.
+ * token check above.
  */
 
 /** Largest body either route will read. Both payloads are five short fields;
@@ -216,35 +235,20 @@ const MAX_JOB_ID_CHARS = 128
 const encoder = new TextEncoder()
 
 /**
- * Constant-time string comparison.
+ * The worker's identity, checked before anything else on every route.
  *
- * Convex functions run on a V8 runtime with WebCrypto but no Node `crypto`, so
- * there is no `timingSafeEqual` to reach for. `===` on a secret returns as soon
- * as two bytes differ, which over enough requests leaks the secret one byte at
- * a time; this always walks every byte of the expected value and accumulates
- * the difference instead of branching on it.
- *
- * The length comparison is not constant-time and does not need to be: the
- * length of a shared secret is not the secret.
+ * Env is read per request rather than at module load so a rotated
+ * `CLERK_JWT_KEY` or a re-created machine takes effect without a redeploy, and
+ * so a deployment missing any of the three fails closed on every call rather
+ * than only on the one that happened to boot the isolate.
  */
-function secretsMatch(provided: string, expected: string): boolean {
-  const a = encoder.encode(provided)
-  const b = encoder.encode(expected)
-  if (a.length !== b.length) return false
-  let diff = 0
-  for (let i = 0; i < b.length; i++) diff |= a[i] ^ b[i]
-  return diff === 0
-}
-
-/** The shared secret, read per request so a rotated value takes effect without
- * a redeploy. Missing means the seam is closed, not open. */
-function authorized(request: Request): boolean {
-  const expected = process.env.TUTOR_DEBIT_SECRET
-  if (!expected) return false
-  const header = request.headers.get("Authorization") ?? ""
-  const prefix = "Bearer "
-  if (!header.startsWith(prefix)) return false
-  return secretsMatch(header.slice(prefix.length), expected)
+async function authorized(request: Request): Promise<boolean> {
+  const result = await verifyWorkerToken(request.headers.get("Authorization"), {
+    jwtKey: process.env.CLERK_JWT_KEY,
+    workerMachineId: process.env.TUTOR_WORKER_MACHINE_ID,
+    ledgerMachineId: process.env.TUTOR_LEDGER_MACHINE_ID,
+  })
+  return result.ok
 }
 
 const unauthorized = () =>
@@ -315,7 +319,7 @@ function boundedString(value: unknown, max: number): string | null {
 }
 
 const debit = httpAction(async (ctx, request) => {
-  if (!authorized(request)) return unauthorized()
+  if (!(await authorized(request))) return unauthorized()
 
   const body = await readBody(request)
   if (body instanceof Response) return body
@@ -373,7 +377,7 @@ const debit = httpAction(async (ctx, request) => {
 })
 
 const balance = httpAction(async (ctx, request) => {
-  if (!authorized(request)) return unauthorized()
+  if (!(await authorized(request))) return unauthorized()
 
   const body = await readBody(request)
   if (body instanceof Response) return body
@@ -438,7 +442,7 @@ function boundedArray(value: unknown, max: number): unknown[] | null {
 }
 
 const summary = httpAction(async (ctx, request) => {
-  if (!authorized(request)) return unauthorized()
+  if (!(await authorized(request))) return unauthorized()
 
   const body = await readBody(request, MAX_SUMMARY_BODY_BYTES)
   if (body instanceof Response) return body

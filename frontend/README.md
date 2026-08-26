@@ -75,12 +75,46 @@ load if it is unset or not an absolute `https://` URL. The Clerk JWT template
 named `convex` must carry the claims `aud: convex` and `email`; without them
 Convex rejects every token as having no matching auth provider.
 
-`TUTOR_DEBIT_SECRET` lives there too (`npx convex env set TUTOR_DEBIT_SECRET
-<value>`). It is the bearer token on `POST /tutor/debit`,
-`POST /tutor/balance` and `POST /tutor/summary` in `convex/http.ts` — the seam
-the agent worker meters seconds and records conversations through. Deliberately _not_ a `.env.local` var and never
-`NEXT_PUBLIC_*`: anything the browser can read is a way to spend someone
-else's balance. The worker keeps its own copy in `backend/.env.local`.
+Three more live there, and together they are how the worker proves who it is on
+`POST /tutor/debit`, `POST /tutor/balance` and `POST /tutor/summary` — the seam
+the agent worker meters seconds and records conversations through. There is no
+shared secret any more (`TUTOR_DEBIT_SECRET` is gone from both halves); the
+bearer is a **Clerk machine-to-machine JWT**, verified offline.
+
+| var (on the Convex deployment) | what it is                                                                                                                  |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `CLERK_JWT_KEY`                | The Clerk instance's JWKS public key, as a PEM. Verification is local — no secret key on Convex, no network call per debit. |
+| `TUTOR_WORKER_MACHINE_ID`      | `mch_…` — the machine the worker mints tokens as. Checked against the token's `subject`.                                    |
+| `TUTOR_LEDGER_MACHINE_ID`      | `mch_…` — this ledger's machine. Must appear in the token's `scopes`.                                                       |
+
+Both ends are checked (`convex/m2m.ts`): subject alone would let any machine
+scoped to the ledger debit, scope alone would let any token the worker minted
+for something else through. Any of the three unset is a `401` on every call —
+the seam fails closed, never open. Deliberately _not_ `.env.local` vars and
+never `NEXT_PUBLIC_*`: anything the browser can read is a way to spend someone
+else's balance.
+
+**Machine setup, per Clerk instance** (dev and prod each get their own pair):
+create two machines in the Clerk dashboard (Machines) — `tutor-worker` and
+`tutor-ledger` — and give `tutor-worker` a scope on `tutor-ledger`. Copy each
+machine's `mch_…` id into the two vars above. The worker holds
+`tutor-worker`'s machine secret key (`backend/.env.local`) and mints one
+JWT-format token per job; Convex holds no Clerk secret at all.
+
+**Producing `CLERK_JWT_KEY`.** The PEM is the instance's public signing key. Read
+it off the Dashboard (API keys -> Show JWT public key -> PEM public key), or
+convert the JWKS yourself:
+
+```shell
+curl -s https://<your-subdomain>.clerk.accounts.dev/.well-known/jwks.json   | node -e 'const j=JSON.parse(require("fs").readFileSync(0,"utf8"));
+      console.log(require("crypto").createPublicKey({ key: j.keys[0], format: "jwk" })
+        .export({ type: "spki", format: "pem" }).toString())'
+```
+
+Then `npx convex env set CLERK_JWT_KEY "$(cat key.pem)"` — it is multi-line, so
+keep the quotes. Rotating the instance's signing key means setting this again:
+because verification is offline there is no JWKS cache to expire on its own, and
+until the var is updated every worker token is refused.
 
 ## The money seam
 
@@ -94,8 +128,8 @@ the learner's Clerk id and balance into the agent's dispatch metadata, and only
 then writes the `sessions` row the worker will debit against.
 
 **`convex/http.ts`** is the worker's three routes — `POST /tutor/debit`,
-`POST /tutor/balance` and `POST /tutor/summary`, all behind a constant-time
-bearer check on `TUTOR_DEBIT_SECRET`, all machine-to-machine with no CORS.
+`POST /tutor/balance` and `POST /tutor/summary`, all behind the Clerk M2M
+token check in `convex/m2m.ts`, all machine-to-machine with no CORS.
 **The comment block at the top of that file is the wire contract**: exact paths,
 field names, types, bounds and status codes, written for whoever is on the
 Python side. Read it before changing either half.

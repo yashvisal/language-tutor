@@ -406,6 +406,12 @@ async def report_seconds_billed(
 
     Retried once, because this is the last chance to bill the session, and
     never raised: a failed debit is a logged fact, not a crash on the way out.
+    Once, and no further: a shutdown path that retried until it succeeded would
+    hold the worker open on exactly the outage that made it fail. If the
+    session is ending *because* the debits stopped landing
+    (`billing.MAX_CONSECUTIVE_DEBIT_FAILURES`), both calls here return
+    immediately without a request — the accepted under-bill of that session's
+    last minutes, which Convex's reconciliation cron closes out.
     """
     logger.info(
         "session seconds billed",

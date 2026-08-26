@@ -21,6 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from clock import SessionClock  # noqa: E402
+from state import SessionState  # noqa: E402
 
 
 class FakeTime:
@@ -375,6 +376,46 @@ async def test_the_zero_hold_keeps_its_own_timeout() -> None:
     assert h.rec.idle_ends == 0
     await h.advance(120)
     assert h.rec.idle_ends == 1
+
+
+# --- the hold sources the clock meters against ---------------------------
+
+
+async def test_every_hold_source_stops_the_meter() -> None:
+    """`clock_held` is the clock's only question, and it has four answers.
+
+    The fourth, added with the failure ceiling (phase 7 step 1): the ledger
+    stopped answering. A worker that cannot say what a conversation costs must
+    not keep metering one.
+    """
+    state = SessionState()
+    clock_time = FakeTime()
+    rec = Recorder()
+    clock = SessionClock(
+        600,
+        publish=rec.publish,
+        on_nudge=rec.nudge,
+        on_zero=rec.nudge,
+        on_idle_end=rec.idle_end,
+        is_paused=lambda: state.clock_held,
+        hold_idle_timeout_s=10_000.0,
+        now=clock_time,
+    )
+    await clock.start()
+    await clock.aclose()
+
+    for field in ("paused", "learner_absent", "model_failed", "ledger_failed"):
+        setattr(state, field, False)
+        for _ in range(10):
+            clock_time.t += 1.0
+            await clock.tick()
+        ran = clock.elapsed_s
+        setattr(state, field, True)
+        for _ in range(10):
+            clock_time.t += 1.0
+            await clock.tick()
+        assert clock.elapsed_s == ran, f"{field} did not stop the meter"
+        setattr(state, field, False)
 
 
 def main() -> int:

@@ -106,6 +106,14 @@ ATTR_CORRECTION_COUNT = "tutor.correction_count"
 AGENT_NAME = "tutor"
 
 
+class UnmeteredProductionError(RuntimeError):
+    """`TUTOR_ALLOW_UNMETERED` on a worker that declared itself production.
+
+    Its own class so the boot refusal is greppable and cannot be swallowed by a
+    bare `except RuntimeError` meant for the missing-API-key case.
+    """
+
+
 def _env(name: str, default: str) -> str:
     value = os.environ.get(name)
     return value if value else default
@@ -257,8 +265,40 @@ class TutorConfig:
     # is the local-development escape hatch, and it logs a warning every time.
     allow_unmetered: bool = False
 
+    # Which deployment this worker is. A free string; `"production"` is the
+    # only value that means anything, and it is set explicitly on the prod
+    # worker (phase 7: "explicit over heuristic"). Nothing else can tell dev
+    # from prod here — both share LiveKit Cloud and a `*.convex.site` host, and
+    # a Clerk machine key carries no test/live marker.
+    tutor_env: str = ""
+
+    @property
+    def is_production(self) -> bool:
+        return self.tutor_env.strip().lower() == "production"
+
     @classmethod
     def from_env(cls) -> TutorConfig:
+        tutor_env = _env("TUTOR_ENV", "").strip()
+        allow_unmetered = _env_bool("TUTOR_ALLOW_UNMETERED", False)
+        if tutor_env.lower() == "production" and allow_unmetered:
+            # The one combination that must never boot: unmetered means every
+            # learner talks for free and nothing pages. Refusing to start is
+            # loud in a way a warning on every session is not.
+            raise UnmeteredProductionError(
+                "TUTOR_ALLOW_UNMETERED is set on a production worker "
+                "(TUTOR_ENV=production). Unmetered sessions bill nothing; it is "
+                "a local-development escape hatch only. Unset one of them."
+            )
+        if not tutor_env and _env("CLERK_WORKER_MACHINE_SECRET_KEY", "").strip():
+            # A worker holding a machine key can debit a real ledger. If it has
+            # not said which deployment it is, say so once — the guard above
+            # cannot protect a worker that never declared itself.
+            logger.warning(
+                "TUTOR_ENV is not set: this worker has a Clerk machine key but has "
+                "not declared its environment. Set TUTOR_ENV=production on the "
+                "production worker so TUTOR_ALLOW_UNMETERED can never boot there."
+            )
+
         openai_api_key = _env("OPENAI_API_KEY", "")
         if not openai_api_key.strip():
             # Every model in this worker is OpenAI's. Without the key the job
@@ -289,7 +329,8 @@ class TutorConfig:
             hold_idle_s=_env_float(
                 "TUTOR_HOLD_IDLE_S", 600.0, low=HOLD_IDLE_MIN_S, high=HOLD_IDLE_MAX_S
             ),
-            allow_unmetered=_env_bool("TUTOR_ALLOW_UNMETERED", False),
+            allow_unmetered=allow_unmetered,
+            tutor_env=tutor_env,
         )
 
     @property
