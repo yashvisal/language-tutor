@@ -8,9 +8,10 @@ first; nothing here reopens a settled decision.*
 
 ## Status (2026-08-25)
 
-Steps 1 and 2 built and pushed (`51e6cab`, `20dfccf`); the M2M swap on
-top (`d91a968`). Not yet run live — Yash tests end to end when there is
-quiet. Next: step 3, pending the decisions at the bottom.
+Steps 1–3 built and pushed (`51e6cab`, `20dfccf`, step 3 on top) with the
+M2M swap (`d91a968`). Not yet run live — Yash tests end to end when there
+is quiet. Next: step 4 (quick quality), then step 5 pending the payment
+rail decision.
 
 ## Steps (each one reviewed hand-off; each leaves the app working)
 
