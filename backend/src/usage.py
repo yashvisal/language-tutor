@@ -4,8 +4,10 @@ Audio is ~94% of the bill, split about evenly between uncached input (the
 learner's speech and the room's silence, billed once per turn) and output (the
 tutor's speech) — measured 2026-08-21 on gpt-realtime-2.1. The tutor's talk
 share is the half we control. Everything else is context for the ledger and
-for pricing decisions. Prices are estimates for logging only — the
-ledger bills seconds, never tokens.
+for pricing decisions. Prices are estimates: the whole line is logged, and the
+dollars alone ride up with the session record as `estCostUsd` (phase 7 step 4)
+so a session's cost sits beside the session — but the ledger bills seconds,
+never tokens.
 """
 
 from __future__ import annotations
@@ -62,7 +64,7 @@ class UsageTracker:
         except Exception:
             logger.debug("could not record text usage", exc_info=True)
 
-    def summary(self, *, active_s: int, room: str) -> dict[str, Any]:
+    def summary(self, *, active_s: int, room: str = "") -> dict[str, Any]:
         # The ledger's unit is seconds (phase 6); the cost lines want minutes,
         # so this is the one place the conversion happens — as a float, because
         # rounding a 90-second session to "1 minute" doubles its apparent cost.
@@ -120,6 +122,28 @@ class UsageTracker:
             if active_minutes
             else None,
         }
+
+    def est_cost_usd(self, *, active_s: int) -> float:
+        """This session's estimated model spend, in dollars, for the record.
+
+        The same number `summary()` logs — but this one travels: it is the
+        `estCostUsd` field on `/tutor/summary`, so `est_cost_usd` stops being
+        a log line nobody reads and becomes a column beside the session it
+        belongs to (audit §4.7: "logged and discarded"). Estimate, not a
+        bill: the ledger still meters seconds and only seconds.
+
+        Guarded like everything else on the teardown path — a cost line is not
+        worth a lost transcript, so anything unusable is reported as 0.
+        """
+        try:
+            cost = float(self.summary(active_s=active_s)["est_cost_usd"])
+        except Exception:
+            logger.debug("could not estimate the session cost", exc_info=True)
+            return 0.0
+        if cost != cost or cost in (float("inf"), float("-inf")):
+            # NaN or infinity: a wire the ledger would reject outright.
+            return 0.0
+        return round(max(cost, 0.0), 4)
 
     def log_summary(self, *, active_s: int, room: str) -> None:
         try:

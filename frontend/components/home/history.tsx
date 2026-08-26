@@ -16,7 +16,6 @@
  */
 
 import { useState } from "react"
-import { MoveRight } from "lucide-react"
 import { useQuery } from "convex/react"
 
 import {
@@ -25,6 +24,7 @@ import {
 } from "@/components/session/review-material"
 import {
   AsksList,
+  CorrectionDiff,
   EndReasonNote,
   GoalLine,
   LookupsList,
@@ -221,24 +221,10 @@ function SessionDialog({
                             beside them so a long sentence never pushes it onto
                             a line of its own. */}
                         <div className="min-w-0">
-                          <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
-                            <span
-                              className="text-muted-foreground line-through decoration-muted-foreground/40"
-                              lang={TARGET_LANGUAGE}
-                            >
-                              {correction.original}
-                            </span>
-                            <MoveRight
-                              aria-hidden
-                              className="size-3.5 shrink-0 text-muted-foreground/50"
-                            />
-                            <span
-                              className="font-medium text-foreground"
-                              lang={TARGET_LANGUAGE}
-                            >
-                              {correction.replacement}
-                            </span>
-                          </p>
+                          <CorrectionDiff
+                            original={correction.original}
+                            replacement={correction.replacement}
+                          />
                           {correction.explanation && (
                             <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
                               {correction.explanation}

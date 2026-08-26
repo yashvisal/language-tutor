@@ -13,8 +13,10 @@ Clerk machine-to-machine JWT the worker mints once per job (see "auth" below):
   zero-hold debit must leave it open, or a purchase could not resume the same
   conversation.
 - `POST /tutor/summary` — "here is what this conversation WAS". One line about
-  what was actually talked about, the transcript, and the session's Review
-  material, posted once at teardown so the after-session summary and the
+  what was actually talked about, the transcript, the session's Review
+  material, and what the session cost us to run (`estCostUsd`, an estimate for
+  our books and not part of anyone's bill), posted once at teardown so the
+  after-session summary and the
   History modal render the same record instead of losing everything when the
   tab closes (phase 7 step 2). Order-independent with the final debit: the
   Convex side upserts onto the session row either way.
@@ -171,6 +173,12 @@ MAX_ASKS = 25
 MAX_ASK_CHARS = 400
 MAX_LOOKUPS = 100
 MAX_LOOKUP_CHARS = 200
+
+# What the session cost us to run, estimated (phase 7 step 4). The ledger takes
+# a finite number in 0..1000 and rejects the whole record otherwise, so the
+# bound is re-applied here like every other one: a runaway cost estimate must
+# cost the cost line, never the transcript.
+MAX_EST_COST_USD = 1000.0
 
 # Why the session ended, sent with the final debit and only with it. Every
 # ending path in `agent.py` maps to exactly one of these; `ended` is the
@@ -446,6 +454,7 @@ class BillingClient:
         anchor_ratio: float | None = None,
         asks: list[str] | None = None,
         lookups: list[dict[str, str]] | None = None,
+        est_cost_usd: float | None = None,
     ) -> bool:
         """Post this session's record. Returns whether the ledger took it.
 
@@ -489,6 +498,13 @@ class BillingClient:
         if len(payload) <= 3:
             # Nothing but the identifiers: a session that produced no record.
             return False
+        # Deliberately after the emptiness check: what a session COST is not by
+        # itself a record of what it was, and a record of nothing is not worth
+        # a row. Before `_fit_body`, because it is twenty bytes and the trimmer
+        # should see the body that will actually be sent.
+        cost = _clean_cost(est_cost_usd)
+        if cost is not None:
+            payload["estCostUsd"] = cost
         payload = _fit_body(payload)
         async with self._lock:
             body = await self._post_json(SUMMARY_PATH, payload)
@@ -515,6 +531,7 @@ class BillingClient:
                 "anchor_ratio": payload.get("anchorRatio"),
                 "asks": len(payload.get("asks", [])),
                 "lookups": len(payload.get("lookups", [])),
+                "est_cost_usd": payload.get("estCostUsd"),
             },
         )
         return True
@@ -778,6 +795,23 @@ def _pairs(raw: object, limit: int, first: str, second: str) -> list[dict[str, s
         if len(items) >= limit:
             break
     return items
+
+
+def _clean_cost(cost: float | None) -> float | None:
+    """The estimated dollars, or None when there is no usable number.
+
+    Clamped rather than dropped at the top end: a cost above the ledger's
+    ceiling means the estimator is wrong, and the ceiling is a more useful
+    thing to see in the column than a silently absent number. NaN, infinity
+    and booleans are dropped — the ledger would 400 on them, and a 400 costs
+    the whole record.
+    """
+    if cost is None or isinstance(cost, bool) or not isinstance(cost, (int, float)):
+        return None
+    value = float(cost)
+    if value != value or value in (float("inf"), float("-inf")):
+        return None
+    return round(min(max(value, 0.0), MAX_EST_COST_USD), 4)
 
 
 def _clean_review(review: dict[str, object] | None) -> dict[str, object] | None:

@@ -364,6 +364,42 @@ class TutorConfig:
             tutor_env=tutor_env,
         )
 
+    def log_fields(self) -> dict[str, object]:
+        """The resolved configuration, as one line at worker boot.
+
+        Every value here was resolved from the environment (or fell back to a
+        default with a warning), so this is what the worker is ACTUALLY running
+        — the point being that a deploy pointed at the wrong Convex, running
+        the wrong model, or holding no machine key is visible in the first log
+        line rather than in the first learner's session.
+
+        Secrets are reported as presence and never as value: `openai_key` and
+        `machine_key` are booleans. `convex_site_url` is not a secret and is
+        the single most useful string here — a worker debiting the dev ledger
+        from production looks exactly like a healthy worker otherwise.
+        """
+        return {
+            "tutor_env": self.tutor_env or "(unset)",
+            "allow_unmetered": self.allow_unmetered,
+            "convex_site_url": os.environ.get("CONVEX_SITE_URL", "") or "(unset)",
+            "machine_key": bool(os.environ.get("CLERK_WORKER_MACHINE_SECRET_KEY", "").strip()),
+            "openai_key": bool(self.openai_api_key.strip()),
+            "target_lang": self.target_lang,
+            "anchor_lang": self.anchor_lang,
+            "goal_lang": self.goal_lang,
+            "realtime_model": self.realtime_model,
+            "realtime_voice": self.realtime_voice,
+            "realtime_reasoning": self.realtime_reasoning,
+            "realtime_speed": self.realtime_speed,
+            "stt_model": self.stt_model,
+            "analyzer_model": self.analyzer_model,
+            "analyzer_enabled": self.analyzer_enabled,
+            "translate_model": self.translate_model,
+            "min_endpointing_s": self.min_endpointing_s,
+            "max_endpointing_s": self.max_endpointing_s,
+            "hold_idle_s": self.hold_idle_s,
+        }
+
     @property
     def target_language_name(self) -> str:
         return language_name(self.target_lang)

@@ -23,6 +23,7 @@
 
 import { useEffect, useState } from "react"
 
+import { OVERLINE_CLASS } from "@/components/overline"
 import { formatClock } from "@/lib/billing"
 import { cn } from "@/lib/utils"
 
@@ -96,8 +97,11 @@ function ClockFace({
       <span
         aria-live="polite"
         className={cn(
-          "flex items-baseline gap-2 text-[11px] tracking-[0.1em] whitespace-nowrap uppercase transition-colors duration-500",
-          ending ? "text-primary" : "text-muted-foreground"
+          // The product's one label scale — the clock is a span rather than an
+          // `Overline` only because it is an `aria-live` region in a flex row.
+          OVERLINE_CLASS,
+          "flex items-baseline gap-2 whitespace-nowrap transition-colors duration-500",
+          ending && "text-primary"
         )}
       >
         <span className="tabular-nums">

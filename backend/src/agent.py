@@ -19,7 +19,7 @@ import logging
 import random
 import sys
 import time
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any
 
@@ -33,6 +33,7 @@ from livekit.agents import (
     CloseReason,
     ErrorEvent,
     JobContext,
+    JobProcess,
     StopResponse,
     TurnHandlingOptions,
     function_tool,
@@ -258,7 +259,84 @@ class TutorAgent(Agent):
             raise StopResponse()
 
 
-server = AgentServer()
+# --- the worker itself ----------------------------------------------------
+#
+# Explicitly configured, not a bare `AgentServer()` (audit §4.11). Two knobs
+# earn their place; the third is deliberately left alone and says why.
+
+# How many warm processes the pool keeps with no job in them. The framework's
+# own defaults are 0 in dev and `ceil(cpu_count)` in production; 1 in both is
+# the number that matches what this worker actually is.
+#
+# A cold job process pays ~2.5s importing `livekit.agents.inference` (the
+# native VAD / EOT library) before `_prewarm` even runs, and that is time the
+# first learner of an idle instance spends looking at a silent stage. One warm
+# process removes it for one learner at the cost of one process' memory.
+# `ceil(cpu_count)` would hold that memory times every core for a worker whose
+# jobs are almost entirely I/O — a realtime socket, an STT socket, and some
+# short text calls. Raise this when a load test says what an instance can
+# actually hold; guessing high is how you OOM an instance at idle.
+NUM_IDLE_PROCESSES = 1
+
+# `load_threshold` is deliberately NOT set. It defaults to 0.7 of the agent
+# server's own 5-second average CPU (and to infinity in dev, which is what
+# keeps a laptop taking jobs while something else is compiling), and LiveKit
+# Cloud ignores it entirely — it is a self-hosting knob. Headroom per instance
+# for a realtime-audio agent is unknown until one instance is load-tested
+# (audit §4.11), and 0.7 CPU is a better guess than any number we could invent
+# here. Load-test before the first public link, then set it with `load_fnc`.
+
+
+def _prewarm(proc: JobProcess) -> None:
+    """Run once per job process, before any job is assigned to it.
+
+    Two jobs:
+
+    - **The models that are per-process, not per-session.** The local-inference
+      VAD is a native singleton and the turn detector holds only per-stream
+      state, so one of each per process is correct — and building them here
+      means the first session in a process does not build them on its own
+      critical path. Both are handed to `AgentSession` below; the entrypoint
+      falls back to constructing its own if this ever failed, so a broken
+      prewarm costs latency, never a job.
+    - **The boot line.** One INFO record naming the resolved configuration, so
+      a deploy pointed at the wrong Convex, running the wrong model, or
+      carrying no machine key is visible in the first log line rather than in
+      the first learner's session.
+
+    Nothing here may raise: an exception in process initialization takes the
+    process with it, and the config errors this can hit (a missing API key, an
+    unmetered production worker) are already refused per job, loudly, in
+    `TutorConfig.from_env`.
+    """
+    try:
+        logger.info("worker boot", extra=TutorConfig.from_env().log_fields())
+    except Exception as exc:
+        # The config itself is broken. This is the line that says so — every
+        # job this process takes is about to be refused for the same reason.
+        logger.error("worker boot: the configuration is unusable: %s", exc)
+
+    try:
+        proc.userdata["vad"] = inference.VAD(model="silero")
+        proc.userdata["turn_detector"] = inference.TurnDetector()
+    except Exception:
+        logger.warning("prewarm failed; sessions will build their own", exc_info=True)
+
+
+server = AgentServer(num_idle_processes=NUM_IDLE_PROCESSES)
+server.setup_fnc = _prewarm
+
+
+def _prewarmed(ctx: JobContext, key: str, build: Callable[[], Any]) -> Any:
+    """The process' prewarmed model, or a fresh one. Never fails a session."""
+    try:
+        warmed = ctx.proc.userdata.get(key)
+        if warmed is not None:
+            return warmed
+    except Exception:
+        logger.debug("no process userdata for %r", key, exc_info=True)
+    logger.info("building %r for this session: it was not prewarmed", key)
+    return build()
 
 
 @server.rtc_session(agent_name=AGENT_NAME)
@@ -299,6 +377,12 @@ async def tutor(ctx: JobContext) -> None:
 
     session: AgentSession = AgentSession(
         llm=cfg.build_realtime_model(),
+        # Both come from the prewarm hook when there was one (`_prewarm`), so
+        # the first session in a process does not load them itself. Falling
+        # back to a fresh instance keeps every other entry point working: the
+        # console smoke test, a simulated job, and any process whose prewarm
+        # failed.
+        vad=_prewarmed(ctx, "vad", lambda: inference.VAD(model="silero")),
         # Parallel STT owns every transcript the UI shows. Both languages are
         # listed because code-switching is expected in a tutoring session.
         stt=openai.STT(
@@ -310,7 +394,7 @@ async def tutor(ctx: JobContext) -> None:
         # model's replies, the transcript segmentation, and the analyzer
         # trigger alike.
         turn_handling=TurnHandlingOptions(
-            turn_detection=inference.TurnDetector(),
+            turn_detection=_prewarmed(ctx, "turn_detector", inference.TurnDetector),
             # min_delay must outlast the STT flush lag or late transcripts
             # double-commit the turn and interrupt the reply (see TutorConfig).
             endpointing={
@@ -396,6 +480,14 @@ async def tutor(ctx: JobContext) -> None:
                 # about, the transcript, the Review material and the
                 # corrections — the things that used to die with the tab. Order-independent with the
                 # debit above; bounded so a hung model cannot hold a shutdown.
+                #
+                # It also carries what the session COST (phase 7 step 4), and
+                # that is why the ordering here matters: `UsageTracker` is fed
+                # by `session_usage_updated`, which the framework emits on
+                # every metrics event, so by the time the session has closed
+                # and this callback runs the total is already complete — and
+                # the one model call still to come (the `about` line) is
+                # counted inside `report_session_summary`, before the POST.
                 await asyncio.wait_for(
                     report_session_summary(
                         cfg,
@@ -405,6 +497,10 @@ async def tutor(ctx: JobContext) -> None:
                         facts=facts,
                         usage=usage,
                         turns_taken=state.turn_seq,
+                        # The seconds the ledger just settled against, so the
+                        # record's `estCostUsd` is the cost of exactly the time
+                        # that was billed.
+                        active_s=clock.seconds_billed,
                         coach=coach,
                         translator=translator,
                     ),

@@ -48,12 +48,12 @@ export function BillingDialog({
           </DialogTitle>
         </DialogHeader>
 
-        <div className="max-h-[60svh] space-y-6 overflow-y-auto px-6 py-1 [scrollbar-width:thin] [scrollbar-color:var(--border)_transparent]">
+        <div className="max-h-[60svh] [scrollbar-width:thin] [scrollbar-color:var(--border)_transparent] space-y-6 overflow-y-auto px-6 py-1">
           <div>
             <p className="text-sm text-muted-foreground">Time left</p>
             {/* Reserved height: a flash of "0:00" is a lie about the one
                 number this dialog exists to show. */}
-            <p className="mt-1 min-h-10 text-4xl font-semibold tracking-tight tabular-nums text-foreground">
+            <p className="mt-1 min-h-10 text-4xl font-semibold tracking-tight text-foreground tabular-nums">
               {known && formatClock(seconds)}
             </p>
             <p className="mt-1.5 text-sm text-muted-foreground">
@@ -63,7 +63,7 @@ export function BillingDialog({
 
           <div>
             <p className="text-sm font-medium text-foreground">Minute packs</p>
-            <div className="mt-3 grid grid-cols-3 gap-2">
+            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
               {MINUTE_PACKS.map((pack) => (
                 <div
                   key={pack.minutes}

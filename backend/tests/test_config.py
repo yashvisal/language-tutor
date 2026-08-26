@@ -35,6 +35,7 @@ MANAGED = (
     "TUTOR_ENV",
     "TUTOR_ALLOW_UNMETERED",
     "CLERK_WORKER_MACHINE_SECRET_KEY",
+    "CONVEX_SITE_URL",
 )
 
 
@@ -137,6 +138,45 @@ def test_a_worker_with_no_machine_key_is_quiet() -> None:
     with env(), capture() as log:
         TutorConfig.from_env()
     assert [m for m in log.warnings() if "TUTOR_ENV" in m] == []
+
+
+# --- the boot line (phase 7 step 4) ---------------------------------------
+
+
+def test_the_boot_line_names_the_deploy() -> None:
+    with env(
+        TUTOR_ENV="production",
+        CONVEX_SITE_URL="https://example.convex.site",
+        CLERK_WORKER_MACHINE_SECRET_KEY="ak_secret_value",
+    ):
+        fields = TutorConfig.from_env().log_fields()
+    assert fields["tutor_env"] == "production"
+    assert fields["convex_site_url"] == "https://example.convex.site"
+    assert fields["machine_key"] is True
+    assert fields["openai_key"] is True
+    assert fields["allow_unmetered"] is False
+    # The models a deploy could be wrong about are all on the line.
+    for key in ("realtime_model", "stt_model", "analyzer_model", "translate_model"):
+        assert fields[key]
+
+
+def test_the_boot_line_reports_secrets_as_presence_only() -> None:
+    with env(
+        CONVEX_SITE_URL="https://example.convex.site",
+        CLERK_WORKER_MACHINE_SECRET_KEY="ak_secret_value",
+    ):
+        blob = repr(TutorConfig.from_env().log_fields())
+    assert "ak_secret_value" not in blob
+    assert "sk-test" not in blob
+
+
+def test_an_unconfigured_worker_says_so_on_the_boot_line() -> None:
+    with env():
+        fields = TutorConfig.from_env().log_fields()
+    # The two that make a worker useless, both visible in the first log line.
+    assert fields["tutor_env"] == "(unset)"
+    assert fields["convex_site_url"] == "(unset)"
+    assert fields["machine_key"] is False
 
 
 def main() -> int:

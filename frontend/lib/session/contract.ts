@@ -199,6 +199,13 @@ export interface SessionGoal {
  *   ended the session (phase 7 step 1's ceiling).
  * - `"tutor_silent"` — the tutor never produced audio at all: a start that
  *   failed rather than a conversation that ended.
+ * - `"stale"` — nobody closed the row: the worker died or the tab went away
+ *   without a goodbye, and the reconciliation cron finished it later. Written
+ *   by Convex, never by the worker.
+ *
+ * This union and `convex/validators.ts`'s must stay identical — the validator
+ * asserts equality against it at type level, so adding a reason in one place
+ * and not the other fails `tsc`.
  */
 export type SessionEndReason =
   | "ended"
@@ -208,6 +215,7 @@ export type SessionEndReason =
   | "model_error"
   | "ledger_failure"
   | "tutor_silent"
+  | "stale"
 
 /**
  * One select-to-translate lookup, as stored. The span the learner highlighted

@@ -30,7 +30,6 @@
  */
 
 import Link from "next/link"
-import { MoveRight } from "lucide-react"
 import { useQuery } from "convex/react"
 
 import { Overline } from "@/components/overline"
@@ -41,6 +40,7 @@ import {
 } from "@/components/session/review-material"
 import {
   AsksList,
+  CorrectionDiff,
   EndReasonNote,
   GoalLine,
   LookupsList,
@@ -55,7 +55,7 @@ import {
   type Correction,
   type SessionOutcome,
 } from "@/lib/session/contract"
-import { ANCHOR_LANGUAGE, TARGET_LANGUAGE } from "@/lib/session/protocol"
+import { ANCHOR_LANGUAGE } from "@/lib/session/protocol"
 import { groupCorrections } from "@/lib/session/reducer"
 import { cn } from "@/lib/utils"
 
@@ -184,26 +184,11 @@ export function SessionSummary({
                   <ul className="mt-3 space-y-3">
                     {group.map((correction) => (
                       <li key={correction.id}>
-                        <p
-                          className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm"
-                          lang={TARGET_LANGUAGE}
-                        >
-                          <span className="text-muted-foreground line-through decoration-muted-foreground/40">
-                            {correction.original}
-                          </span>
-                          <MoveRight
-                            aria-hidden
-                            className="size-3.5 shrink-0 text-muted-foreground"
-                          />
-                          <span
-                            className={cn(
-                              "font-medium",
-                              CATEGORY_STYLES[category].accent
-                            )}
-                          >
-                            {correction.replacement}
-                          </span>
-                        </p>
+                        <CorrectionDiff
+                          original={correction.original}
+                          replacement={correction.replacement}
+                          accentClassName={CATEGORY_STYLES[category].accent}
+                        />
                         {correction.explanation && (
                           <p
                             className="mt-1 text-xs leading-relaxed text-muted-foreground"

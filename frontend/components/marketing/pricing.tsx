@@ -1,4 +1,5 @@
 import { PACKS, PACKS_NOTE } from "@/components/marketing/brand"
+import { Overline } from "@/components/overline"
 import { cn } from "@/lib/utils"
 
 /**
@@ -18,15 +19,13 @@ export function PricingPacks({ className }: { className?: string }) {
             key={pack.minutes}
             className={cn(
               "relative rounded-2xl border bg-card p-6 transition-colors",
-              featured
-                ? "border-primary/50"
-                : "border-border/70"
+              featured ? "border-primary/50" : "border-border/70"
             )}
           >
             {featured && (
-              <span className="absolute -top-2.5 left-6 rounded-full border border-primary/40 bg-background px-2 py-0.5 text-[10px] font-medium tracking-[0.14em] text-primary uppercase">
+              <Overline className="absolute -top-2.5 left-6 rounded-full border border-primary/40 bg-background px-2 py-0.5 text-primary">
                 Most popular
-              </span>
+              </Overline>
             )}
             <div className="text-4xl font-semibold tracking-tight tabular-nums">
               {pack.minutes}
@@ -48,19 +47,5 @@ export function PricingNote({ className }: { className?: string }) {
     <p className={cn("text-sm text-muted-foreground", className)}>
       {PACKS_NOTE}
     </p>
-  )
-}
-
-/** One-line version for a page that has already said enough. */
-export function PricingLine({ className }: { className?: string }) {
-  return (
-    <div className={cn("space-y-2 text-sm text-muted-foreground", className)}>
-      <p className="tabular-nums">
-        {PACKS.map((pack) => `${pack.minutes} minutes ${pack.price}`).join(
-          "  ·  "
-        )}
-      </p>
-      <p>{PACKS_NOTE}</p>
-    </div>
   )
 }

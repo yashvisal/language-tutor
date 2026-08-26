@@ -12,6 +12,7 @@ import { MarketingHeader } from "@/components/marketing/marketing-header"
 import { PricingNote, PricingPacks } from "@/components/marketing/pricing"
 import { PrimaryCta } from "@/components/marketing/primary-cta"
 import { Reveal } from "@/components/marketing/reveal"
+import { SIGNUP_GRANT_MINUTES } from "@/lib/billing"
 import { cn } from "@/lib/utils"
 
 export const metadata: Metadata = {
@@ -108,12 +109,12 @@ export default function LandingPage() {
               ].map((step, i) => (
                 <li key={step.n} className="flex h-full flex-col">
                   <Reveal delay={i * 0.08} className="flex h-full flex-col">
-                    <div className="h-56 rounded-2xl border border-border/60 bg-muted/50 shadow-xs dark:bg-card/40 dark:shadow-none px-6">
+                    <div className="h-56 rounded-2xl border border-border/60 bg-muted/50 px-6 shadow-xs dark:bg-card/40 dark:shadow-none">
                       {step.stage}
                     </div>
                     <div className="px-1 pt-5">
                       <div className="flex items-baseline gap-3">
-                        <span className="text-xs font-medium tabular-nums text-primary">
+                        <span className="text-xs font-medium text-primary tabular-nums">
                           {step.n}
                         </span>
                         <h3 className="text-lg font-medium tracking-tight">
@@ -196,7 +197,7 @@ export default function LandingPage() {
                     Minutes
                   </h2>
                   <p className="mt-3 text-2xl font-medium tracking-tight">
-                    Your first 10 minutes are free.
+                    Your first {SIGNUP_GRANT_MINUTES} minutes are free.
                   </p>
                 </div>
                 <PricingNote />

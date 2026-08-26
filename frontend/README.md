@@ -40,7 +40,6 @@ each provider's dashboard:
 | `NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL` | Landing route after sign-up when there is no return path |
 | `CONVEX_DEPLOYMENT`                               | Which Convex deployment the CLI talks to                 |
 | `NEXT_PUBLIC_CONVEX_URL`                          | Convex websocket URL the React client connects to        |
-| `NEXT_PUBLIC_CONVEX_SITE_URL`                     | Convex HTTP actions origin                               |
 
 Required vars are read through `lib/env.ts`, so a missing one fails with its
 own name rather than somewhere downstream.
@@ -132,7 +131,11 @@ then writes the `sessions` row the worker will debit against.
 token check in `convex/m2m.ts`, all machine-to-machine with no CORS.
 **The comment block at the top of that file is the wire contract**: exact paths,
 field names, types, bounds and status codes, written for whoever is on the
-Python side. Read it before changing either half.
+Python side. Read it before changing either half. `http.ts` itself keeps only
+what needs the runtime — the token check, the body-size ceiling, the parse, the
+dispatch; every field rule it documents is enforced in **`convex/wire.ts`**, as
+pure functions over a parsed body, so the `400` paths are unit-tested directly
+(`convex/wire.test.ts`) instead of through an HTTP round trip.
 
 In short: the worker reports the room's _cumulative_ billed seconds under the
 ref `<room>:<jobId>:<seq>`; `sessions.debit` writes only the delta against
@@ -166,21 +169,25 @@ and whether the clock ended the session.
 Step 3 added the rest of what History needs to say what was **set up**, what
 was **done**, and **why it stopped** — all optional, all on the same terms:
 
-| field         | route             | shape                                                    |
-| ------------- | ----------------- | -------------------------------------------------------- |
-| `goal`        | `/tutor/summary`  | `{ text (<= 200), forms (<= 8 x 60), source }`, `source` one of `plan` / `tool` / `extracted`. The confirmed goal — the session's spine, sent the moment it is confirmed rather than held to teardown. `source` is how much to trust it: an `extracted` goal was never said back to the learner. |
-| `turns`       | `/tutor/summary`  | integer `0..100000`. Learner turns committed — how much they actually spoke, which seconds are not. |
-| `anchorRatio` | `/tutor/summary`  | `0..1`. The share of those turns spoken mostly in the anchor language: the learner falling back to English, and the input support-on-evidence reads. |
-| `asks`        | `/tutor/summary`  | `<= 25` strings of `<= 400` chars — the Ask tab's questions, in order. Questions only; what the learner did not know is the study record. |
-| `lookups`     | `/tutor/summary`  | `<= 100` of `{ source, translation }`, strings `<= 200` — every select-to-translate lookup. It lived in an overlay that unmounted on resume. |
-| `endReason`   | `/tutor/debit`    | as `reason` on the **final** report only: `ended`, `out_of_minutes_idle`, `hold_idle`, `learner_left`, `model_error`, `ledger_failure`, `tutor_silent`. |
+| field         | route            | shape                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ------------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `goal`        | `/tutor/summary` | `{ text (<= 200), forms (<= 8 x 60), source }`, `source` one of `plan` / `tool` / `extracted`. The confirmed goal — the session's spine, sent the moment it is confirmed rather than held to teardown. `source` is how much to trust it: an `extracted` goal was never said back to the learner.                                                                                                               |
+| `turns`       | `/tutor/summary` | integer `0..100000`. Learner turns committed — how much they actually spoke, which seconds are not.                                                                                                                                                                                                                                                                                                            |
+| `anchorRatio` | `/tutor/summary` | `0..1`. The share of those turns spoken mostly in the anchor language: the learner falling back to English, and the input support-on-evidence reads.                                                                                                                                                                                                                                                           |
+| `asks`        | `/tutor/summary` | `<= 25` strings of `<= 400` chars — the Ask tab's questions, in order. Questions only; what the learner did not know is the study record.                                                                                                                                                                                                                                                                      |
+| `lookups`     | `/tutor/summary` | `<= 100` of `{ source, translation }`, strings `<= 200` — every select-to-translate lookup. It lived in an overlay that unmounted on resume.                                                                                                                                                                                                                                                                   |
+| `endReason`   | `/tutor/debit`   | as `reason` on the **final** report only: `ended`, `out_of_minutes_idle`, `hold_idle`, `learner_left`, `model_error`, `ledger_failure`, `tutor_silent`. `stale` is in the enum too, but it is the reconciliation cron's word, not the worker's.                                                                                                                                                                |
+| `estCostUsd`  | `/tutor/summary` | finite, `0..1000`. The worker's estimated MODEL spend for the session in USD (`backend/src/usage.py`) — realtime audio plus every text call. **Internal: no surface renders it.** It is what the conversation cost to RUN, not what the learner was billed (that is `secondsBilled` against the ledger); it exists so "does a ten-minute conversation make money" can be answered without reading worker logs. |
 
 `endReason` is the one field with a rule of its own: **written once, never
 overwritten.** The first `final: true` report is the one that was actually
 there when it stopped; a redispatched job's teardown is guessing. It is also
 written independently of `endedAt`, so a session the client's `sessions.finish`
 already closed still gets its explanation — the case History most needs. Absent
-means "we do not know", never "it ended cleanly".
+means "we do not know", never "it ended cleanly". The one other writer is the
+reconciliation cron (`sessions.reconcileStale`), which marks a row nobody ever
+closed `stale` — and only where no reason is there already, on the same rule:
+whoever was actually present said it first.
 
 Every field is optional and independently written (a field absent from
 the body is left untouched, sending one again replaces it wholesale), and the
@@ -218,8 +225,15 @@ pnpm build
 ```
 
 `pnpm test` covers the money seam and the after-session record
-(`convex/sessions.test.ts`): room ownership, the one-open-session guard, ref
-idempotency, the high-water delta, the reconciliation cron, and — for
+(`convex/sessions.test.ts`) and the wire that guards them
+(`convex/wire.test.ts` — the `400` paths of all three routes, field by field:
+seconds and seq bounds, a truthy-string `final`, an unknown end reason, an
+unknown transcript role, the goal shape and source, the review keys,
+`anchorRatio` / `turns` / `asks` / `lookups` / `estCostUsd` bounds, and an
+optional `room` on balance). `sessions.test.ts` covers room ownership, the
+one-open-session guard, ref idempotency, the high-water delta, the
+reconciliation cron (including the `stale` reason it writes and never
+overwrites), and — for
 `recordSummary` / `byRoom` / `history` — clamping, cross-learner refusal,
 order-independence with the final debit, and paging finished rows past a run of
 abandoned ones. Step 3 adds the goal / turns / anchor-ratio / asks / lookups

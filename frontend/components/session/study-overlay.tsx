@@ -148,10 +148,13 @@ export function StudyOverlay({
       role="dialog"
       aria-modal="true"
       aria-label="Study"
-      initial={{ opacity: 0, y: -12 }}
+      initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -12 }}
       animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -12 }}
-      transition={{ duration: 0.3, ease: [0.32, 0.72, 0, 1] }}
+      exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -12 }}
+      transition={{
+        duration: reducedMotion ? 0.15 : 0.3,
+        ease: [0.32, 0.72, 0, 1],
+      }}
       className="absolute inset-0 z-20 bg-background/92 backdrop-blur-xl"
     >
       <Tabs
@@ -180,7 +183,7 @@ export function StudyOverlay({
                     size="icon-sm"
                     onClick={onClose}
                     aria-label="Close and resume"
-                    className="absolute top-3 right-4 rounded-full text-muted-foreground/60 hover:text-foreground"
+                    className="absolute top-3 right-4 rounded-full text-muted-foreground hover:text-foreground"
                   >
                     <X />
                   </Button>
@@ -253,9 +256,7 @@ function TranscriptTab({
 
   if (turns.length === 0) {
     return (
-      <p className="pt-16 text-sm text-muted-foreground/60">
-        Nothing to review yet.
-      </p>
+      <p className="pt-16 text-sm text-muted-foreground">Nothing said yet.</p>
     )
   }
 
@@ -271,7 +272,7 @@ function TranscriptTab({
                 "text-base tracking-[-0.011em]",
                 ROW_LEADING,
                 turn.speaker === "tutor"
-                  ? "text-foreground/55"
+                  ? "text-muted-foreground"
                   : "text-foreground/90"
               )}
             >
@@ -326,4 +327,3 @@ function TranscriptTab({
     </div>
   )
 }
-

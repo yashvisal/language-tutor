@@ -15,8 +15,8 @@
 import { useState } from "react"
 import { useUser } from "@clerk/nextjs"
 import { useMutation, useQuery } from "convex/react"
-import { Check } from "lucide-react"
 
+import { LevelPicker } from "@/components/level-picker"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -26,8 +26,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { api } from "@/convex/_generated/api"
-import { LEVELS, type LevelValue } from "@/lib/session/plan"
-import { cn } from "@/lib/utils"
+import type { LevelValue } from "@/lib/session/plan"
 
 export function SettingsDialog({
   open,
@@ -55,12 +54,14 @@ export function SettingsDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="max-h-[55svh] space-y-6 overflow-y-auto px-6 py-1 [scrollbar-width:thin] [scrollbar-color:var(--border)_transparent]">
+        <div className="max-h-[55svh] [scrollbar-width:thin] [scrollbar-color:var(--border)_transparent] space-y-6 overflow-y-auto px-6 py-1">
           <div className="space-y-3">
             <Field label="Name" value={user?.fullName || "—"} />
             <Field
               label="Email"
-              value={viewer?.email ?? user?.primaryEmailAddress?.emailAddress ?? "—"}
+              value={
+                viewer?.email ?? user?.primaryEmailAddress?.emailAddress ?? "—"
+              }
             />
           </div>
 
@@ -69,39 +70,22 @@ export function SettingsDialog({
             <p className="mt-1 text-sm text-muted-foreground">
               Changes how much the tutor helps. You can move it any time.
             </p>
-            <div
-              role="group"
-              aria-label="Your level"
-              className="mt-3 flex flex-col gap-2"
-            >
-              {LEVELS.map((option) => {
-                const selected = option.value === level
-                return (
-                  <button
-                    key={option.value}
-                    type="button"
-                    aria-pressed={selected}
-                    onClick={() => {
-                      setError(null)
-                      setLevel({ level: option.value as LevelValue }).catch(() =>
-                        setError("Couldn’t save. Try again.")
-                      )
-                    }}
-                    className={cn(
-                      "flex items-center justify-between gap-3 rounded-xl border px-3.5 py-2.5 text-left text-sm transition-[background-color,border-color,color] duration-200 outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
-                      selected
-                        ? "border-primary/40 bg-primary/10 text-foreground"
-                        : "border-border/70 text-muted-foreground hover:border-border hover:text-foreground"
-                    )}
-                  >
-                    {option.label}
-                    {selected && (
-                      <Check aria-hidden className="size-4 shrink-0 text-primary" />
-                    )}
-                  </button>
+            {/* The same component onboarding asks with, so the level is asked
+                once in one shape — and, more to the point, under one a11y
+                contract: a real `radiogroup` with a single tab stop and arrow
+                keys that move and select. The hand-rolled copy that used to
+                live here was three tab stops of `aria-pressed` buttons. */}
+            <LevelPicker
+              value={level}
+              onChange={(next: LevelValue) => {
+                setError(null)
+                setLevel({ level: next }).catch(() =>
+                  setError("Couldn’t save. Try again.")
                 )
-              })}
-            </div>
+              }}
+              label="Your level"
+              className="mt-3"
+            />
             {error && (
               <p role="alert" className="mt-2 text-xs text-destructive">
                 {error}

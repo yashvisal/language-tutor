@@ -439,6 +439,10 @@ export const recordSummary = internalMutation({
     asks: v.optional(v.array(v.string())),
     /** Select-to-translate lookups, in order. */
     lookups: v.optional(v.array(translationLookupValidator)),
+    /** Estimated model spend for this session in USD — what it COST to run,
+     * not what the learner was billed. Floored at zero and dropped if it is
+     * not finite, on the same terms as `anchorRatio`. */
+    estCostUsd: v.optional(v.number()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -474,6 +478,7 @@ export const recordSummary = internalMutation({
       anchorRatio?: number
       asks?: string[]
       lookups?: Infer<typeof translationLookupValidator>[]
+      estCostUsd?: number
     } = {}
 
     if (args.about !== undefined) {
@@ -548,6 +553,15 @@ export const recordSummary = internalMutation({
           source: clampTo(lookup.source, SUMMARY_LIMITS.lookupChars),
           translation: clampTo(lookup.translation, SUMMARY_LIMITS.lookupChars),
         }))
+    }
+    // Money, so it is a real non-negative number or it is not written at all.
+    // Unlike every other field here it is NOT clamped to a maximum: a cost
+    // that is somehow enormous is a fact worth seeing, and the wire already
+    // refuses anything absurd. A non-finite one is dropped rather than stored
+    // as 0, because a wrong cost is worse than a missing one — the column
+    // exists to be summed.
+    if (args.estCostUsd !== undefined && Number.isFinite(args.estCostUsd)) {
+      patch.estCostUsd = Math.max(0, args.estCostUsd)
     }
 
     // The backstop, and the one place this mutation touches the client's
@@ -728,6 +742,11 @@ export const byRoom = query({
       anchorRatio: v.union(v.number(), v.null()),
       asks: v.union(v.array(v.string()), v.null()),
       lookups: v.union(v.array(translationLookupValidator), v.null()),
+      /** What the session cost to RUN, in USD, or `null` where the worker
+       * never reported one. It travels with the record because this query is
+       * the one read of a whole session — but no surface renders it; it is
+       * here for whoever is asking whether the unit economics work. */
+      estCostUsd: v.union(v.number(), v.null()),
     })
   ),
   handler: async (ctx, args) => {
@@ -765,6 +784,7 @@ export const byRoom = query({
       anchorRatio: session.anchorRatio ?? null,
       asks: session.asks ?? null,
       lookups: session.lookups ?? null,
+      estCostUsd: session.estCostUsd ?? null,
     }
   },
 })
@@ -801,6 +821,14 @@ const RECONCILE_BATCH = 100
  *
  * `outcome` is left absent: nobody knows what was said, and History prints
  * `secondsBilled` when there is no outcome, so the row reads honestly.
+ *
+ * `endReason` is written — `"stale"` — but only onto a row that has none.
+ * A row the cron closes used to be indistinguishable on the History card from
+ * a row written before the field existed, and the two are not the same fact:
+ * "nobody ever closed this and we swept it up two hours later" is an answer,
+ * and "we do not know" is the absence of one. Never overwritten, on the same
+ * rule the worker's reason follows: whoever was actually there when it
+ * stopped said it first, and this mutation was not there.
  */
 export const reconcileStale = internalMutation({
   args: {},
@@ -815,9 +843,16 @@ export const reconcileStale = internalMutation({
       .take(RECONCILE_BATCH)
 
     for (const session of stale) {
-      await ctx.db.patch(session._id, {
-        endedAt: session.startedAt + (session.secondsBilled ?? 0) * 1000,
-      })
+      const patch: {
+        endedAt: number
+        endReason?: Infer<typeof endReasonValidator>
+      } = { endedAt: session.startedAt + (session.secondsBilled ?? 0) * 1000 }
+      // Only where nobody said why. The worker's teardown report writes the
+      // reason without writing `endedAt` when the client already closed the
+      // row, so a row can reach here explained and still open — and that
+      // explanation is better than this one.
+      if (session.endReason === undefined) patch.endReason = "stale"
+      await ctx.db.patch(session._id, patch)
     }
     return stale.length
   },

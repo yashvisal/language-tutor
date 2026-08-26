@@ -3,6 +3,7 @@ import { v } from "convex/values"
 
 import {
   endReasonValidator,
+  ledgerKindValidator,
   levelValidator,
   reviewMaterialValidator,
   sessionGoalValidator,
@@ -46,12 +47,7 @@ export default defineSchema({
 
   creditLedger: defineTable({
     userId: v.id("users"),
-    kind: v.union(
-      v.literal("signup_grant"),
-      v.literal("purchase"),
-      v.literal("debit"),
-      v.literal("adjustment")
-    ),
+    kind: ledgerKindValidator,
     /**
      * Signed SECONDS: grants are positive, debits negative. Seconds, not
      * minutes, because the meter bills the seconds actually spoken — see
@@ -162,6 +158,18 @@ export default defineSchema({
      * Answers are not stored: the question is what the learner did not know,
      * and that is the study record. */
     asks: v.optional(v.array(v.string())),
+    /**
+     * The worker's estimated MODEL spend for this session, in USD — realtime
+     * audio plus every text call (`backend/src/usage.py`), written on the
+     * teardown `/tutor/summary` report.
+     *
+     * Internal, and deliberately not on any surface: it is what the session
+     * COST to run, not what the learner was billed (that is `secondsBilled`
+     * against the ledger). It exists because the number was being computed
+     * and then logged into oblivion, which meant nobody could answer "does a
+     * ten-minute conversation make money" without reading worker logs.
+     */
+    estCostUsd: v.optional(v.number()),
     /** Every select-to-translate lookup (<= 100, strings <= 200) — the span
      * highlighted and what it came back as. It lived in an overlay that
      * unmounted on resume, which meant the sharpest signal in the session was

@@ -24,10 +24,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import summary as summary_module  # noqa: E402
 from billing import (  # noqa: E402
+    MAX_EST_COST_USD,
     MAX_TRANSCRIPT_TURNS,
     MAX_TURN_CHARS,
     SUMMARY_PATH,
     BillingClient,
+    _clean_cost,
 )
 from config import TutorConfig  # noqa: E402
 from state import MAX_RECORDED_CORRECTIONS, SessionFacts  # noqa: E402
@@ -37,6 +39,7 @@ from summary import (  # noqa: E402
     transcript_text,
     transcript_turns,
 )
+from usage import TEXT_IN_PER_M, TEXT_OUT_PER_M, UsageTracker  # noqa: E402
 
 
 @dataclass
@@ -204,8 +207,6 @@ async def test_a_hung_about_call_gives_up() -> None:
 
 
 async def test_the_about_call_is_counted_into_usage() -> None:
-    from usage import UsageTracker
-
     usage = UsageTracker()
     client = FakeClient(
         FakeResponse(output_text="Ordering coffee.", usage=FakeUsage(1200, 30)),
@@ -367,6 +368,106 @@ async def test_an_unmetered_session_posts_nothing_and_spends_no_model_call() -> 
     )
     assert sent is False
     assert ledger.calls == []
+
+
+# --- what the session cost (phase 7 step 4) -------------------------------
+
+
+def a_million_tokens(*, out: int = 0) -> FakeResponse:
+    return FakeResponse(output_text="", usage=FakeUsage(1_000_000, out))
+
+
+async def test_the_record_carries_what_the_session_cost() -> None:
+    ledger = Ledger()
+    billing = billing_client(ledger)
+    usage = UsageTracker()
+    usage.record_text_usage(a_million_tokens(out=1_000_000), label="analyzer")
+
+    await with_stub_about(
+        "Ordering coffee.",
+        lambda: report_session_summary(
+            cfg(), history=conversation(3), billing=billing, usage=usage, active_s=600
+        ),
+    )
+    (_, body) = ledger.calls[0]
+    # A million text tokens in and a million out, at the sheet's prices.
+    assert body["estCostUsd"] == round(TEXT_IN_PER_M + TEXT_OUT_PER_M, 4)
+
+
+async def test_the_cost_includes_the_teardown_model_call() -> None:
+    """The `about` line is the last model call a session makes, and the cost is
+    read after it — a record that omitted its own teardown would understate
+    every session by one call."""
+    ledger = Ledger()
+    billing = billing_client(ledger)
+    usage = UsageTracker()
+
+    async def _about(_cfg: object, _turns: object, **kwargs: object) -> str:
+        tracker = kwargs.get("usage")
+        assert isinstance(tracker, UsageTracker)
+        tracker.record_text_usage(a_million_tokens(), label="about")
+        return "Ordering coffee."
+
+    original = summary_module.about_line
+    summary_module.about_line = _about  # type: ignore[assignment]
+    try:
+        await report_session_summary(
+            cfg(), history=conversation(3), billing=billing, usage=usage, active_s=60
+        )
+    finally:
+        summary_module.about_line = original  # type: ignore[assignment]
+
+    (_, body) = ledger.calls[0]
+    assert body["estCostUsd"] == round(TEXT_IN_PER_M, 4)
+
+
+async def test_a_session_with_no_usage_still_reports_a_cost_of_zero() -> None:
+    ledger = Ledger()
+    billing = billing_client(ledger)
+    await with_stub_about(
+        None,
+        lambda: report_session_summary(
+            cfg(), history=conversation(1), billing=billing, usage=UsageTracker(), active_s=0
+        ),
+    )
+    (_, body) = ledger.calls[0]
+    assert body["estCostUsd"] == 0.0
+
+
+async def test_a_cost_is_not_by_itself_a_record() -> None:
+    ledger = Ledger()
+    billing = billing_client(ledger)
+    usage = UsageTracker()
+    usage.record_text_usage(a_million_tokens(out=1_000), label="analyzer")
+    sent = await with_stub_about(
+        None,
+        lambda: report_session_summary(
+            cfg(), history=FakeHistory([]), billing=billing, usage=usage, active_s=60
+        ),
+    )
+    assert sent is False
+    assert ledger.calls == []
+
+
+def test_an_impossible_cost_never_costs_the_record() -> None:
+    assert _clean_cost(None) is None
+    assert _clean_cost(float("nan")) is None
+    assert _clean_cost(float("inf")) is None
+    # bool is an int subclass; `True` dollars is not a number.
+    assert _clean_cost(True) is None
+    # Clamped, not dropped: the ledger's bounds are the ledger's, and a 400
+    # would cost the transcript too.
+    assert _clean_cost(-1.0) == 0.0
+    assert _clean_cost(10.0**9) == MAX_EST_COST_USD
+    assert _clean_cost(0.123456) == 0.1235
+
+
+def test_the_tracker_never_reports_a_cost_the_wire_would_reject() -> None:
+    usage = UsageTracker()
+    assert usage.est_cost_usd(active_s=0) == 0.0
+    usage.record_text_usage(a_million_tokens(out=1), label="analyzer")
+    cost = usage.est_cost_usd(active_s=0)
+    assert cost > 0 and cost == round(cost, 4)
 
 
 def main() -> int:

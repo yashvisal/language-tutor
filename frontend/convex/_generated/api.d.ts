@@ -14,6 +14,7 @@ import type * as m2m from "../m2m.js";
 import type * as sessions from "../sessions.js";
 import type * as users from "../users.js";
 import type * as validators from "../validators.js";
+import type * as wire from "../wire.js";
 
 import type {
   ApiFromModules,
@@ -28,6 +29,7 @@ declare const fullApi: ApiFromModules<{
   sessions: typeof sessions;
   users: typeof users;
   validators: typeof validators;
+  wire: typeof wire;
 }>;
 
 /**

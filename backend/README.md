@@ -51,7 +51,8 @@ teardown (the shutdown callback, every step guarded)
   ├─ final debit ("final": true, "reason") → Convex sets endedAt
   ├─ POST /tutor/summary               → about + transcript + review + corrections
   │                                      + goal + turns + anchorRatio + asks + lookups
-  └─ usage summary                     → tokens, talk share, estimated cost (log only)
+  │                                      + estCostUsd (what it cost US to run)
+  └─ usage summary                     → tokens, talk share, estimated cost (log)
 ```
 
 Design rules worth keeping:
@@ -118,6 +119,7 @@ Design rules worth keeping:
 | `src/clock.py`     | The authoritative session clock + the seconds-billed seam       |
 | `src/billing.py`   | The Convex ledger's client: `/tutor/debit`, `/tutor/balance`, `/tutor/summary` |
 | `src/summary.py`   | The after-session record: the `about` line, the transcript, the Review snapshot |
+| `src/usage.py`     | Per-session token/dollar accounting: the log line and `estCostUsd` |
 
 ## Setup
 
@@ -232,6 +234,45 @@ The agent registers under the dispatch name **`tutor`** and is *explicitly
 dispatched* — it only joins rooms whose token carries a matching
 `RoomAgentDispatch`. The frontend's `/api/token` route must set this, or the
 agent will never join.
+
+### Worker options and the boot line
+
+`AgentServer` is configured explicitly rather than left bare (audit §4.11).
+Three things to know:
+
+- **`num_idle_processes=1`** (`agent.py`). The framework's own defaults are 0 in
+  dev and `ceil(cpu_count)` in production. One warm process is the number that
+  matches this worker: a cold job process spends ~2.5s importing
+  `livekit.agents.inference` (the native VAD / end-of-turn library) before any
+  of our code runs, and that is silence the first learner of an idle instance
+  sits through. `ceil(cpu_count)` would hold that memory per core for jobs that
+  are almost entirely I/O (a realtime socket, an STT socket, some short text
+  calls). Raise it when a load test says what one instance can hold.
+- **A prewarm hook** — `server.setup_fnc = _prewarm`, the 1.6.10 name for
+  `prewarm_fnc`. It runs once per job process, before any job is assigned, and
+  builds the two models that are per-process rather than per-session: the
+  local-inference Silero VAD (a native singleton) and the semantic turn
+  detector (which keeps only per-stream state). Both are handed to
+  `AgentSession`; a session in a process whose prewarm failed builds its own
+  and says so, so a broken prewarm costs latency and never a job.
+- **`load_threshold` is deliberately left at its default** (0.7 of the server's
+  5-second average CPU; infinity in dev, which is what keeps a laptop taking
+  jobs). LiveKit Cloud ignores it entirely — it is a self-hosting knob — and
+  headroom per instance for a realtime-audio agent is unknown until one is
+  load-tested. Load-test before the first public link, then set it together
+  with a `load_fnc`.
+
+The prewarm hook also emits the **boot line**: one INFO record named
+`worker boot`, carrying the whole resolved configuration
+(`TutorConfig.log_fields()`) — `tutor_env`, `convex_site_url`, every model id,
+the endpointing bounds, `allow_unmetered`, and the two secrets as **presence
+booleans only** (`machine_key`, `openai_key`; neither value is ever logged). A
+deploy pointed at the wrong Convex, running the wrong model, or holding no
+machine key is then visible in the first log line rather than in the first
+learner's session. If the configuration is unusable at all (no
+`OPENAI_API_KEY`, or `TUTOR_ALLOW_UNMETERED` on a `TUTOR_ENV=production`
+worker) the line is an ERROR saying so, and every job the process takes is
+refused for the same reason.
 
 ## Frontend contract
 
@@ -536,7 +577,7 @@ three authenticated calls against `$CONVEX_SITE_URL`:
 | *auth, every call* | `Authorization: Bearer <Clerk M2M JWT>` | 401 → one re-mint, one retry |
 | `POST /tutor/debit` | `{"room", "userId", "jobId", "seconds", "seq"}` | `{"balanceSeconds"}` |
 | `POST /tutor/balance` | `{"userId", "room"}` (room optional) | `{"balanceSeconds", "secondsBilled"}` |
-| `POST /tutor/summary` | `{"room", "userId", "jobId", "about"?, "transcript"?, "review"?, "corrections"?}` | `{"ok": true}` |
+| `POST /tutor/summary` | `{"room", "userId", "jobId", "about"?, "transcript"?, "review"?, "corrections"?, "goal"?, "turns"?, "anchorRatio"?, "asks"?, "lookups"?, "estCostUsd"?}` | `{"ok": true}` |
 
 Convex keys the debit on `ref = <room>:<jobId>:<seq>` and answers a replay with
 the same body. `secondsBilled` is the **room's** already-billed high-water mark
@@ -645,7 +686,7 @@ conversation *was* died with the tab: the outcome written to Convex was
 corrections + seconds + `endedByClock`, so the summary screen showed time and
 fixes and History showed the plan's topic (phase 7 step 2).
 
-Nine optional fields, each independent and each degrading to absent (absent =
+Ten optional fields, each independent and each degrading to absent (absent =
 "leave that column alone", so a field the worker could not produce never
 overwrites one it produced earlier):
 
@@ -689,6 +730,14 @@ overwrites one it produced earlier):
   (<=25 x <=400).
 - `lookups` — every select-to-translate lookup as `{source, translation}`
   (<=100 x <=200 each).
+- `estCostUsd` — what this session cost **us** to run, in dollars, from
+  `usage.py`: a finite number 0–1000, 4 dp, clamped worker-side so a runaway
+  estimate can never 400 the record. It is computed *after* the `about` call,
+  so the teardown's own model call is inside the number, and it is read against
+  the same `seconds_billed` the ledger just settled against. It is an estimate
+  for pricing decisions and nothing else — the ledger bills seconds, never
+  tokens, and nothing renders this. Before phase 7 step 4 it was logged and
+  discarded (audit §4.7).
 
 The body is bounded at 256 KB: over that, the review snapshot goes first, then
 the transcript is trimmed from the oldest end, then the corrections, and

@@ -6,7 +6,7 @@ modal showed the *plan's* topic and the same fixes, and everything the
 conversation actually was disappeared when the tab closed (phase 7 step 2;
 `out-of-minutes.tsx` even promises the transcript and review are "saved").
 
-Nine things go up, all optional, all best-effort:
+Ten things go up, all optional, all best-effort:
 
 - **`about`** — one line, in the ANCHOR language, saying what the conversation
   was actually about. One cheap text call at teardown, on the transcript, with
@@ -32,6 +32,11 @@ Nine things go up, all optional, all best-effort:
 - **`asks`** and **`lookups`** — the questions they typed in Ask and every
   select-to-translate lookup. The sharpest study record a session produces, and
   none of it was stored (the "edges" list).
+- **`estCostUsd`** — what the conversation cost us to run, estimated from the
+  usage tracker (phase 7 step 4). Computed AFTER the `about` call, so the one
+  model call the teardown itself makes is counted in the number it reports.
+  Ours, not the learner's: the ledger bills seconds and this is a column for
+  pricing decisions (audit §4.7 — until now it was logged and discarded).
 
 Everything here is guarded twice: each piece fails to nothing, and the whole
 thing runs under one budget in the shutdown callback (`SUMMARY_BUDGET_S`), so a
@@ -173,6 +178,7 @@ async def report_session_summary(
     facts: SessionFacts | None = None,
     usage: UsageTracker | None = None,
     turns_taken: int = 0,
+    active_s: int = 0,
     coach: AskCoach | None = None,
     translator: SpanTranslator | None = None,
 ) -> bool:
@@ -190,6 +196,11 @@ async def report_session_summary(
     about = await about_line(cfg, turns, usage=usage)
     snapshot = review.snapshot() if review is not None else None
     goal = facts.goal if facts is not None else None
+    # After `about_line`, on purpose: that call is the last model call this
+    # session makes, and a cost line that omits it is a cost line that is
+    # wrong. `active_s` is the clock's billed seconds — the same number the
+    # ledger settled against — so the dollars and the minutes agree.
+    cost = usage.est_cost_usd(active_s=active_s) if usage is not None else None
     return await billing.summary(
         about=about,
         transcript=turns,
@@ -200,4 +211,5 @@ async def report_session_summary(
         anchor_ratio=facts.anchor_ratio if facts is not None else None,
         asks=coach.questions if coach is not None else None,
         lookups=translator.lookups if translator is not None else None,
+        est_cost_usd=cost,
     )

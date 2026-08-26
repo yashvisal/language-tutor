@@ -11,9 +11,10 @@
  */
 
 import { useMemo, useReducer, type ReactNode } from "react"
-import { MoveRight } from "lucide-react"
 import { motion } from "motion/react"
 
+import { CorrectionDiff } from "@/components/session/session-record"
+import { Overline } from "@/components/overline"
 import { translatableProps } from "@/components/session/translate-overlay"
 import {
   Popover,
@@ -139,18 +140,14 @@ export function CorrectionMark({
         sideOffset={10}
         className="w-auto max-w-72 min-w-52 gap-0 p-3.5"
       >
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
-          <span className="text-muted-foreground line-through decoration-muted-foreground/40">
-            {correction.original}
-          </span>
-          <MoveRight className="size-3.5 shrink-0 text-muted-foreground/50" />
-          <span className={cn("font-medium", style.accent)}>
-            {correction.replacement}
-          </span>
-        </div>
-        <div className="mt-1.5 text-[10px] tracking-[0.14em] text-muted-foreground/60 uppercase">
+        <CorrectionDiff
+          original={correction.original}
+          replacement={correction.replacement}
+          accentClassName={style.accent}
+        />
+        <Overline className="mt-1.5">
           {CATEGORY_LABELS[correction.category]}
-        </div>
+        </Overline>
         <ExplanationDisclosure text={correction.explanation} />
       </PopoverContent>
     </Popover>

@@ -21,6 +21,7 @@
  */
 
 import type { ReactNode } from "react"
+import { MoveRight } from "lucide-react"
 
 import { Overline } from "@/components/overline"
 import type {
@@ -29,6 +30,51 @@ import type {
 } from "@/lib/session/contract"
 import { ANCHOR_LANGUAGE, TARGET_LANGUAGE } from "@/lib/session/protocol"
 import { cn } from "@/lib/utils"
+
+/**
+ * ONE CORRECTION, ONE ROW: what was said, an arrow, what should have been.
+ *
+ * Written three times before this existed — in the mark's popover on the live
+ * stage, in the post-session summary, and in the History modal — with three
+ * different arrow colours and the `lang` attribute on two of the three. A
+ * learner meets the same correction on all three surfaces, so it is one shape.
+ *
+ * The row is target-language text throughout, hence `lang` on the container:
+ * the two halves are the same sentence, one wrong and one right.
+ */
+export function CorrectionDiff({
+  original,
+  replacement,
+  /** The category's colour where the surface has one; plain otherwise. */
+  accentClassName,
+  className,
+}: {
+  original: string
+  replacement: string
+  accentClassName?: string
+  className?: string
+}) {
+  return (
+    <p
+      lang={TARGET_LANGUAGE}
+      className={cn(
+        "flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm",
+        className
+      )}
+    >
+      <span className="text-muted-foreground line-through decoration-muted-foreground/40">
+        {original}
+      </span>
+      <MoveRight
+        aria-hidden
+        className="size-3.5 shrink-0 text-muted-foreground"
+      />
+      <span className={cn("font-medium", accentClassName ?? "text-foreground")}>
+        {replacement}
+      </span>
+    </p>
+  )
+}
 
 /**
  * What was set out to be done, against `about`'s what was actually done.
@@ -79,6 +125,10 @@ const END_REASON_NOTES: Partial<Record<SessionEndReason, string>> = {
   ledger_failure:
     "We couldn't reach the account service, so the session ended early.",
   tutor_silent: "The tutor never joined.",
+  // Nobody closed the row: the tab went away without a goodbye and the
+  // reconciliation cron finished it hours later. Stated as what happened, not
+  // as a fault — the seconds were billed either way.
+  stale: "The session was left open and closed later.",
 }
 
 /** The sentence for a stored reason, or null where there is nothing to say. */

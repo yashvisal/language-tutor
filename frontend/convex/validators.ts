@@ -291,6 +291,12 @@ export const SESSION_END_REASONS = [
   "model_error",
   "ledger_failure",
   "tutor_silent",
+  // Not the worker's word: the reconciliation cron's. A row nobody ever
+  // closed — a killed process, a laptop shut mid-sentence — used to be closed
+  // with no reason at all, which History renders identically to a row from
+  // before the field existed. "We swept this up two hours later" is a
+  // different fact from "we do not know", and it is the one worth saying.
+  "stale",
 ] as const
 
 export const endReasonValidator = v.union(
@@ -300,7 +306,8 @@ export const endReasonValidator = v.union(
   v.literal("learner_left"),
   v.literal("model_error"),
   v.literal("ledger_failure"),
-  v.literal("tutor_silent")
+  v.literal("tutor_silent"),
+  v.literal("stale")
 )
 
 export type EndReasonMatchesContract = Assert<
@@ -322,3 +329,20 @@ export const translationLookupValidator = v.object({
 export type TranslationLookupMatchesContract = Assert<
   Equals<Infer<typeof translationLookupValidator>, TranslationLookup>
 >
+
+/* -------------------------------------------------------------------------- */
+/*  Ledger                                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * How a ledger entry came to exist. Closed, and shared by the `creditLedger`
+ * column and `users.ledger`'s `returns` validator so the query cannot promise
+ * a kind the table cannot hold — the Billing dialog labels each one, and a
+ * kind it does not recognize has no label to print.
+ */
+export const ledgerKindValidator = v.union(
+  v.literal("signup_grant"),
+  v.literal("purchase"),
+  v.literal("debit"),
+  v.literal("adjustment")
+)

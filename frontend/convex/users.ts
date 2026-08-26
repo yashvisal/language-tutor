@@ -8,7 +8,7 @@ import {
   type QueryCtx,
 } from "./_generated/server"
 import type { Doc } from "./_generated/dataModel"
-import { levelValidator } from "./validators"
+import { ledgerKindValidator, levelValidator } from "./validators"
 import { minutesFromSeconds, SIGNUP_GRANT_SECONDS } from "../lib/billing"
 
 /** Spanish only until the loop is monetized — see the vision doc. */
@@ -55,6 +55,24 @@ export async function secondsFor(
  */
 export const viewer = query({
   args: {},
+  // `null` is a real answer here (signed out), so the return validator is a
+  // union rather than an object: the three states this query distinguishes are
+  // part of its contract, and a validator that only described the happy one
+  // would let a refactor return `undefined` for "no row yet" unnoticed.
+  returns: v.union(
+    v.null(),
+    v.object({
+      clerkId: v.string(),
+      /** From the Clerk identity, falling back to the row. `null` for an
+       * account Clerk has no email for — never `""`. */
+      email: v.union(v.string(), v.null()),
+      /** `null` means "signed in, never been through `/welcome`" — the state
+       * the shell redirects on. */
+      level: v.union(levelValidator, v.null()),
+      seconds: v.number(),
+      minutes: v.number(),
+    })
+  ),
   handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity()
     if (identity === null) return null
@@ -87,6 +105,15 @@ export const viewer = query({
  */
 export const ledger = query({
   args: {},
+  returns: v.array(
+    v.object({
+      id: v.id("creditLedger"),
+      kind: ledgerKindValidator,
+      /** Signed seconds: grants positive, debits negative. */
+      seconds: v.number(),
+      createdAt: v.number(),
+    })
+  ),
   handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity()
     if (identity === null) return []
@@ -118,6 +145,7 @@ export const ledger = query({
  */
 export const ensureUser = mutation({
   args: { level: v.optional(levelValidator) },
+  returns: v.null(),
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity()
     if (identity === null) throw new Error("Not signed in")
@@ -168,6 +196,7 @@ export const ensureUser = mutation({
 /** The only editable field on the account page. */
 export const setLevel = mutation({
   args: { level: levelValidator },
+  returns: v.null(),
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity()
     if (identity === null) throw new Error("Not signed in")
@@ -190,6 +219,7 @@ export const setLevel = mutation({
  */
 export const balanceByClerkId = internalQuery({
   args: { clerkId: v.string() },
+  returns: v.object({ balanceSeconds: v.number() }),
   handler: async (ctx, args) => {
     const user = await userByClerkId(ctx, args.clerkId)
     if (user === null) return { balanceSeconds: 0 }

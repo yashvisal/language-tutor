@@ -11,7 +11,7 @@
  */
 
 import { useMemo, type ReactNode } from "react"
-import { motion } from "motion/react"
+import { motion, useReducedMotion } from "motion/react"
 
 import {
   CorrectionMark,
@@ -25,18 +25,25 @@ export function HeroWords({
   turn,
   live,
   marksActive,
+  reducedMotion = false,
   onCorrectionOpenChange,
 }: {
   turn: Turn
   /** Still being transcribed — only then is the trailing word "new". */
   live: boolean
   marksActive: boolean
+  /**
+   * `prefers-reduced-motion`, resolved by the stage. A word that blurs and
+   * rises into place is the surface's smallest animation and the one that
+   * repeats most often; under the setting the word simply appears.
+   */
+  reducedMotion?: boolean | null
   /** The correction is passed through so a hold can name what is being read. */
   onCorrectionOpenChange: (open: boolean, correction: Correction) => void
 }) {
   const segments = useMemo(() => segmentTurn(turn), [turn])
   const wordCount = wordsOf(turn.target).length
-  const arriving = live ? wordCount - 1 : -1
+  const arriving = live && !reducedMotion ? wordCount - 1 : -1
 
   let index = 0
   const nodes: ReactNode[] = []
@@ -61,7 +68,10 @@ export function HeroWords({
             : false
         }
         animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-        transition={{ duration: 0.35, ease: "easeOut" }}
+        transition={{
+          duration: reducedMotion ? 0 : 0.35,
+          ease: "easeOut",
+        }}
       >
         {word}
       </motion.span>
@@ -101,15 +111,20 @@ export function HeroWords({
  * state. The dimmed surface and the Aura's breathing ring already carry
  * "held" — the caret just stops breathing.
  */
-export function Caret({ paused }: { paused: boolean }) {
+export function Caret({ paused }: { paused?: boolean }) {
+  // Read here rather than passed in: the caret renders on the stage, in the
+  // landing demo and in the design playground, and a blinking bar that never
+  // stops is exactly what the setting is for on every one of them.
+  const reducedMotion = useReducedMotion()
+  const blink = !paused && !reducedMotion
   return (
     <span className="ml-1.5 inline-flex h-[1.05em] translate-y-[0.16em] items-stretch align-baseline">
       <motion.span
-        animate={{ opacity: paused ? 0.55 : [0.15, 0.7, 0.15] }}
+        animate={{ opacity: blink ? [0.15, 0.7, 0.15] : 0.55 }}
         transition={
-          paused
-            ? { duration: 0.4 }
-            : { duration: 1.4, repeat: Infinity, ease: "easeInOut" }
+          blink
+            ? { duration: 1.4, repeat: Infinity, ease: "easeInOut" }
+            : { duration: reducedMotion ? 0 : 0.4 }
         }
         className="block w-[3px] rounded-full bg-primary"
       />

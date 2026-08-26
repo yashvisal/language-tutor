@@ -9,20 +9,16 @@ export default function DesignInspoIndex() {
         <h1 className="text-2xl font-semibold tracking-tight">
           Design exploration
         </h1>
-        <p className="text-muted-foreground mt-2 text-sm leading-relaxed">
+        <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
           Working layouts for the live conversation surface. Every variant
           renders the same mock conversation so differences you feel are
-          differences in the design. See{" "}
-          <span className="font-mono text-xs">
-            plans/phases/phase-1-design-exploration.md
-          </span>{" "}
-          for the brief.
+          differences in the design.
         </p>
 
         {DESIGN_TASKS.map((task) => (
           <section key={task.slug} className="mt-12">
             <h2 className="text-sm font-medium">{task.title}</h2>
-            <p className="text-muted-foreground mt-1 text-sm">
+            <p className="mt-1 text-sm text-muted-foreground">
               {task.description}
             </p>
             <ul className="mt-4 divide-y rounded-lg border">
@@ -30,10 +26,10 @@ export default function DesignInspoIndex() {
                 <li key={variant.slug}>
                   <Link
                     href={`/design-inspo/${task.slug}/${variant.slug}`}
-                    className="hover:bg-muted/50 block px-4 py-3 transition-colors"
+                    className="block px-4 py-3 transition-colors hover:bg-muted/50"
                   >
                     <div className="text-sm font-medium">{variant.title}</div>
-                    <div className="text-muted-foreground mt-0.5 text-sm">
+                    <div className="mt-0.5 text-sm text-muted-foreground">
                       {variant.blurb}
                     </div>
                   </Link>

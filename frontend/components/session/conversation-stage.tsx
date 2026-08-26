@@ -35,7 +35,7 @@
  */
 
 import { useCallback, useEffect, useRef, type ReactNode } from "react"
-import { AnimatePresence, motion } from "motion/react"
+import { AnimatePresence, motion, useReducedMotion } from "motion/react"
 
 import { StudyOverlay } from "@/components/session/study-overlay"
 import { SessionClock } from "@/components/session/session-clock"
@@ -159,6 +159,15 @@ export function ConversationStage({
 }: ConversationStageProps) {
   const { phase, holds } = state
 
+  /**
+   * `prefers-reduced-motion`. The surface keeps every state it expresses —
+   * settling, holding, arriving — and expresses them with opacity alone: no
+   * travel, no scale, and above all no infinite loop. The breathing ring is the
+   * one thing on this screen that never stops on its own, which is exactly what
+   * the setting exists to switch off.
+   */
+  const reducedMotion = useReducedMotion()
+
   const paused = isHeld(state)
   const studyOpen = holds.includes("history")
 
@@ -261,8 +270,15 @@ export function ConversationStage({
         <div className="flex w-full shrink-0 justify-center">
           <div className="relative flex items-center justify-center">
             <motion.div
-              animate={{ opacity: paused ? 0.4 : 1, scale: paused ? 0.94 : 1 }}
-              transition={{ duration: 0.55, ease: [0.32, 0.72, 0, 1] }}
+              animate={{
+                opacity: paused ? 0.4 : 1,
+                scale: paused && !reducedMotion ? 0.94 : 1,
+              }}
+              transition={
+                reducedMotion
+                  ? { duration: 0 }
+                  : { duration: 0.55, ease: [0.32, 0.72, 0, 1] }
+              }
             >
               {renderAura(auraState)}
             </motion.div>
@@ -272,17 +288,28 @@ export function ConversationStage({
               {paused && (
                 <motion.span
                   aria-hidden
-                  initial={{ opacity: 0, scale: 0.9 }}
-                  animate={{ opacity: [0.35, 0.12, 0.35], scale: [1, 1.06, 1] }}
+                  initial={reducedMotion ? false : { opacity: 0, scale: 0.9 }}
+                  animate={
+                    reducedMotion
+                      ? { opacity: 0.24, scale: 1 }
+                      : {
+                          opacity: [0.35, 0.12, 0.35],
+                          scale: [1, 1.06, 1],
+                        }
+                  }
                   exit={{
                     opacity: 0,
-                    scale: 1.1,
-                    transition: { duration: 0.4 },
+                    scale: reducedMotion ? 1 : 1.1,
+                    transition: { duration: reducedMotion ? 0 : 0.4 },
                   }}
-                  transition={{
-                    opacity: { duration: 3.4, repeat: Infinity },
-                    scale: { duration: 3.4, repeat: Infinity },
-                  }}
+                  transition={
+                    reducedMotion
+                      ? { duration: 0 }
+                      : {
+                          opacity: { duration: 3.4, repeat: Infinity },
+                          scale: { duration: 3.4, repeat: Infinity },
+                        }
+                  }
                   className="pointer-events-none absolute size-[clamp(6rem,18vh,10rem)] rounded-full border border-primary/50"
                 />
               )}
@@ -293,7 +320,7 @@ export function ConversationStage({
         {/* The stage: one pinned context turn + the hero. Nothing else. */}
         <motion.div
           animate={{ opacity: paused ? 0.55 : 1 }}
-          transition={{ duration: 0.5, ease: "easeOut" }}
+          transition={{ duration: reducedMotion ? 0 : 0.5, ease: "easeOut" }}
           className="mt-[clamp(1.5rem,5vh,3rem)] w-full"
         >
           <StageGrid>
@@ -304,15 +331,22 @@ export function ConversationStage({
                 {context && (
                   <motion.div
                     key={context.id}
-                    initial={{ opacity: 0, y: 10 }}
+                    initial={
+                      reducedMotion ? { opacity: 0 } : { opacity: 0, y: 10 }
+                    }
                     animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -8 }}
-                    transition={{ duration: 0.4, ease: "easeOut" }}
+                    exit={
+                      reducedMotion ? { opacity: 0 } : { opacity: 0, y: -8 }
+                    }
+                    transition={{
+                      duration: reducedMotion ? 0.15 : 0.4,
+                      ease: "easeOut",
+                    }}
                   >
                     <StageRow speaker={context.speaker}>
                       <p
                         className={cn(
-                          "text-base tracking-[-0.011em] text-foreground/55",
+                          "text-base tracking-[-0.011em] text-muted-foreground",
                           ROW_LEADING
                         )}
                       >
@@ -335,15 +369,21 @@ export function ConversationStage({
                 {turn && (
                   <motion.div
                     key={turn.id}
-                    initial={{ opacity: 0, y: 14 }}
+                    initial={
+                      reducedMotion ? { opacity: 0 } : { opacity: 0, y: 14 }
+                    }
                     animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -10, filter: "blur(4px)" }}
-                    transition={{ duration: 0.4, ease: "easeOut" }}
+                    exit={
+                      reducedMotion
+                        ? { opacity: 0 }
+                        : { opacity: 0, y: -10, filter: "blur(4px)" }
+                    }
+                    transition={{
+                      duration: reducedMotion ? 0.15 : 0.4,
+                      ease: "easeOut",
+                    }}
                   >
-                    <StageRow
-                      speaker={turn.speaker}
-                      labelClassName="text-muted-foreground/70"
-                    >
+                    <StageRow speaker={turn.speaker}>
                       <p
                         // The learner's own utterance is selectable only once
                         // settled — translating your own half-arrived sentence
@@ -365,13 +405,14 @@ export function ConversationStage({
                           turn={turn}
                           live={phase === "live"}
                           marksActive={showMarks}
+                          reducedMotion={reducedMotion}
                           onCorrectionOpenChange={correctionOpenChange}
                         />
                         {phase === "live" && turn.target.length > 0 && (
                           <Caret paused={paused} />
                         )}
                         {isInterim && phase !== "live" && (
-                          <span className="text-muted-foreground/50">…</span>
+                          <span className="text-muted-foreground">…</span>
                         )}
                       </p>
                     </StageRow>
@@ -451,11 +492,6 @@ export function ConversationStage({
           }
           onEnd={onEnd}
         />
-      </div>
-
-      {/* Dev readout: what the engine thinks is happening. */}
-      <div className="absolute right-4 bottom-4 z-10 font-mono text-[10px] text-muted-foreground/50">
-        {paused ? `held · ${holds.join("+")}` : `${phase} · ${auraState}`}
       </div>
     </div>
   )

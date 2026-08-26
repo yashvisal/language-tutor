@@ -529,6 +529,38 @@ describe("sessions.reconcileStale", () => {
     expect(rows.unbilled!.endedAt).toBe(startedAt)
     // A conversation that is happening right now is not abandoned.
     expect(rows.recent!.endedAt).toBeUndefined()
+    // ...and it says so. A row the cron swept up used to be indistinguishable
+    // on the History card from a row written before `endReason` existed, and
+    // the two are not the same fact.
+    expect(rows.abandoned!.endReason).toBe("stale")
+    expect(rows.unbilled!.endReason).toBe("stale")
+    expect(rows.recent!.endReason).toBeUndefined()
+  })
+
+  test("never overwrites a reason somebody who was there already gave", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+    const startedAt = Date.now() - 3 * 60 * 60 * 1000
+
+    // The worker's teardown report writes the reason WITHOUT `endedAt` when
+    // the client already closed the row — so a row can reach the cron
+    // explained and still open. That explanation beats this one.
+    const explained = await t.run(async (ctx) =>
+      ctx.db.insert("sessions", {
+        userId,
+        room: "room-explained",
+        plan: PLAN,
+        startedAt,
+        secondsBilled: 60,
+        endReason: "model_error" as const,
+      })
+    )
+
+    expect(await t.mutation(internal.sessions.reconcileStale, {})).toBe(1)
+
+    const row = await t.run(async (ctx) => ctx.db.get(explained))
+    expect(row!.endReason).toBe("model_error")
+    expect(row!.endedAt).toBe(startedAt + 60_000)
   })
 })
 
@@ -837,6 +869,45 @@ describe("sessions.byRoom", () => {
         .query(api.sessions.byRoom, { room: "room-nonexistent" })
     ).toBeNull()
     expect(await t.query(api.sessions.byRoom, { room })).toBeNull()
+  })
+
+  test("carries the session's cost, which is never null once reported", async () => {
+    const t = setup()
+    await makeLearner(t, "user_owner")
+    const as = t.withIdentity({ subject: "user_owner" })
+    await as.mutation(api.sessions.start, { room, plan: PLAN })
+
+    // Nothing renders `estCostUsd` — it is what the session COST to run, not
+    // what the learner was billed. It rides this query because this is the one
+    // read of a whole session, and `null` until the worker reports one.
+    expect(
+      (await as.query(api.sessions.byRoom, { room }))!.estCostUsd
+    ).toBeNull()
+
+    await t.mutation(internal.sessions.recordSummary, {
+      room,
+      clerkId: "user_owner",
+      estCostUsd: 0.4213,
+    })
+    expect((await as.query(api.sessions.byRoom, { room }))!.estCostUsd).toBe(
+      0.4213
+    )
+
+    // Floored at zero, and a non-finite cost is dropped rather than stored as
+    // 0: a column that gets summed is worthless if it can hold NaN, and a
+    // wrong cost is worse than a missing one.
+    await t.mutation(internal.sessions.recordSummary, {
+      room,
+      clerkId: "user_owner",
+      estCostUsd: -5,
+    })
+    expect((await as.query(api.sessions.byRoom, { room }))!.estCostUsd).toBe(0)
+    await t.mutation(internal.sessions.recordSummary, {
+      room,
+      clerkId: "user_owner",
+      estCostUsd: Number.NaN,
+    })
+    expect((await as.query(api.sessions.byRoom, { room }))!.estCostUsd).toBe(0)
   })
 })
 
