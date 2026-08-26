@@ -14,7 +14,17 @@ first; nothing here reopens a settled decision.*
    line; a replayed room name and a second tab are refused; a killed worker
    still bills; a dropped learner stops the clock.*
 2. **Session lifecycle.** B5, B6, §4.2–4.5 — the failed states a stranger
-   hits in their first session.
+   hits in their first session. Plus **the after-session seam** (Yash,
+   2026-08-25, not in the audit): today the outcome written to Convex is
+   only corrections + seconds + `endedByClock`, so the post-session summary
+   shows time and fixes, and the History modal shows the plan's topic and
+   the same fixes — the Review material and what was actually talked about
+   are gone when the tab closes (`out-of-minutes.tsx` even promises they are
+   "saved"). The summary *is* the review: the outcome should carry a
+   one-line "what this was about" (from the transcript, not the plan), the
+   Review snapshot (vocab / phrases / tables), and the summary and the
+   History modal render the same record. Persist now, in a shape step 3's
+   goal-driven Review can fill.
 3. **Prompt + Review.** B7 first, then the §3.2 decisions and build: goal
    crystallization, Review from goal + transcript, support-on-evidence, the
    ordinary-hold idle timeout. The arc residue goes with it.
