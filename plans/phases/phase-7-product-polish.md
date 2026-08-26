@@ -6,6 +6,12 @@ Phase 7 is everything `audit-2026-08-25.md` says stands between that and a
 stranger with a credit card — in the audit's §8 order. Read the vision doc
 first; nothing here reopens a settled decision.*
 
+## Status (2026-08-25)
+
+Steps 1 and 2 built and pushed (`51e6cab`, `20dfccf`); the M2M swap on
+top (`d91a968`). Not yet run live — Yash tests end to end when there is
+quiet. Next: step 3, pending the decisions at the bottom.
+
 ## Steps (each one reviewed hand-off; each leaves the app working)
 
 1. **Money-seam correctness.** Audit B1–B4, B10, §3.1.6, §4.1, §4.9, plus
