@@ -8,7 +8,7 @@ Pipeline (see plans/phases/phase-2-live-pipeline.md and phase-3):
   + on_user_turn_completed             -> background analyzer -> corrections
   + tutor.translate RPC                -> select-to-translate, on demand
 
-Run with `lk agent dev` (or `uv run python src/agent.py dev`).
+Run with `lk agent dev`.
 """
 
 from __future__ import annotations
@@ -19,7 +19,9 @@ import logging
 import random
 import sys
 import time
+from collections.abc import Coroutine
 from dataclasses import dataclass
+from typing import Any
 
 from dotenv import load_dotenv
 from livekit import agents, rtc
@@ -83,6 +85,19 @@ STUDY_TABS = {"transcript": "Transcript", "review": "Review", "ask": "Ask"}
 # The shortest interval between two balance re-reads on a session held at zero.
 BALANCE_RECHECK_MIN_S = 5.0
 
+# How long the worker waits for a learner whose participant left the room before
+# it gives the job up (audit B4). The clock is held for the whole grace, so the
+# wait is free to the learner; a reconnect inside it resumes the same
+# conversation in the same room.
+DISCONNECT_GRACE_S = 60.0
+
+# How long after the session starts we will wait for the tutor's first audio
+# frame before saying so at error level. Nothing is billed in the meantime —
+# the clock does not start until that frame plays — so this is an alarm, not a
+# timeout: it is the "the tutor never spoke" case, and it is invisible without
+# it (audit B4b, B6).
+FIRST_AUDIO_TIMEOUT_S = 20.0
+
 # How many of a hold's questions ride back on the resume payload, and how long
 # each may be. Mirrors `MAX_RESUME_ASKS` in the frontend's protocol module; the
 # cap is re-applied here because this is untrusted input on its way to a prompt.
@@ -90,9 +105,18 @@ MAX_RESUME_ASKS = 5
 MAX_ASK_CHARS = 200
 
 
-# Publishes in flight. Fire-and-forget tasks are garbage collected unless
-# something holds a reference to them, so they are parked here until they end.
-_turn_seq_tasks: set[asyncio.Task[None]] = set()
+# Work in flight. Fire-and-forget tasks are garbage collected unless something
+# holds a reference to them, so they are parked here until they end. Module
+# level on purpose: several of these outlive the entrypoint's frame (the
+# entrypoint returns as soon as the session is wired; the job runs on).
+_background_tasks: set[asyncio.Task[None]] = set()
+
+
+def _spawn(coro: Coroutine[Any, Any, None], name: str) -> asyncio.Task[None]:
+    task = asyncio.create_task(coro, name=name)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
 
 
 def _publish_turn_commit(room: rtc.Room, state: SessionState) -> None:
@@ -118,9 +142,7 @@ def _publish_turn_commit(room: rtc.Room, state: SessionState) -> None:
         except Exception:
             logger.warning("failed to publish turn seq %d", seq, exc_info=True)
 
-    task = asyncio.create_task(_publish(), name="tutor-turn-seq")
-    _turn_seq_tasks.add(task)
-    task.add_done_callback(_turn_seq_tasks.discard)
+    _spawn(_publish(), "tutor-turn-seq")
 
 
 class TutorAgent(Agent):
@@ -195,9 +217,23 @@ async def tutor(ctx: JobContext) -> None:
             "anchor_lang": cfg.anchor_lang,
             "balance_s": meta.balance_s,
             "user_id": meta.user_id,
+            "job_id": ctx.job.id,
+            "room": ctx.room.name,
             **meta.plan.log_fields(),
         },
     )
+
+    # The ledger's client. The job id rides in every debit's ref, which is what
+    # keeps a redispatch of this room from replaying the first job's refs.
+    billing = BillingClient(room=ctx.room.name, user_id=meta.user_id, job_id=ctx.job.id)
+
+    # Metering is fail-closed, and this is the gate (audit B10). It also
+    # produces the budget: a balance read here is fresher and more trustworthy
+    # than the number the token route signed into dispatch metadata minutes ago.
+    budget_s = await _open_ledger(ctx, cfg, meta, billing)
+    if budget_s is None:
+        await billing.aclose()
+        return
 
     session: AgentSession = AgentSession(
         llm=cfg.build_realtime_model(),
@@ -237,9 +273,6 @@ async def tutor(ctx: JobContext) -> None:
     coach = AskCoach(cfg, meta.plan, facts)
     review = ReviewMaterial(cfg, meta.plan)
     usage = UsageTracker()
-    # The ledger's client. A session with no learner id (which the token route
-    # should make impossible) simply never talks to it — see `billing.py`.
-    billing = BillingClient(room=ctx.room.name, user_id=meta.user_id)
     session.on("session_usage_updated", usage.on_usage)
 
     async def _shutdown() -> None:
@@ -301,7 +334,10 @@ async def tutor(ctx: JobContext) -> None:
     # One hold, two sources: the learner's pause RPC and the clock at zero
     # balance. Both go through this object so the two feel identical on screen.
     hold = SessionHold(ctx, session, state, analyzer)
-    clock = _build_clock(ctx, session, state, meta, hold, billing)
+    clock = _build_clock(ctx, session, state, budget_s, hold, billing)
+
+    # The learner leaving the room is the second thing that holds the meter.
+    _watch_learner_presence(ctx, state, clock, billing)
 
     await _register_pause_rpc(ctx, session, state, facts, cfg, clock, hold, billing)
     await register_translate_rpc(ctx, session, translator)
@@ -327,18 +363,209 @@ async def tutor(ctx: JobContext) -> None:
         }
     )
 
-    # The clock starts with the conversation, not with the job: the greeting is
-    # requested first so the learner's first minute is a minute of tutoring, and
-    # the clock starts without waiting for that greeting to finish playing.
+    # The clock starts with the tutor's VOICE, not with the request for it: a
+    # session where the model never speaks used to be billed from the moment
+    # the greeting was asked for (audit B4b). The greeting is still requested
+    # here, first, so the learner's first metered second is a second of
+    # tutoring.
     session.generate_reply(instructions=greeting_instructions(cfg, meta.plan))
-    await clock.start()
+    _meter_from_first_tutor_audio(session, clock)
+
+
+async def _open_ledger(
+    ctx: JobContext,
+    cfg: TutorConfig,
+    meta: JobMetadata,
+    billing: BillingClient,
+) -> int | None:
+    """Open the money seam, or refuse the job. Returns the clock's budget.
+
+    Fail-closed (audit B10). Metering used to fail *open*: one unset variable
+    and `BillingClient.enabled` was False, every ledger call returned silently,
+    and every learner talked for free with nothing to notice it. So a job that
+    carries a learner id and cannot reach the ledger is now refused —
+    `TUTOR_ALLOW_UNMETERED=1` is the local-development escape hatch, and it says
+    so on every session.
+
+    A job with no learner id is a different thing entirely: that is the worker
+    run straight from the CLI, with no token route in front of it, and it keeps
+    running on the dispatched budget exactly as before.
+
+    The successful path is also where the budget comes from: the balance read
+    here is fresher than the one the token route signed into dispatch metadata,
+    and `seconds_billed` seeds the room-cumulative total (audit B3).
+    """
+    if not meta.user_id:
+        logger.info(
+            "no learner on this job: running unmetered against the dispatched balance",
+            extra={"balance_s": meta.balance_s},
+        )
+        return meta.balance_s
+
+    if not billing.enabled:
+        reason = "CONVEX_SITE_URL or TUTOR_DEBIT_SECRET is not set"
+    else:
+        read = await billing.balance()
+        if read is not None:
+            billing.set_billed_before(read.seconds_billed)
+            logger.info(
+                "ledger open",
+                extra={
+                    "balance_s": read.balance_seconds,
+                    "billed_before_s": read.seconds_billed,
+                    "dispatched_balance_s": meta.balance_s,
+                },
+            )
+            return read.balance_seconds
+        reason = "the balance read failed"
+
+    if cfg.allow_unmetered:
+        logger.warning(
+            "TUTOR_ALLOW_UNMETERED=1: running this session UNMETERED (%s). "
+            "Nothing will be billed. Never set this in production.",
+            reason,
+        )
+        return meta.balance_s
+
+    logger.error(
+        "refusing this job: the learner is metered but the ledger is unreachable (%s). "
+        "Set CONVEX_SITE_URL and TUTOR_DEBIT_SECRET, or TUTOR_ALLOW_UNMETERED=1 for "
+        "local development.",
+        reason,
+        extra={"user_id": meta.user_id, "room": ctx.room.name, "job_id": ctx.job.id},
+    )
+    ctx.shutdown(reason="ledger unreachable: refusing to run an unmetered paid session")
+    return None
+
+
+def _meter_from_first_tutor_audio(session: AgentSession, clock: SessionClock) -> None:
+    """Start the clock on the first frame of tutor audio that actually plays.
+
+    `agent_state_changed` → `"speaking"` is that frame: the framework flips the
+    state from the playout task's first-frame callback, once, per speech
+    (`agent_activity`, 1.6.x), and publishes it as `lk.agent.state`. Requesting
+    a reply is not the same event — the model can fail, the socket can die, and
+    the audio can never arrive.
+
+    The watchdog does not end anything. It cannot: nothing has been billed (the
+    clock never started), so there is no money question — only an operational
+    one, which is invisible unless somebody says it out loud.
+    """
+
+    def _on_agent_state(ev: object) -> None:
+        if getattr(ev, "new_state", None) != "speaking" or clock.started:
+            return
+        _spawn(clock.start(), "tutor-clock-start")
+
+    session.on("agent_state_changed", _on_agent_state)
+
+    async def _watchdog() -> None:
+        await asyncio.sleep(FIRST_AUDIO_TIMEOUT_S)
+        if clock.started:
+            return
+        logger.error(
+            "the tutor has not spoken %.0fs after the session started; nothing is being "
+            "metered and the learner is looking at a silent stage",
+            FIRST_AUDIO_TIMEOUT_S,
+        )
+
+    _spawn(_watchdog(), "tutor-first-audio-watchdog")
+
+
+def _is_learner(participant: rtc.Participant) -> bool:
+    """Every remote participant that is not another agent is the learner."""
+    return participant.kind != rtc.ParticipantKind.PARTICIPANT_KIND_AGENT
+
+
+def _learner_present(room: rtc.Room) -> bool:
+    return any(_is_learner(p) for p in room.remote_participants.values())
+
+
+def _watch_learner_presence(
+    ctx: JobContext,
+    state: SessionState,
+    clock: SessionClock,
+    billing: BillingClient,
+) -> None:
+    """Stop metering the moment the learner's participant leaves (audit B4).
+
+    `close_on_disconnect` only covers client-initiated, room-deleted and
+    rejected disconnects — a wifi drop, a tab crash and a closed laptop are
+    none of those, and before this the clock happily metered an empty room down
+    to zero, held it, and sat there until the 10-minute idle timeout.
+
+    Three things happen on the way out, in this order: the meter is held (a
+    hold source of its own, never `state.paused` — that boolean is the UI's,
+    edge-triggered by the pause RPC, and borrowing it would make the learner's
+    next pause a no-op), the seconds so far are debited while the worker is
+    definitely still alive, and a grace timer starts. Come back inside the
+    grace and the same conversation resumes in the same room; do not, and the
+    job ends.
+    """
+    grace: dict[str, asyncio.Task[None] | None] = {"task": None}
+
+    async def _hold_then_end() -> None:
+        try:
+            await clock.notify_hold_changed()
+        except Exception:
+            logger.warning("clock republish on disconnect failed", exc_info=True)
+        try:
+            # Bill now: the worker is alive now, and it may not be in a minute.
+            await billing.debit(clock.seconds_billed)
+        except Exception:
+            logger.warning("debit on disconnect failed", exc_info=True)
+        await asyncio.sleep(DISCONNECT_GRACE_S)
+        if not state.learner_absent:
+            return
+        logger.info(
+            "learner did not come back within %.0fs: ending the job",
+            DISCONNECT_GRACE_S,
+            extra={"seconds_billed": clock.seconds_billed},
+        )
+        ctx.shutdown(reason="learner disconnected")
+
+    def _on_disconnected(participant: rtc.RemoteParticipant) -> None:
+        if not _is_learner(participant) or _learner_present(ctx.room):
+            return
+        if state.learner_absent:
+            return
+        state.learner_absent = True
+        logger.warning(
+            "the learner's participant left the room: holding the clock",
+            extra={"identity": participant.identity, "seconds_billed": clock.seconds_billed},
+        )
+        grace["task"] = _spawn(_hold_then_end(), "tutor-disconnect-grace")
+
+    def _on_connected(participant: rtc.RemoteParticipant) -> None:
+        if not _is_learner(participant) or not state.learner_absent:
+            return
+        state.learner_absent = False
+        task = grace["task"]
+        grace["task"] = None
+        if task is not None and not task.done():
+            task.cancel()
+        logger.info(
+            "the learner came back: releasing the clock hold",
+            extra={"identity": participant.identity},
+        )
+        _spawn(_republish_hold(clock), "tutor-reconnect-republish")
+
+    ctx.room.on("participant_disconnected", _on_disconnected)
+    ctx.room.on("participant_connected", _on_connected)
+
+
+async def _republish_hold(clock: SessionClock) -> None:
+    try:
+        await clock.notify_hold_changed()
+    except Exception:
+        logger.warning("clock republish on reconnect failed", exc_info=True)
 
 
 def _build_clock(
     ctx: JobContext,
     session: AgentSession,
     state: SessionState,
-    meta: JobMetadata,
+    budget_s: int,
     hold: SessionHold,
     billing: BillingClient,
 ) -> SessionClock:
@@ -377,7 +604,10 @@ def _build_clock(
         except Exception:
             logger.warning("interrupt at zero failed", exc_info=True)
         try:
-            await billing.debit(clock.seconds_billed)
+            # `zero_hold=True`: a failure here is REMEMBERED. These seconds are
+            # in the balance the resume is about to re-read, so resuming on that
+            # balance would spend them twice (audit §3.1.6).
+            await billing.debit(clock.seconds_billed, zero_hold=True)
         except Exception:
             logger.warning("debit at zero failed", exc_info=True)
         try:
@@ -385,16 +615,24 @@ def _build_clock(
         except Exception:
             logger.exception("hold at zero failed")
 
+    async def _debit() -> None:
+        # The periodic report (audit §4.1). Cumulative, so the ledger takes only
+        # the delta; a crash now costs at most one interval of revenue.
+        await billing.debit(clock.seconds_billed)
+
     async def _idle_end() -> None:
         await _end_session(ctx, session)
 
     clock = SessionClock(
-        meta.balance_s,
+        budget_s,
         publish=_publish,
         on_nudge=_nudge,
         on_zero=_zero,
         on_idle_end=_idle_end,
-        is_paused=lambda: state.paused,
+        on_debit=_debit,
+        # Every hold source, not just the UI's: a learner whose connection
+        # dropped is not spending minutes either (audit B4).
+        is_paused=lambda: state.clock_held,
     )
     return clock
 
@@ -841,7 +1079,24 @@ async def _register_pause_rpc(
             if now - last_balance_check < BALANCE_RECHECK_MIN_S:
                 return still_held_ack
             last_balance_check = now
-            balance_s = await billing.balance()
+
+            balance_s: int | None = None
+            if billing.zero_debit_unacked:
+                # The debit at the zero hold never landed, so the seconds it
+                # was meant to take are still sitting in the balance. Budgeting
+                # from that balance would hand them to the learner a second time
+                # (audit §3.1.6) — so the debit is retried FIRST, and the resume
+                # is refused if it still fails. Its answer is the balance after
+                # the debit, which is exactly the number to re-budget from.
+                logger.warning("out of minutes: retrying the unacknowledged zero debit")
+                balance_s = await billing.debit(clock.seconds_billed, zero_hold=True)
+                if balance_s is None:
+                    logger.error("out of minutes: zero debit still failing, refusing the resume")
+                    return still_held_ack
+
+            if balance_s is None:
+                read = await billing.balance()
+                balance_s = read.balance_seconds if read is not None else None
             if balance_s is None or not await clock.apply_balance(balance_s):
                 logger.info("out of minutes: resume refused, still held")
                 return still_held_ack

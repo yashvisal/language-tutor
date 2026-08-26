@@ -96,6 +96,7 @@ class AskCoach:
         self._facts = facts
         self._instructions = ask_instructions(cfg)
         self._client: openai.AsyncOpenAI | None = None
+        self._warm_task: asyncio.Task[None] | None = None
         self._asked = 0
         self._last_limit_line: str | None = None
 
@@ -136,6 +137,18 @@ class AskCoach:
         self._warm_task = asyncio.create_task(self.warm())
 
     async def aclose(self) -> None:
+        # A warm-up still in flight holds a socket into a loop that is closing
+        # under it, and logs its own failure on the way out. Cancel it first.
+        task = self._warm_task
+        self._warm_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.debug("warm-up failed on the way out (harmless)", exc_info=True)
         if self._client is not None:
             await self._client.close()
 

@@ -32,6 +32,13 @@ _CATEGORY_LABELS = {"naturalness": "phrasing"}
 @dataclass
 class SessionState:
     paused: bool = False
+    # The OTHER thing that holds the meter, and it is not the UI's hold: the
+    # learner's participant has left the room (a wifi drop, a closed laptop, a
+    # crashed tab). `paused` is mirrored to the frontend as `tutor.paused` and
+    # is edge-triggered by the pause RPC, so it must not be borrowed for this —
+    # a disconnect that set it would make the *next* pause a no-op. The clock
+    # meters against `clock_held`, the union of the two (audit B4).
+    learner_absent: bool = False
     # The last bridge intent used, so consecutive resumes never repeat a line.
     last_bridge_intent: str | None = None
 
@@ -48,6 +55,11 @@ class SessionState:
     tutor_was_speaking: bool = False
     reply_was_pending: bool = False
     learner_was_speaking: bool = False
+
+    @property
+    def clock_held(self) -> bool:
+        """Every reason the meter is not running. The clock's only question."""
+        return self.paused or self.learner_absent
 
     def clear_pause_context(self) -> None:
         self.paused_at = None

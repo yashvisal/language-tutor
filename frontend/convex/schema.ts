@@ -55,8 +55,11 @@ export default defineSchema({
     seconds: v.number(),
     /**
      * Unique per entry by convention, enforced by every writer checking this
-     * index first: `signup:<clerkId>`, a Stripe session id, or `<room>:<seq>`
-     * for a worker debit.
+     * index first: `signup:<clerkId>`, a Stripe session id, or
+     * `<room>:<jobId>:<seq>` for a worker debit. The job id is in the debit
+     * ref because `seq` restarts at 1 for every LiveKit job, so a redispatch
+     * into the same room would otherwise replay refs it had already written
+     * and every debit would be dropped as a duplicate.
      */
     ref: v.string(),
     createdAt: v.number(),
@@ -92,8 +95,16 @@ export default defineSchema({
     .index("by_room", ["room"])
     .index("by_user", ["userId"])
     // History reads one learner's recent sessions newest-first; `by_user`
-    // alone would make it collect a lifetime of rows to show thirty.
-    .index("by_user_startedAt", ["userId", "startedAt"]),
+    // alone would make it collect a lifetime of rows to show thirty. It is
+    // also the one-open-session guard's read: `sessions.start` refuses while
+    // this learner's newest row has no `endedAt` and is younger than fifteen
+    // minutes.
+    .index("by_user_startedAt", ["userId", "startedAt"])
+    // The reconciliation cron's read (`convex/crons.ts`): every row still open
+    // and older than two hours. `endedAt` is the first field so `eq(undefined)`
+    // selects exactly the unfinished rows and `startedAt` orders them — the
+    // alternative is a full table scan every hour, forever.
+    .index("by_endedAt_startedAt", ["endedAt", "startedAt"]),
 
   purchases: defineTable({
     userId: v.id("users"),

@@ -29,6 +29,23 @@ export function isOutOfMinutes(error: unknown): boolean {
   return String(error).includes(OUT_OF_MINUTES_MESSAGE)
 }
 
+/**
+ * What a 409 from the token route says out loud.
+ *
+ * Unlike the 402 above this is not a state with a screen — there is nothing to
+ * buy and nothing to hold — so it travels as the sentence the learner should
+ * read. `live-producer` puts it straight into `error`, and the pre-flight
+ * prints it above Start. Written here rather than at the fetch so the wording
+ * is one string, and so it is obvious it is prose and not an error code.
+ *
+ * The route returns it while `sessions.start` sees a row with no `endedAt`
+ * younger than fifteen minutes: almost always a second tab, occasionally a
+ * conversation whose tab died (which the reconciliation cron closes, and which
+ * "wait a moment" is the honest advice for).
+ */
+export const OPEN_SESSION_MESSAGE =
+  "You already have a conversation open in another tab. End it there, or wait a moment."
+
 let pendingPlan: SessionPlan | null = null
 
 /**
@@ -67,6 +84,10 @@ export const tutorTokenSource = TokenSource.literal(async () => {
   // Not a failure: the learner is out of minutes, and the surface has a screen
   // for that. Everything else is a fault worth showing as one.
   if (response.status === 402) throw new Error(OUT_OF_MINUTES_MESSAGE)
+  // Also not a fault: the learner has a conversation running somewhere else,
+  // and both would spend the same balance (see `sessions.start`). Nothing to
+  // retry until they end it, so this is prose rather than a status code.
+  if (response.status === 409) throw new Error(OPEN_SESSION_MESSAGE)
   if (!response.ok) {
     throw new Error(
       `Could not start the session (${response.status}). Try again.`

@@ -8,6 +8,7 @@ import {
 } from "livekit-server-sdk"
 
 import { api } from "@/convex/_generated/api"
+import { OPEN_SESSION_PREFIX } from "@/lib/billing"
 import { MissingEnvVarError, requireServerEnv } from "@/lib/env"
 import type { SessionPlan } from "@/lib/session/contract"
 import { boundPlan } from "@/lib/session/plan"
@@ -18,42 +19,51 @@ import {
 } from "@/lib/session/protocol"
 
 /**
- * LiveKit standardized token endpoint.
+ * LiveKit token endpoint, shaped like the standardized one
+ * (https://docs.livekit.io/frontends/build/authentication/endpoint.md) but
+ * deliberately narrower: it returns `201 { server_url, participant_token }`
+ * and reads exactly ONE field off the request body.
  *
- * Follows https://docs.livekit.io/frontends/build/authentication/endpoint.md:
- * accepts a POST body of `{ room_name?, participant_identity?,
- * participant_name?, participant_metadata?, participant_attributes?,
- * room_config? }` (snake_case, as sent by `TokenSource.endpoint`) and returns
- * `201 { server_url, participant_token }`.
+ * **Nothing else in the body is honoured.** Everything the standardized shape
+ * would let a client set — `room_name`, `participant_identity`,
+ * `participant_name`, `participant_metadata`, `participant_attributes`,
+ * `room_config` — is signed into the token, and a signed claim a stranger
+ * chose is not a claim. The two that mattered:
+ * - `room_name` was a free-conversation exploit. A room carries the debit's
+ *   high-water mark (`sessions.secondsBilled`), so re-joining a room that had
+ *   already been billed for N seconds made every report of a *fresh* worker
+ *   clock fall below N and debit zero. The room is minted here, always.
+ * - `participant_identity` / `participant_name` named the learner to LiveKit;
+ *   they are minted here from the Clerk id instead.
+ *
+ * The one field read: `session_plan`, the learner's declared intent, bounded
+ * by `boundPlan` before it goes anywhere near a model prompt.
  *
  * Tutor-specific behavior:
- * - a unique room per session (`lesson-<slug>-<ts>-<nonce>`) unless the client
- *   explicitly asks to rejoin a named room
+ * - a unique room per session (`lesson-<slug>-<ts>-<nonce>`)
  * - explicit agent dispatch for the `tutor` worker embedded in the token's
  *   room config, so exactly one agent joins the room
- * - `room_config` from the request is ignored: it is signed into the token, so
- *   accepting it would let a caller set egress, participant limits or timeouts
- * - one non-standard body field, `session_plan`: the learner's declared intent
- *   for this session, bounded here and embedded in the dispatch metadata the
- *   worker reads (see `SessionDispatchMetadata`)
  *
  * This is also the money gate, and it is the only one: a token is minted only
- * for a signed-in learner with seconds left, the balance is signed into the
- * dispatch metadata, and the `sessions` row the worker will debit against is
- * written here. A zero balance is a **402**, which the surface reads as "out of
- * minutes" rather than as a failure to connect.
+ * for a signed-in learner with seconds left and no conversation already open,
+ * the balance is signed into the dispatch metadata, and the `sessions` row the
+ * worker will debit against is written here.
+ *
+ * Three refusals the surface reads as states rather than faults:
+ * - **401** not signed in.
+ * - **402** `{ error: "out_of_minutes" }` — no seconds left.
+ * - **409** `{ error, code: "open_session" }` — this learner already has a
+ *   conversation running (another tab). Two tabs would each budget the *whole*
+ *   balance and the ledger would go negative; `sessions.start` is the guard.
  */
 
 /** Token lifetime. Only needs to outlive connect + any reconnect attempt, but
  * a lesson can run long, so keep it comfortably above session length. */
 const TOKEN_TTL = "1h"
 
+/** Every other field of the standardized request shape is accepted by the
+ * parser and ignored by the handler — see the note above. */
 type TokenRequestBody = {
-  room_name?: string
-  participant_identity?: string
-  participant_name?: string
-  participant_metadata?: string
-  participant_attributes?: Record<string, string>
   /** Non-standard, ours. Untrusted: normalized by `boundPlan` before use. */
   session_plan?: unknown
 }
@@ -165,7 +175,11 @@ export async function POST(request: NextRequest) {
   // the out-of-minutes surface exists for, so it gets its own status.
   let balanceSeconds: number
   try {
-    const viewer = await fetchQuery(api.users.viewer, {}, { token: convexToken })
+    const viewer = await fetchQuery(
+      api.users.viewer,
+      {},
+      { token: convexToken }
+    )
     balanceSeconds = viewer?.seconds ?? 0
   } catch (error) {
     console.error("/api/token: could not read the balance", error)
@@ -178,36 +192,25 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "out_of_minutes" }, { status: 402 })
   }
 
-  const participantIdentity =
-    body.participant_identity?.trim() || `learner-${nonce()}`
-  const participantName = body.participant_name?.trim() || "Learner"
-  const roomName =
-    body.room_name?.trim() || generateRoomName(participantIdentity)
+  // Minted here, never read off the body: the identity is what LiveKit sees
+  // and what the room name is built from, so a client-chosen one is a
+  // client-chosen room (see the note at the top of this file).
+  const participantIdentity = `learner-${nonce()}`
+  const participantName = "Learner"
+  const roomName = generateRoomName(participantIdentity)
 
   const plan = boundPlan(body.session_plan)
 
-  // The row the worker's debits land on. Before the token, deliberately: a
-  // session the ledger has never heard of is worse than a connect that failed.
-  try {
-    await fetchMutation(
-      api.sessions.start,
-      { room: roomName, plan },
-      { token: convexToken }
-    )
-  } catch (error) {
-    console.error("/api/token: could not record the session", error)
-    return NextResponse.json(
-      { error: "Could not start the session" },
-      { status: 500 }
-    )
-  }
-
+  // Mint first, record second. The other order leaves an orphan `sessions` row
+  // whenever `toJwt` fails — a row with a high-water mark of zero that the
+  // debit fallback would happily adopt — and there is no rollback for it. This
+  // order can only ever *discard* a token nobody received, which costs nothing:
+  // the room is never joined and the agent is never dispatched.
+  let participantToken: string
   try {
     const at = new AccessToken(apiKey, apiSecret, {
       identity: participantIdentity,
       name: participantName,
-      metadata: body.participant_metadata ?? "",
-      attributes: body.participant_attributes ?? {},
       ttl: TOKEN_TTL,
     })
 
@@ -221,12 +224,7 @@ export async function POST(request: NextRequest) {
 
     at.roomConfig = buildRoomConfig(plan, userId, balanceSeconds)
 
-    const participantToken = await at.toJwt()
-
-    return NextResponse.json(
-      { server_url: serverUrl, participant_token: participantToken },
-      { status: 201 }
-    )
+    participantToken = await at.toJwt()
   } catch (error) {
     console.error("/api/token: failed to mint access token", error)
     return NextResponse.json(
@@ -234,4 +232,37 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     )
   }
+
+  // The row the worker's debits land on, and the one-open-session guard. If
+  // this fails the token above is dropped on the floor unread: a session the
+  // ledger has never heard of is worse than a connect that never happened.
+  try {
+    await fetchMutation(
+      api.sessions.start,
+      { room: roomName, plan },
+      { token: convexToken }
+    )
+  } catch (error) {
+    // `sessions.start` refuses while this learner already has a row with no
+    // `endedAt` younger than 15 minutes. That is a second tab, not a fault:
+    // each one would budget the whole balance and the ledger would go
+    // negative by (N-1) x balance. Distinguished by the message prefix
+    // because a Convex mutation error reaches us as text.
+    if (String(error).includes(OPEN_SESSION_PREFIX)) {
+      return NextResponse.json(
+        { error: "A conversation is already running", code: "open_session" },
+        { status: 409 }
+      )
+    }
+    console.error("/api/token: could not record the session", error)
+    return NextResponse.json(
+      { error: "Could not start the session" },
+      { status: 500 }
+    )
+  }
+
+  return NextResponse.json(
+    { server_url: serverUrl, participant_token: participantToken },
+    { status: 201 }
+  )
 }

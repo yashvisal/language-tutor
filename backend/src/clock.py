@@ -23,8 +23,16 @@ Four deliberate semantics:
   the 30 s mark passes there is nobody to hear it, so the brief is deferred and
   delivered on resume instead — the same seam the conversational resume uses.
 
-The clock talks to the outside world only through the callbacks it is given,
-which is what makes it exercisable with fakes.
+One more, added 2026-08-25 (audit §4.1): **the ledger is told every minute, not
+only at the end.** Debits used to fire at zero and in the shutdown callback, so
+a SIGKILL at minute 45 billed nothing. The clock now calls `on_debit` every
+`DEBIT_INTERVAL_S` *active* seconds; the report is cumulative and the ledger
+takes only the delta, so the extra calls cost nothing and a killed worker has
+lost at most a minute.
+
+The clock talks to the outside world only through the callbacks it is given —
+including its clock: `now` is injected, which is what makes the whole thing
+exercisable with fakes and no sleeping.
 """
 
 from __future__ import annotations
@@ -55,6 +63,11 @@ IDLE_TIMEOUT_S = 600.0
 # their mark, coarse enough to be free.
 TICK_S = 1.0
 
+# How much active time may accrue before the ledger hears about it. The report
+# is cumulative and the ledger debits only the delta, so this is the ceiling on
+# what a crashed worker can lose, not a cost.
+DEBIT_INTERVAL_S = 60.0
+
 
 class SessionClock:
     """Balance enforcement for one session.
@@ -78,21 +91,27 @@ class SessionClock:
         on_zero: Callable[[], Awaitable[None]],
         on_idle_end: Callable[[], Awaitable[None]],
         is_paused: Callable[[], bool],
+        on_debit: Callable[[], Awaitable[None]] | None = None,
         nudge_s: float = NUDGE_S,
         publish_interval_s: float = PUBLISH_INTERVAL_S,
         idle_timeout_s: float = IDLE_TIMEOUT_S,
         tick_s: float = TICK_S,
+        debit_interval_s: float = DEBIT_INTERVAL_S,
+        now: Callable[[], float] = time.monotonic,
     ) -> None:
         self._budget_s = float(max(0, balance_s))
         self._publish = publish
         self._on_nudge = on_nudge
         self._on_zero = on_zero
         self._on_idle_end = on_idle_end
+        self._on_debit = on_debit
         self._is_paused = is_paused
         self._nudge_s = nudge_s
         self._publish_interval_s = publish_interval_s
         self._idle_timeout_s = idle_timeout_s
         self._tick_s = tick_s
+        self._debit_interval_s = debit_interval_s
+        self._now = now
 
         self._started_at: float | None = None
         # Billed time is ACTIVE time: the clock accrues between ticks only while
@@ -101,6 +120,9 @@ class SessionClock:
         self._active_s = 0.0
         self._last_tick_at: float | None = None
         self._last_publish_at = 0.0
+        # Active seconds at the last debit — the periodic report measures
+        # ACTIVE time, not wall time, so a long hold does not owe a debit.
+        self._last_debit_active_s = 0.0
         self._nudged = False
         self._nudge_held = False
         self._out_of_minutes = False
@@ -143,7 +165,7 @@ class SessionClock:
         """Start the clock and publish the opening numbers."""
         if self._started_at is not None:
             return
-        self._started_at = time.monotonic()
+        self._started_at = self._now()
         self._last_tick_at = self._started_at
         await self.publish_now()
         self._task = asyncio.create_task(self._run(), name="tutor-session-clock")
@@ -202,17 +224,26 @@ class SessionClock:
         try:
             while not self._ended:
                 await asyncio.sleep(self._tick_s)
-                now = time.monotonic()
-                if self._last_tick_at is not None and not self._is_paused():
-                    self._active_s += now - self._last_tick_at
-                self._last_tick_at = now
-                await self._evaluate(now)
+                await self.tick()
         except asyncio.CancelledError:
             raise
         except Exception:
             # A dead clock must not take the conversation with it; the session
             # simply runs unmetered and the shutdown path still bills it.
             logger.exception("session clock stopped unexpectedly")
+
+    async def tick(self) -> None:
+        """One turn of the loop: accrue the interval, then re-evaluate.
+
+        Separated from `_run` so it can be driven directly — with `now`
+        injected, the whole clock is exercisable in milliseconds and without a
+        single `sleep`.
+        """
+        now = self._now()
+        if self._last_tick_at is not None and not self._is_paused():
+            self._active_s += now - self._last_tick_at
+        self._last_tick_at = now
+        await self._evaluate(now)
 
     async def _evaluate(self, now: float) -> None:
         if self._out_of_minutes:
@@ -228,6 +259,8 @@ class SessionClock:
             await self._hold_at_zero(now)
             return
 
+        await self._maybe_debit()
+
         if not self._nudged and remaining <= self._nudge_s:
             self._nudged = True
             await self.publish_now()
@@ -242,8 +275,27 @@ class SessionClock:
         if now - self._last_publish_at >= self._publish_interval_s:
             await self.publish_now()
 
+    async def _maybe_debit(self) -> None:
+        """Tell the ledger, every `DEBIT_INTERVAL_S` active seconds.
+
+        A worker killed mid-session used to bill nothing at all (audit §4.1).
+        The mark moves *before* the call so a slow debit cannot queue a second
+        one behind it, and a failure is never retried here: the next interval,
+        the zero hold, and the teardown report all send the same cumulative
+        number, and the ledger takes only the delta.
+        """
+        if self._on_debit is None or self._ended:
+            return
+        if self._active_s - self._last_debit_active_s < self._debit_interval_s:
+            return
+        self._last_debit_active_s = self._active_s
+        try:
+            await self._on_debit()
+        except Exception:
+            logger.warning("periodic debit failed", exc_info=True)
+
     async def publish_now(self) -> None:
-        self._last_publish_at = time.monotonic()
+        self._last_publish_at = self._now()
         try:
             await self._publish(int(self.elapsed_s), int(self.remaining_s), self._out_of_minutes)
         except Exception:
@@ -260,6 +312,9 @@ class SessionClock:
         self._out_of_minutes = True
         self._held_at = now
         self._nudge_held = False
+        # The zero handler debits, so the periodic reporter owes nothing until
+        # another interval of active time has passed after a resume.
+        self._last_debit_active_s = self._active_s
         logger.info("out of minutes: holding", extra={"seconds_billed": self.seconds_billed})
         try:
             await self._on_zero()
@@ -287,12 +342,14 @@ async def report_seconds_billed(
     seconds: int,
     room: str,
 ) -> None:
-    """The ledger seam: what this session owes, reported once at teardown.
+    """The ledger seam: what this session owes, reported at teardown.
 
-    The number is the session's CUMULATIVE active seconds; the Convex action is
-    idempotent per (room, seq) and debits only the delta since the last report,
-    so reporting the same total twice is free and reporting a total after a
-    mid-session debit charges exactly the difference.
+    The number handed in is this JOB's active seconds; `BillingClient.debit`
+    turns it into the ROOM's cumulative total by adding what the room had
+    already been billed before this job started. The Convex action is
+    idempotent per `<room>:<job_id>:<seq>` and debits only the delta above the
+    room's high-water mark, so reporting the same total twice is free and
+    reporting a total after a periodic debit charges exactly the difference.
 
     Retried once, because this is the last chance to bill the session, and
     never raised: a failed debit is a logged fact, not a crash on the way out.
@@ -303,5 +360,8 @@ async def report_seconds_billed(
     )
     if billing is None or not billing.enabled:
         return
-    if await billing.debit(seconds) is None:
-        await billing.debit(seconds)
+    # `final=True` here and nowhere else: it closes the session row on the
+    # Convex side. The periodic and zero-hold debits must leave it open, or a
+    # purchase could not resume the same conversation.
+    if await billing.debit(seconds, final=True) is None:
+        await billing.debit(seconds, final=True)

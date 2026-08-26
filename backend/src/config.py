@@ -110,6 +110,12 @@ REASONING_EFFORTS = ("minimal", "low")
 SPEED_MIN = 0.25
 SPEED_MAX = 1.5
 
+# Endpointing bounds. The floor must stay above the STT's interim flush lag
+# (see `TutorConfig.min_endpointing_s`); the ceiling is "a learner would have
+# given up by now".
+ENDPOINT_MIN_S = 0.2
+ENDPOINT_MAX_S = 30.0
+
 
 def _env_reasoning(name: str, default: str) -> str:
     value = _env(name, default).strip().lower()
@@ -117,6 +123,28 @@ def _env_reasoning(name: str, default: str) -> str:
         logger.warning("%s=%r is not one of %s; using %r", name, value, REASONING_EFFORTS, default)
         return default
     return value
+
+
+def _env_float(name: str, default: float, *, low: float, high: float) -> float:
+    """A bounded float from the environment, guarded like `_env_speed`.
+
+    A typo in one endpointing variable used to kill every job the worker took
+    (a bare `float()` at import of the config); now it warns once and runs on
+    the default.
+    """
+    raw = _env(name, str(default))
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("%s=%r is not a number; using %s", name, raw, default)
+        return default
+    if value != value:  # NaN
+        logger.warning("%s=%r is not a number; using %s", name, raw, default)
+        return default
+    clamped = min(max(value, low), high)
+    if clamped != value:
+        logger.warning("%s=%s is outside %s-%s; using %s", name, value, low, high, clamped)
+    return clamped
 
 
 def _env_speed(name: str, default: float) -> float:
@@ -196,13 +224,32 @@ class TutorConfig:
 
     openai_api_key: str = field(default="", repr=False)
 
+    # Metering is fail-closed (audit B10): a job dispatched with a learner id
+    # and no reachable ledger is refused, because the alternative is every
+    # learner talking for free and nothing paging. `TUTOR_ALLOW_UNMETERED=1`
+    # is the local-development escape hatch, and it logs a warning every time.
+    allow_unmetered: bool = False
+
     @classmethod
     def from_env(cls) -> TutorConfig:
+        openai_api_key = _env("OPENAI_API_KEY", "")
+        if not openai_api_key.strip():
+            # Every model in this worker is OpenAI's. Without the key the job
+            # fails somewhere deep in a plugin, mid-session; say so here.
+            raise RuntimeError(
+                "OPENAI_API_KEY is empty. The worker needs it for the realtime "
+                "model, the STT, the analyzer, Ask, Review and translate. Set "
+                "it in backend/.env.local or the worker's environment."
+            )
         return cls(
             target_lang=_env("TUTOR_TARGET_LANG", "es"),
             anchor_lang=_env("TUTOR_ANCHOR_LANG", "en"),
-            min_endpointing_s=float(_env("TUTOR_MIN_ENDPOINT_S", "1.2")),
-            max_endpointing_s=float(_env("TUTOR_MAX_ENDPOINT_S", "3.0")),
+            min_endpointing_s=_env_float(
+                "TUTOR_MIN_ENDPOINT_S", 1.2, low=ENDPOINT_MIN_S, high=ENDPOINT_MAX_S
+            ),
+            max_endpointing_s=_env_float(
+                "TUTOR_MAX_ENDPOINT_S", 3.0, low=ENDPOINT_MIN_S, high=ENDPOINT_MAX_S
+            ),
             realtime_model=_env("TUTOR_REALTIME_MODEL", "gpt-realtime-2.1"),
             realtime_reasoning=_env_reasoning("TUTOR_REALTIME_REASONING", "minimal"),
             realtime_speed=_env_speed("TUTOR_REALTIME_SPEED", 1.0),
@@ -211,7 +258,8 @@ class TutorConfig:
             analyzer_model=_env("TUTOR_ANALYZER_MODEL", "gpt-5.6-luna"),
             analyzer_enabled=_env_bool("TUTOR_ANALYZER_ENABLED", True),
             translate_model=_env("TUTOR_TRANSLATE_MODEL", "gpt-5.6-luna"),
-            openai_api_key=_env("OPENAI_API_KEY", ""),
+            openai_api_key=openai_api_key,
+            allow_unmetered=_env_bool("TUTOR_ALLOW_UNMETERED", False),
         )
 
     @property

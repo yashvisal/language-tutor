@@ -2,11 +2,16 @@
 
 Next.js app: the conversation surface, plus the LiveKit token endpoint.
 
-| Route                         | What it is                                         |
-| ----------------------------- | -------------------------------------------------- |
-| `/session`                    | The real session — live LiveKit adapter            |
-| `/design-inspo/chat-layout/*` | Phase-1 design exploration, driven by the mock     |
-| `/api/token`                  | Standardized token endpoint with explicit dispatch |
+| Route                         | What it is                                                          |
+| ----------------------------- | ------------------------------------------------------------------- |
+| `/`                           | Landing page — signed out                                           |
+| `/go`                         | Post-auth router: to `/welcome` or `/home` depending on the account |
+| `/welcome`                    | Onboarding: declare a level, receive the signup grant               |
+| `/home`                       | The dashboard — balance, the plan pre-flight, History               |
+| `/session`                    | The real session — live LiveKit adapter                             |
+| `/terms`, `/privacy`          | Legal (currently stubs)                                             |
+| `/design-inspo/chat-layout/*` | Phase-1 design exploration, driven by the mock                      |
+| `/api/token`                  | The token endpoint, and the money gate — see below                  |
 
 Both `/session` and the stage-split design page render the _same_ components
 from `components/session/`, folding the same `SessionEvent` contract through
@@ -36,11 +41,30 @@ each provider's dashboard:
 | `CONVEX_DEPLOYMENT`                               | Which Convex deployment the CLI talks to                 |
 | `NEXT_PUBLIC_CONVEX_URL`                          | Convex websocket URL the React client connects to        |
 | `NEXT_PUBLIC_CONVEX_SITE_URL`                     | Convex HTTP actions origin                               |
-| `OPENAI_API_KEY`                                  | Model key for OpenAI-backed features                     |
-| `XAI_API_KEY`                                     | Model key for xAI-backed features                        |
 
 Required vars are read through `lib/env.ts`, so a missing one fails with its
 own name rather than somewhere downstream.
+
+No model keys here. Every OpenAI call this product makes is made by the agent
+worker (`backend/`), never by the browser or by a Next route.
+
+### Deploying (Vercel)
+
+`CONVEX_DEPLOY_KEY` belongs on Vercel, not in `.env.local`. It is what lets the
+build run `npx convex deploy` — pushing `convex/` to the production deployment
+and generating the `NEXT_PUBLIC_CONVEX_URL` the client build bakes in — so the
+build command is:
+
+```shell
+npx convex deploy --cmd "pnpm build"
+```
+
+Generate the key in the Convex dashboard (Settings -> Deploy keys) for the
+_production_ deployment. Without it the build either fails or, worse, ships a
+client pointed at the dev deployment.
+
+Node and pnpm are pinned in `package.json` (`engines`, `packageManager`) so the
+build platform resolves the same versions this repo is developed against.
 
 ### Convex deployment env
 
@@ -54,9 +78,39 @@ Convex rejects every token as having no matching auth provider.
 `TUTOR_DEBIT_SECRET` lives there too (`npx convex env set TUTOR_DEBIT_SECRET
 <value>`). It is the bearer token on `POST /tutor/debit` and
 `POST /tutor/balance` in `convex/http.ts` — the seam the agent worker meters
-seconds through. Deliberately *not* a `.env.local` var and never
+seconds through. Deliberately _not_ a `.env.local` var and never
 `NEXT_PUBLIC_*`: anything the browser can read is a way to spend someone
 else's balance. The worker keeps its own copy in `backend/.env.local`.
+
+## The money seam
+
+Three pieces, and they only work together:
+
+**`POST /api/token`** is the only gate. It authenticates with Clerk, reads the
+balance, refuses a zero one with **402** and a learner who already has a
+conversation open with **409**, mints the room and the participant identity
+itself (the request body is read for `session_plan` and nothing else), signs
+the learner's Clerk id and balance into the agent's dispatch metadata, and only
+then writes the `sessions` row the worker will debit against.
+
+**`convex/http.ts`** is the worker's two routes — `POST /tutor/debit` and
+`POST /tutor/balance`, both behind a constant-time bearer check on
+`TUTOR_DEBIT_SECRET`, both machine-to-machine with no CORS. **The comment block
+at the top of that file is the wire contract**: exact paths, field names, types,
+bounds and status codes, written for whoever is on the Python side. Read it
+before changing either half.
+
+In short: the worker reports the room's _cumulative_ billed seconds under the
+ref `<room>:<jobId>:<seq>`; `sessions.debit` writes only the delta against
+`sessions.secondsBilled`. That is what makes a retry, a duplicate delivery, an
+out-of-order report and a redispatched job all safe. The teardown report also
+carries `final: true`, which closes the `sessions` row if the client never got
+to `sessions.finish` — a crashed worker or a killed tab must not leave the
+learner locked out by the one-open-session guard.
+
+**Balance is `sum(creditLedger.seconds)`** — always summed, never a mutable
+field on `users`. Every writer checks `by_ref` first, so a replayed grant or a
+retried debit finds its own row and does nothing.
 
 ## Run
 
@@ -77,6 +131,11 @@ corrections all originate there.
 
 ```shell
 pnpm typecheck
-pnpm build
 pnpm lint
+pnpm test     # vitest + convex-test, against the real schema in memory
+pnpm build
 ```
+
+`pnpm test` covers the money seam (`convex/sessions.test.ts`): room ownership,
+the one-open-session guard, ref idempotency, the high-water delta, and the
+reconciliation cron.

@@ -50,3 +50,34 @@ export const MINUTE_PACKS = [
   { minutes: 20, price: "$5.99", per: "$0.30 per minute" },
   { minutes: 60, price: "$16.99", per: "$0.28 per minute" },
 ] as const
+
+/* -------------------------------------------------------------------------- */
+/*  The one-open-session guard                                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * How long a `sessions` row with no `endedAt` blocks the same learner from
+ * starting another conversation.
+ *
+ * Two tabs would each be dispatched a worker that budgets the *whole* balance
+ * (`clock.py`), both would debit at teardown, and the ledger would go negative
+ * by (N-1) x balance. Nothing reserves the balance at mint time, so the row
+ * itself is the reservation.
+ *
+ * Fifteen minutes rather than forever because `endedAt` is not guaranteed: a
+ * killed worker or a closed tab leaves the row open, and a learner locked out
+ * of their own account by a crash is a worse bug than the one being fixed.
+ * The reconciliation cron (`convex/crons.ts`) closes what is left after two
+ * hours; this window is what the learner feels.
+ */
+export const OPEN_SESSION_WINDOW_MS = 15 * 60 * 1000
+
+/**
+ * Prefix on the error `sessions.start` throws when that guard fires.
+ *
+ * A Convex mutation failure reaches the token route as text, so the only way
+ * to tell "you already have one open" (a 409, a state) from "the write failed"
+ * (a 500, a fault) is a marker in the message. Kept beside the window it
+ * guards so the two never drift.
+ */
+export const OPEN_SESSION_PREFIX = "open-session:"

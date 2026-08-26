@@ -26,10 +26,13 @@ the study surface (while held — voice is idle and unbilled)
   └─ per question                      → Luna, coaching persona, invisible cap
 
 the session clock (authoritative)
+  ├─ first tutor audio frame           → the clock starts (never before)
   ├─ every 5s unheld, and on every hold/resume → tutor.elapsed_s / tutor.remaining_s
+  ├─ every 60 active s                 → periodic debit (a killed worker still bills)
   ├─ 30s left                          → nudge brief to the tutor (finish the thought)
   ├─ zero                              → debit, then HOLD (tutor.out_of_minutes) — no ending
   ├─ resume while held at zero         → re-read the balance; continue, or stay held
+  ├─ learner's participant leaves      → hold + debit, 60s grace, then shutdown
   └─ 10 min abandoned at zero          → tutor.session_over, disconnect
 ```
 
@@ -128,11 +131,27 @@ TUTOR_STT_MODEL=gpt-live-transcribe
 TUTOR_ANALYZER_MODEL=gpt-5.6-luna
 TUTOR_ANALYZER_ENABLED=true
 TUTOR_TRANSLATE_MODEL=gpt-5.6-luna
+TUTOR_ALLOW_UNMETERED=0             # local development ONLY — see below
 ```
 
-Without `CONVEX_SITE_URL` and `TUTOR_DEBIT_SECRET` — or for a session
-dispatched with no `user_id` — the worker skips every ledger call and meters
-against the dispatched `balance_s` alone. Nothing else changes.
+`OPENAI_API_KEY` is asserted non-empty at config load: the worker refuses to
+start rather than failing inside a plugin mid-session. `TUTOR_MIN_ENDPOINT_S`
+and `TUTOR_MAX_ENDPOINT_S` warn and fall back to their defaults on an
+unparseable or out-of-range value, exactly like `TUTOR_REALTIME_SPEED`.
+
+**Metering fails closed** (audit B10, 2026-08-25). A job dispatched with a
+`user_id` and no reachable ledger — `CONVEX_SITE_URL` or `TUTOR_DEBIT_SECRET`
+unset, or the opening balance read failing — is **refused**: an error log, then
+`ctx.shutdown()`. It used to fail open, which meant one wrong variable in
+production gave every learner unlimited free sessions and nothing paged.
+`TUTOR_ALLOW_UNMETERED=1` overrides that (a warning per session, nothing
+billed) and belongs nowhere but a laptop. A job with **no** `user_id` is a
+different case entirely — the worker run straight from the CLI, with no token
+route in front of it — and still meters against the dispatched `balance_s`.
+
+The opening balance read is also where the budget comes from: `balanceSeconds`
+as read at job start beats the `balance_s` the token route signed into dispatch
+metadata minutes earlier, and metadata is only the fallback.
 
 `TUTOR_ANALYZER_ENABLED=false` is published to the frontend as the
 `tutor.analyzer` attribute, so the UI skips the analyzing phase rather than
@@ -150,12 +169,18 @@ lk agent dev          # dev mode against the LiveKit Cloud project
 
 `lk` is the [LiveKit CLI](https://docs.livekit.io/agents/start/voice-ai/#livekit-cli)
 (`winget install LiveKit.LiveKitCLI`), authenticated once with `lk cloud auth`.
-Equivalent without the CLI:
+
+**Deprecated:** `uv run python src/agent.py dev | console | start` still works
+(it is the same `agents.cli` entrypoint) but is no longer the supported form —
+`lk agent dev` is what the deploy path and the LiveKit tooling assume.
+`console` has no `lk` equivalent, so keep that one for a terminal-only smoke
+test and nothing else.
+
+Tests:
 
 ```shell
-uv run python src/agent.py dev       # dev
-uv run python src/agent.py console   # terminal-only, no frontend needed
-uv run python src/agent.py start     # production mode
+uv run pytest -q                     # the whole suite
+uv run python tests/test_clock.py    # any file, standalone, no pytest needed
 ```
 
 The agent registers under the dispatch name **`tutor`** and is *explicitly
@@ -373,13 +398,15 @@ displays its numbers and never computes its own.
 
 | Moment                          | What happens                                                |
 | ------------------------------- | ----------------------------------------------------------- |
-| session start (greeting requested) | The clock starts; `tutor.elapsed_s` / `tutor.remaining_s` published |
+| first tutor audio frame          | The clock starts; `tutor.elapsed_s` / `tutor.remaining_s` published. **Not** when the greeting is *requested*: a session where the model never speaks must be billed nothing. The frame is `agent_state_changed` → `"speaking"`, which the framework flips from the playout task's first-frame callback. No tutor audio within 20s is logged at **error** level and nothing else — nothing has been billed, so there is no money question, only an operational one |
+| every 60 **active** seconds      | A debit for the seconds so far. Cumulative, so the ledger takes only the delta; a worker killed at minute 45 has lost at most a minute of revenue (audit §4.1) |
 | every 5s while unheld           | Both republished — a stopwatch counting up, not a countdown |
 | every pause and resume          | Republished immediately, so the stopwatch visibly stops and starts with the hold |
 | 30s left                        | One nudge brief through the same seam as the resume brief: finish the thought, start nothing new, do **not** say goodbye or mention the time — the surface already shows it |
 | 30s left **while paused**       | The nudge is *held* and delivered on `tutor.resume` instead — nobody hears it into a muted session |
 | zero                            | `session.interrupt()`, a debit for the seconds so far, then the **same hold a learner pause takes** plus `tutor.out_of_minutes` = `"true"`. The session does not end. |
 | `tutor.resume` while held at zero | The balance is re-read (`/tutor/balance`, at most once every 5s). More minutes → the budget grows under the same elapsed time and the conversation continues; still zero → the hold stays, acked as `{"paused": true, "resumed": false, "out_of_minutes": true}` |
+| the learner's participant leaves | The meter is **held** — a hold source of its own, never `state.paused`, which is the UI's boolean and edge-triggered by the pause RPC — the seconds so far are debited while the worker is certainly still alive, and a 60s grace starts. A reconnect inside the grace releases the hold and the same conversation carries on in the same room; otherwise `ctx.shutdown()`. `close_on_disconnect` does not cover this: a wifi drop, a tab crash and a closed laptop are none of the disconnect reasons it fires on (audit B4) |
 | 10 minutes abandoned at zero    | `tutor.session_over` = `"true"`, `session.aclose()`, `ctx.shutdown()` — no goodbye; nobody is there to hear one |
 
 **Pause time is not billed.** The clock accrues only while the session is not
@@ -394,16 +421,53 @@ signed calls (`Authorization: Bearer $TUTOR_DEBIT_SECRET`, against
 
 | Call | Body | Answer |
 | --- | --- | --- |
-| `POST /tutor/debit` | `{"room", "userId", "seconds", "seq"}` | `{"balanceSeconds"}` |
-| `POST /tutor/balance` | `{"userId"}` | `{"balanceSeconds"}` |
+| `POST /tutor/debit` | `{"room", "userId", "jobId", "seconds", "seq"}` | `{"balanceSeconds"}` |
+| `POST /tutor/balance` | `{"userId", "room"}` (room optional) | `{"balanceSeconds", "secondsBilled"}` |
 
-`seconds` is always the session's **cumulative** active seconds and `seq`
-increments per call; the action is idempotent per `(room, seq)` and debits only
-the delta since the last report, so the worker never tracks what it has already
-billed. Debits go out at zero (before the hold) and at teardown, where
-`report_seconds_billed()` logs `session seconds billed` and retries once. Every
-failure is logged and swallowed — a ledger write must never reach the
-conversation. Pack pricing lives in
+Convex keys the debit on `ref = <room>:<jobId>:<seq>` and answers a replay with
+the same body. `secondsBilled` is the **room's** already-billed high-water mark
+(0 for a room nobody has billed, or when `room` is omitted). `seconds` is
+bounded 0–86400 and the whole body stays well under Convex's 4 KB limit. A 401
+means the secret is wrong; a 500 means the room belongs to another learner or
+the id is unknown — both are refusals, and both are logged at error level.
+
+`seconds` is the **room's** cumulative active seconds, not the job's:
+`billed_before + this job's active seconds`, where `billed_before` is the
+`secondsBilled` read once at job start. That is audit B3 — a LiveKit
+redispatch after a crash starts a second job whose clock begins at zero, and a
+job-cumulative report would sit under the room's high-water mark from its first
+second, making the whole second conversation free. `billed_before` is read
+**once** and never refreshed: every later balance read already contains this
+job's own debits.
+
+`seq` increments per debit, and the ledger debits only the delta above the
+high-water mark — so reporting the same total twice is free and the worker
+never tracks what it has already billed. Debits are serialized behind one lock
+(a periodic debit and a teardown debit must never interleave) and go out:
+
+- **every 60 active seconds**, from the clock (audit §4.1);
+- **when the learner's participant leaves** the room (audit B4);
+- **at the zero hold**, before the hold, so the balance the frontend re-reads is
+  already right by the time the out-of-minutes card is on screen;
+- **at teardown**, where `report_seconds_billed()` logs `session seconds billed`
+  and retries once — and this one alone carries `"final": true`, which is what
+  tells Convex to set the session's `endedAt`. The periodic and zero-hold
+  debits must NOT: they leave the row open so a purchase can resume the same
+  conversation. A crashed worker's final debit is what lets the learner start a
+  new conversation immediately instead of waiting out the one-open-session
+  window.
+
+A failed *zero-hold* debit is remembered (`zero_debit_unacked`). Those seconds
+are still sitting in the learner's balance, so budgeting a resume from that
+balance would spend them twice (audit §3.1.6) — instead `tutor.resume` retries
+the debit first and refuses the resume (`{"out_of_minutes": true}`) for as long
+as it keeps failing. `clock.apply_balance()` is only ever called with a number
+a *successful* debit or balance read returned.
+
+Every failure is logged and swallowed — a ledger write must never reach the
+conversation — but at **error** level, not warning: a 401 or a dropped debit is
+revenue on the floor, and the log is the only thing that will ever notice
+(audit B10). Pack pricing lives in
 `plans/phases/phase-6-metered-conversation.md`.
 
 ## Pause semantics
