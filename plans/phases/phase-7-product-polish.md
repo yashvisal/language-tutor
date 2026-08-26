@@ -133,6 +133,31 @@ step-2 agents on 2026-08-25; assigned, not forgotten.
   snapshot has the right shape; step 3 fills it.
 - `users.ts` functions lack `returns` validators. → step 4.
 
+## Step 3 decisions (Yash, 2026-08-25)
+
+- **The conversation starts with goal setting.** If the plan cards gave
+  enough (topic / focusNote / note), the tutor restates the goal in one
+  line and asks for confirmation; if not, it asks what they want to work
+  on, then restates and confirms. One exchange, then the conversation —
+  no turn counting, no second negotiation.
+- **The confirmed goal is the session's spine.** It drives the tutor's
+  standing instructions, the analyzer's focus, the Ask context, and the
+  Review, which is generated from the goal once confirmed and regenerated
+  from the transcript at a hold when there is enough new material. The
+  tab is told through a `tutor.review_version` attribute (push, not poll).
+- **Capture** (Fable's call): a function tool on the realtime model
+  (`set_session_goal`) the tutor calls when the learner confirms; a silent
+  transcript extraction as the safety net if the tool never fires. The
+  goal object records its source (plan / tool / extracted).
+- **Language of the goal exchange**: the target language, with the
+  standing one-anchor-line allowance if the learner stalls; a config
+  parameter, so a later "which language" card flips it. No language picker
+  now — the target language is already `TUTOR_TARGET_LANG`; generalizing
+  beyond Spanish is a later card, not this step.
+- The goal, the end reason, turn count, anchor-language ratio, and the
+  Ask questions / translate lookups ride the after-session record (the
+  edges list above), so History can say what was set up and what was done.
+
 ## Decisions still needed from Yash
 
 (a) payment rail — Stripe-direct or Clerk Billing; (b) goal capture and
