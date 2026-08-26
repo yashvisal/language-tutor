@@ -8,10 +8,10 @@ first; nothing here reopens a settled decision.*
 
 ## Status (2026-08-25)
 
-Steps 1–3 built and pushed (`51e6cab`, `20dfccf`, step 3 on top) with the
-M2M swap (`d91a968`). Not yet run live — Yash tests end to end when there
-is quiet. Next: step 4 (quick quality), then step 5 pending the payment
-rail decision.
+Steps 1–4 built and pushed (`51e6cab`, `20dfccf`, `5eb55c7`, `22a2043`)
+with the M2M swap (`d91a968`). Not yet run live. Sequence agreed with Yash
+(2026-08-25): finish step 5 → Yash's e2e test → CodeRabbit triage → merge
+→ **phase 8: Sentry, deployment, billing**.
 
 ## Steps (each one reviewed hand-off; each leaves the app working)
 
@@ -36,9 +36,15 @@ rail decision.
    crystallization, Review from goal + transcript, support-on-evidence, the
    ordinary-hold idle timeout. The arc residue goes with it.
 4. **Quick quality.** §4.13–19 and the §5 polish; dead code.
-5. **Ship.** §7 sequence: Clerk prod → Convex prod → Vercel → worker →
-   payments (§3.1, rail per Yash's decision) → legal → Sentry → the
-   stranger's smoke test.
+5. **Pre-launch on this branch** (re-scoped 2026-08-25): real Terms and
+   Privacy copy drafted from what the code does (Yash reviews); the Clerk
+   `user.deleted` webhook → Convex deletion of the learner's rows; a
+   per-learner session-start rate limit (the code half of audit B12 — the
+   Clerk-dashboard half is bot protection + email verification at prod
+   setup); a CI workflow (typecheck / lint / tests on both halves); the
+   launch checklist for phase 8. **Not here:** Sentry, deployment
+   (Clerk prod → Convex prod → Vercel → `lk agent create`), payments (rail
+   still to decide) — all phase 8, after the merge.
 
 ## Contracts fixed in step 1 (so later steps build on one shape)
 
