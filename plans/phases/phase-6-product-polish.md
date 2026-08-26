@@ -23,7 +23,7 @@ the out-of-minutes hold).*
   conversation**, which opens the plan picker (scenario / topic / tenses /
   vocab / level) as a **modal**; Start inside hands off to `/session`. A quiet
   "how a session goes" card. Recent sessions arrive with the `sessions`
-  writer (phase-5 step 2, still open — see `audit-2026-08-23.md` §4).
+  writer (built in this phase — see `audit-2026-08-25.md` §1).
 - **A way home** from the session summary and pre-flight.
 - **Visual direction** (reference: beautifului.dev — "crafted primitives for
   AI-native interfaces"): white space; cards with soft shadow and a faint ring
