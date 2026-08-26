@@ -46,6 +46,27 @@ first; nothing here reopens a settled decision.*
 - The worker debits every 60 active seconds, at the zero hold, and at
   teardown. A Convex cron closes rows with no `endedAt` and no debit for
   two hours.
+- `secondsBilled` is a high-water mark: a report below it bills nothing
+  and moves nothing (never "set"). A redispatched job whose `billed_before`
+  read landed before the old job's teardown debit under-bills by at most
+  that old job's last periodic-to-teardown window — accepted,
+  learner-favouring, **not fenced** (Yash, 2026-08-25).
+- **One call may add at most 3 600 s to `secondsBilled`.** The cadence is
+  60 s, so a larger delta is a bug or an attack; Convex rejects it (400)
+  and bills nothing.
+- **When debits fail.** A 401 re-mints the M2M token once; a failed
+  re-mint counts as a failure. **Five consecutive debit failures hold the
+  clock and end the session** — there is no ceiling-free retry loop, because
+  that is how a worker runs for hours unbilled. Consequence, accepted
+  (Yash, 2026-08-25): the teardown debit of that session fails too, so its
+  last ~5 minutes never bill and the reconciliation cron closes the row.
+  Bounded, learner-favouring. Do not turn this into a retry loop that keeps
+  the job alive.
+- `TUTOR_ENV=production` is set on the prod worker (the ship step's
+  secrets). With it set, `TUTOR_ALLOW_UNMETERED` refuses to start. Without
+  it, a worker that has a machine key logs at boot that its environment is
+  undeclared. Explicit over heuristic: dev and prod share LiveKit Cloud and
+  `*.convex.site`, and machine keys carry no test/live marker.
 - The clock accrues from the first tutor audio frame, and holds when the
   learner's participant leaves the room (a short grace, then shutdown).
 - A worker with a `user_id` and no reachable ledger refuses the job unless
