@@ -91,7 +91,8 @@ gets its own two when we get there.
   machine secret key `CLERK_WORKER_MACHINE_SECRET_KEY`, body
   `{ token_format: "jwt", seconds_until_expiration: 10800 }`) and sends it
   as the bearer on `/tutor/*`. A **401 from Convex re-mints once** and
-  retries; it never kills the job. JWTs cannot be revoked individually —
+  retries; a failed re-mint counts toward the five-failure ceiling above
+  (which does end the job). JWTs cannot be revoked individually —
   revocation is rotating the worker's machine key, and the 3 h expiry is
   the window.
 - **Verify** (Convex `http.ts`): `@clerk/backend`'s `m2m.verify` with
