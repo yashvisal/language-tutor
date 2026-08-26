@@ -171,6 +171,23 @@ export interface SessionOutcome {
   endedByClock: boolean
   /** Every correction the analyzer produced this session, in the order seen. */
   corrections: Correction[]
+  /**
+   * The session ended without the learner asking it to — the agent left, the
+   * room closed, the network gave up. CLIENT-ONLY: `sessionOutcomeValidator`
+   * has no such field and `sessions.finish` is never sent it, because the
+   * stored record is what was said and this is a fact about how the tab's
+   * connection died. It changes one line of copy on the summary and nothing
+   * else. Audit B5.
+   */
+  endedUnexpectedly: boolean
+  /**
+   * The room this conversation happened in, frozen at the moment of ending —
+   * `room.name` is empty again by the time the summary renders. Also
+   * client-only, and the key the summary reads `sessions.byRoom` with, which
+   * is how the worker's `about`, Review and transcript reach the screen the
+   * learner is already looking at. Null when the session never connected.
+   */
+  room: string | null
 }
 
 /**

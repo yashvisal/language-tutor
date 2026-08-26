@@ -50,7 +50,12 @@ import {
   useRef,
   useState,
 } from "react"
-import { ConnectionState, Track, type Room } from "livekit-client"
+import {
+  ConnectionState,
+  RoomEvent,
+  Track,
+  type Room,
+} from "livekit-client"
 import { useMutation } from "convex/react"
 import {
   useAgent,
@@ -79,16 +84,22 @@ import {
   RPC_METHODS,
   STREAM_ATTRIBUTES,
   TEXT_STREAM_TOPICS,
+  describeStartError,
   isOutOfMinutes,
   setPendingSessionPlan,
   tutorTokenSource,
+  type StartFailure,
 } from "./livekit"
 import { EMPTY_PLAN } from "./plan"
 import {
+  AGENT_JOIN_TIMEOUT_MS,
   ASK_TIMEOUT_MS,
+  ATTR_ERROR,
   MAX_RESUME_ASKS,
   REVIEW_TIMEOUT_MS,
   TRANSLATE_TIMEOUT_MS,
+  TUTOR_ERROR_MODEL,
+  TUTOR_ERROR_SILENT,
 } from "./protocol"
 import type {
   AskRequest,
@@ -301,13 +312,37 @@ function intAttribute(value: string | undefined): number | null {
 
 export type LiveConnectionState = "idle" | "connecting" | "live"
 
+/**
+ * Why this session has no tutor in it, when it has none. Both are failed
+ * STARTS, and neither is billed:
+ *
+ * - `"no_show"` — the room came up and no agent participant joined inside
+ *   `AGENT_JOIN_TIMEOUT_MS`. The worker is down, or dispatch never landed.
+ *   Indistinguishable from "the tutor is thinking" without this (audit B6).
+ * - `"silent"` — an agent joined and never produced a frame of audio; the
+ *   worker says so on `tutor.error` and the meter, which starts at the first
+ *   tutor audio, never started either.
+ *
+ * `TUTOR_ERROR_MODEL` is deliberately NOT here: a model that dies mid-session
+ * killed a conversation that really happened, so the worker debits it and ends
+ * it through `session_over`, and the learner gets a summary with the
+ * unexpected-end line on it rather than a failed card.
+ */
+export type TutorFailure = "no_show" | "silent"
+
 export interface LiveSession {
   state: SessionState
   /** For client-originated events — the hold set, mainly. */
   dispatch: (event: SessionEvent) => void
   connection: LiveConnectionState
-  /** Non-null once a connect attempt has failed; cleared by retrying. */
-  error: string | null
+  /**
+   * Non-null once a connect attempt has failed; cleared by retrying. A
+   * sentence and, where one exists, the action that fixes it — see
+   * `describeStartError`.
+   */
+  error: StartFailure | null
+  /** Non-null when the room came up without a tutor in it. See `TutorFailure`. */
+  tutorFailed: TutorFailure | null
   /** Starts a room for this plan. The plan is read when the token is minted. */
   connect: (plan: SessionPlan) => void
   disconnect: () => void
@@ -445,6 +480,26 @@ export function useLiveSession(): LiveSession {
   }, [state])
   /** Guards the snapshot: the clock and the hang-up path can both fire. */
   const ended = useRef(false)
+  /**
+   * The room this session is in, frozen while it is live. `room.name` is empty
+   * again the moment the connection goes away, and everything that happens at
+   * the END of a session — the Convex write, and the summary's read of the
+   * worker's record — is keyed on it.
+   */
+  const roomName = useRef<string | null>(null)
+  useEffect(() => {
+    if (connection === "live" && room.name) roomName.current = room.name
+  }, [connection, room])
+  /**
+   * Whether the disconnect that is coming was asked for. Everything else — the
+   * agent leaving, the room closing, the network giving up after its reconnect
+   * attempts — is a session that died, and a session that died still has to be
+   * finished (audit B5).
+   */
+  const intentional = useRef(false)
+  /** Whether this session ever actually connected, so the watcher below can
+   * tell "the room went away" from "there was never a room". */
+  const wasLive = useRef(false)
 
   /**
    * Freeze what the session earned before the room takes it away. Disconnecting
@@ -452,7 +507,7 @@ export function useLiveSession(): LiveSession {
    * of ending, or they are gone.
    */
   const finish = useCallback(
-    (endedByClock: boolean) => {
+    (endedByClock: boolean, endedUnexpectedly = false) => {
       if (ended.current) return
       ended.current = true
       const talked = elapsedSeen.current
@@ -463,6 +518,8 @@ export function useLiveSession(): LiveSession {
         secondsTalked: talked === null ? null : Math.max(0, talked),
         endedByClock,
         corrections: sessionCorrections(latest.current),
+        endedUnexpectedly,
+        room: roomName.current,
       }
       setOutcome(outcome)
 
@@ -472,7 +529,10 @@ export function useLiveSession(): LiveSession {
       // the learner is about to read renders from local state, and a failed
       // write must not take it down. `room.name` is empty on a session that
       // never connected — nothing to record.
-      const name = room.name
+      // `endedUnexpectedly` and `room` stay here: the stored outcome is what
+      // was SAID, and neither is that. `sessionOutcomeValidator` has no room
+      // for them either.
+      const name = outcome.room
       if (name) {
         void recordFinish({
           room: name,
@@ -484,10 +544,38 @@ export function useLiveSession(): LiveSession {
         }).catch(() => {})
       }
     },
-    [setOutcome, recordFinish, room]
+    [setOutcome, recordFinish]
   )
 
   const clearOutcome = useCallback(() => setOutcome(null), [setOutcome])
+
+  /**
+   * Leave the room. `session.end()` rejects on a signalling connection that is
+   * already gone — which is precisely the situation half its callers are in —
+   * and an unhandled rejection there would take down the very teardown that is
+   * trying to be graceful (audit §4.12).
+   */
+  const endRoom = useCallback(() => {
+    void session.end().catch((err: unknown) => {
+      console.warn("ending the room failed", err)
+    })
+  }, [session])
+
+  /**
+   * The realtime model died and could not be recovered. The worker does the
+   * right thing with the money — it holds, debits what was really spoken and
+   * ends the session down the ordinary `session_over` path — so this is not a
+   * failed start and there is no card for it: the learner gets their summary,
+   * with the line that says nobody hung up. Latched in a ref because the
+   * attribute and `session_over` arrive together and the agent leaves
+   * immediately after.
+   */
+  const modelDied = useRef(false)
+  useEffect(() => {
+    if (agent.attributes?.[ATTR_ERROR] === TUTOR_ERROR_MODEL) {
+      modelDied.current = true
+    }
+  }, [agent.attributes])
 
   // The clock ran out. The worker says its goodbye and disconnects us itself;
   // ending locally too only guarantees the microphone stops the moment the
@@ -496,13 +584,142 @@ export function useLiveSession(): LiveSession {
     agent.attributes?.[PARTICIPANT_ATTRIBUTES.sessionOver] === ATTRIBUTE_TRUE
   useEffect(() => {
     if (!sessionOver) return
-    finish(true)
-    void session.end()
-  }, [sessionOver, finish, session])
+    intentional.current = true
+    // A model death is not the clock running out, and saying "Time's up" to a
+    // learner with minutes left would be a lie. It is an end nobody asked for.
+    finish(!modelDied.current, modelDied.current)
+    endRoom()
+  }, [sessionOver, finish, endRoom])
+
+  /**
+   * B5: a session that ends for any other reason gets finished too.
+   *
+   * `finish` used to be reachable from exactly two places — the End button and
+   * the clock — so an agent crash, a room close or a network drop that
+   * outlasted the SDK's reconnect attempts reset the reducer and took the
+   * corrections with it: no summary, no `endedAt`, and the conversation the
+   * learner had just been charged for was missing from History (which filters
+   * on `endedAt`). Anything that lands us back at `idle` from a session that
+   * was really live, and that nobody asked for, is that.
+   *
+   * Declared above the reset effect deliberately, but it does not depend on
+   * that ordering: `latest.current` is written from an effect that runs after
+   * the render, so the state read here is still the conversation's.
+   */
+  useEffect(() => {
+    if (connection === "live") {
+      wasLive.current = true
+      return
+    }
+    if (connection !== "idle" || !wasLive.current) return
+    wasLive.current = false
+    if (intentional.current || ended.current) return
+    finish(false, true)
+  }, [connection, finish])
+
+  /**
+   * The tab is going away — closed, reloaded, or navigated off the site.
+   * Best effort by construction: a Convex mutation is a websocket round trip
+   * and `pagehide` does not wait for one. The worker's teardown report is the
+   * backstop that actually guarantees the row closes, so this is worth firing
+   * and not worth blocking on — hence no `beforeunload`, which would put a
+   * browser confirm dialog in front of a learner for nothing.
+   */
+  useEffect(() => {
+    const onPageHide = () => {
+      if (ended.current || roomName.current === null) return
+      finish(false, true)
+    }
+    window.addEventListener("pagehide", onPageHide)
+    return () => window.removeEventListener("pagehide", onPageHide)
+  }, [finish])
+
+  /* -- the tutor that never arrived --------------------------------------- */
+
+  const [latchedFailure, setLatchedFailure] = useState<TutorFailure | null>(
+    null
+  )
+
+  /**
+   * B6: a bounded wait for the tutor. The stage used to render on ROOM
+   * connection, so a worker that was down produced a live-looking screen, an
+   * idle Aura and no clock, forever — indistinguishable from a tutor thinking.
+   */
+  const tutorPresent = agent.isConnected
+  /**
+   * Whether a tutor has ever been in this room. The wait below is bounded only
+   * at the START of a session: an agent that drops out mid-conversation is a
+   * reconnect the pause reconciler already handles, and arming the no-show
+   * timer for it would replace a real conversation with a failed card.
+   * Declared above the timer so the flag is current when it reads it.
+   */
+  const tutorEverPresent = useRef(false)
+  useEffect(() => {
+    if (tutorPresent) tutorEverPresent.current = true
+  }, [tutorPresent])
+
+  useEffect(() => {
+    if (connection !== "live" || tutorPresent || latchedFailure !== null) return
+    if (tutorEverPresent.current) return
+    const timer = setTimeout(
+      () => setLatchedFailure("no_show"),
+      AGENT_JOIN_TIMEOUT_MS
+    )
+    return () => clearTimeout(timer)
+  }, [connection, tutorPresent, latchedFailure])
+
+  /**
+   * The worker's own verdict, for the case where it did join and then never
+   * said anything. Nothing was billed: the meter starts at the first frame.
+   *
+   * Taken from the room's event rather than from `agent.attributes` because
+   * the verdict has to OUTLIVE the agent that gave it — this failure ends the
+   * room, and the attribute leaves with the participant. The derived read
+   * below is the same fact one render earlier, for the case where the
+   * attribute is already on a participant when this subscribes.
+   */
+  useEffect(() => {
+    const onAttributes = (changed: Record<string, string>) => {
+      if (changed[ATTR_ERROR] === TUTOR_ERROR_SILENT) {
+        setLatchedFailure("silent")
+      }
+    }
+    room.on(RoomEvent.ParticipantAttributesChanged, onAttributes)
+    return () => {
+      room.off(RoomEvent.ParticipantAttributesChanged, onAttributes)
+    }
+  }, [room])
+
+  const failure: TutorFailure | null =
+    latchedFailure ??
+    (agent.attributes?.[ATTR_ERROR] === TUTOR_ERROR_SILENT ? "silent" : null)
+
+  /** So the row is closed once, not once per re-run of the effect below. */
+  const failureHandled = useRef(false)
+  useEffect(() => {
+    if (failure === null || failureHandled.current) return
+    failureHandled.current = true
+    // No summary for a conversation that never happened — `ended` here means
+    // "nothing left to record", and it is what stops the watcher above from
+    // showing an end-of-session screen for a session with no seconds in it.
+    ended.current = true
+    intentional.current = true
+    // The row still has to close. It is the one-open-session reservation, and
+    // the worker that would normally close it is exactly the thing that is
+    // missing — so without this, Try again meets a 409 for fifteen minutes.
+    const name = roomName.current
+    if (name) {
+      void recordFinish({
+        room: name,
+        outcome: { corrections: [], secondsTalked: null, endedByClock: false },
+      }).catch(() => {})
+    }
+    endRoom()
+  }, [failure, recordFinish, endRoom])
 
   /* -- connect / disconnect ---------------------------------------------- */
 
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<StartFailure | null>(null)
   /** The token route refused for a zero balance. Not an error message: a state. */
   const [refused, setRefused] = useState(false)
 
@@ -522,8 +739,16 @@ export function useLiveSession(): LiveSession {
       plan.current = sessionPlan
       setActivePlan(sessionPlan)
       ended.current = false
+      intentional.current = false
+      wasLive.current = false
+      roomName.current = null
+      tutorEverPresent.current = false
+      modelDied.current = false
       elapsedSeen.current = null
       setRefused(false)
+      // Try again is a fresh start, not a retry of the failed one.
+      setLatchedFailure(null)
+      failureHandled.current = false
       // The microphone is the whole point of the surface: publish on connect
       // rather than making the learner find a button.
       session
@@ -533,7 +758,9 @@ export function useLiveSession(): LiveSession {
             setRefused(true)
             return
           }
-          setError(err instanceof Error ? err.message : String(err))
+          // A DOMException name and a raw status code are not English; the
+          // learner gets the sentence with the fix in it (audit §4.3).
+          setError(describeStartError(err))
         })
         .finally(() => {
           // Settled either way: a refused or failed start can be tried again.
@@ -544,9 +771,11 @@ export function useLiveSession(): LiveSession {
   )
 
   const disconnect = useCallback(() => {
+    // The learner asked, so the watcher above must not call this a death.
+    intentional.current = true
     finish(false)
-    void session.end()
-  }, [finish, session])
+    endRoom()
+  }, [finish, endRoom])
 
   /* -- microphone --------------------------------------------------------- */
 
@@ -559,8 +788,14 @@ export function useLiveSession(): LiveSession {
   useEffect(() => {
     if (!micPublication) return
     // Mute rather than unpublish: the track stays live so unmuting is instant
-    // and the agent never sees a track churn mid-conversation.
-    void (muted ? micPublication.mute() : micPublication.unmute())
+    // and the agent never sees a track churn mid-conversation. A rejection is
+    // a track that went away under us — worth a line in the console, never
+    // worth an unhandled rejection (audit §4.12).
+    void (muted ? micPublication.mute() : micPublication.unmute()).catch(
+      (err: unknown) => {
+        console.warn("toggling the microphone failed", err)
+      }
+    )
   }, [muted, micPublication])
 
   /* -- the hold gate ------------------------------------------------------ */
@@ -1115,6 +1350,7 @@ export function useLiveSession(): LiveSession {
     plan: activePlan,
     connection,
     error,
+    tutorFailed: failure,
     connect,
     disconnect,
     elapsedSeconds,

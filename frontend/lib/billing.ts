@@ -81,3 +81,18 @@ export const OPEN_SESSION_WINDOW_MS = 15 * 60 * 1000
  * guards so the two never drift.
  */
 export const OPEN_SESSION_PREFIX = "open-session:"
+
+/**
+ * The most one debit report may add to a session's `secondsBilled`.
+ *
+ * The worker reports every 60 active seconds and five consecutive failures
+ * end the session (phase 7 step 1 contracts), so a legitimate catch-up is
+ * minutes, never an hour. A larger delta is a bug or a leaked credential, and
+ * Convex refuses the whole report — nothing billed, the mark unmoved — rather
+ * than clamping it, which would silently bill the wrong amount.
+ */
+export const MAX_DELTA_PER_CALL_S = 3600
+
+/** Prefix on the error `sessions.debit` throws for that refusal, so the HTTP
+ * action can answer 400 (a bad request) rather than 500 (a fault). */
+export const DELTA_CAP_PREFIX = "delta-cap:"

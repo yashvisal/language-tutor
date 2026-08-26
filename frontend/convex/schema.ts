@@ -3,8 +3,10 @@ import { v } from "convex/values"
 
 import {
   levelValidator,
+  reviewMaterialValidator,
   sessionOutcomeValidator,
   sessionPlanValidator,
+  transcriptTurnValidator,
 } from "./validators"
 
 /**
@@ -91,6 +93,31 @@ export default defineSchema({
      * field existed (history is never backfilled with guesses).
      */
     outcome: v.optional(sessionOutcomeValidator),
+    /**
+     * The after-session record, written by the worker at teardown through
+     * `POST /tutor/summary`. All three are optional and independently written:
+     * the worker sends what it has, a field absent from the body is left
+     * untouched, and a session that ended before this existed carries none of
+     * them — history is never backfilled with guesses.
+     *
+     * They exist because the conversation used to die with the tab. The
+     * summary screen and the History modal render THE SAME record, and
+     * `out-of-minutes.tsx` promises the transcript and the review are saved;
+     * these three fields are that promise.
+     */
+
+    /** One line, <= 200 chars: what this conversation was actually about,
+     * read off the transcript rather than the plan the learner started with —
+     * the plan is an intention, and this is what happened. */
+    about: v.optional(v.string()),
+    /** What was said, clamped on write to 200 turns x 500 chars. Not the live
+     * `Turn` shape: segments, anchor text and in-flight flags are a reducer's
+     * business, and a record only needs who said what. */
+    transcript: v.optional(v.array(transcriptTurnValidator)),
+    /** The Review snapshot — vocab, phrases and the deterministic tables, as
+     * the Review tab saw them. Made once per session and never regenerated,
+     * so if it is not stored it is gone. */
+    review: v.optional(reviewMaterialValidator),
   })
     .index("by_room", ["room"])
     .index("by_user", ["userId"])
@@ -104,7 +131,14 @@ export default defineSchema({
     // and older than two hours. `endedAt` is the first field so `eq(undefined)`
     // selects exactly the unfinished rows and `startedAt` orders them — the
     // alternative is a full table scan every hour, forever.
-    .index("by_endedAt_startedAt", ["endedAt", "startedAt"]),
+    .index("by_endedAt_startedAt", ["endedAt", "startedAt"])
+    // History's read: one learner's FINISHED rows, newest first.
+    // `by_user_startedAt` could not express "finished" at all, so the query
+    // over-fetched and filtered in JS — a learner with a run of abandoned rows
+    // pushed real conversations off their own history page. Ordering on
+    // `endedAt` with a `gte(0)` bound selects exactly the finished rows and
+    // pages them properly, however many open rows sit alongside.
+    .index("by_user_endedAt", ["userId", "endedAt"]),
 
   purchases: defineTable({
     userId: v.id("users"),

@@ -12,6 +12,11 @@
  * Buying more will land in this card. Until then the only honest offer is the
  * way home, so that is the only button: an offer nobody can accept is worse
  * than no offer.
+ *
+ * The second line used to promise the transcript and review were "saved in
+ * this session", which was true only until the tab closed. Since the worker
+ * writes both to the `sessions` row at teardown (`sessions.recordSummary`) and
+ * History renders them, the promise is now the one the code keeps.
  */
 
 import type { RefObject } from "react"
@@ -35,8 +40,8 @@ export function OutOfMinutesCard({
         You&rsquo;re out of minutes.
       </h2>
       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-        Buying more will land here. For now, head home — your transcript and
-        review are saved in this session.
+        Buying more will land here. For now, head home — this conversation and
+        its review are saved to your history.
       </p>
       <Button
         size="lg"

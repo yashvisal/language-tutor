@@ -24,6 +24,19 @@ from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 
+# How many of this session's corrections are kept for the after-session record,
+# and how long any one of their strings may be. Both are the ledger's bounds
+# (`SUMMARY_LIMITS` in `convex/validators.ts`), re-applied at the place the
+# list is built so the record can never be refused for being too big. The most
+# recent are kept, like the transcript: a session that produced 300 findings is
+# a session whose first fifty are nobody's evidence any more.
+MAX_RECORDED_CORRECTIONS = 200
+MAX_CORRECTION_CHARS = 500
+
+# The fields one correction carries on the wire, in the order the frontend's
+# `Correction` declares them (`lib/session/contract.ts`).
+CORRECTION_FIELDS = ("id", "original", "replacement", "category", "severity", "explanation")
+
 # Category names read fine in a brief as-is; only this one needs rewording.
 # Anything absent falls through to the category name itself.
 _CATEGORY_LABELS = {"naturalness": "phrasing"}
@@ -39,6 +52,12 @@ class SessionState:
     # a disconnect that set it would make the *next* pause a no-op. The clock
     # meters against `clock_held`, the union of the two (audit B4).
     learner_absent: bool = False
+    # The third hold source, and the only one that never releases: the realtime
+    # model died unrecoverably (audit §4.2). The conversation is over — the
+    # meter stops here, the teardown debits, and the session ends through the
+    # normal `session_over` path — but the seconds between the socket dying and
+    # the shutdown landing must not be billed as tutoring.
+    model_failed: bool = False
     # The last bridge intent used, so consecutive resumes never repeat a line.
     last_bridge_intent: str | None = None
 
@@ -59,7 +78,7 @@ class SessionState:
     @property
     def clock_held(self) -> bool:
         """Every reason the meter is not running. The clock's only question."""
-        return self.paused or self.learner_absent
+        return self.paused or self.learner_absent or self.model_failed
 
     def clear_pause_context(self) -> None:
         self.paused_at = None
@@ -89,6 +108,11 @@ class SessionFacts:
 
     corrections_by_category: Counter[str] = field(default_factory=Counter)
     turns_with_corrections: int = 0
+    # The corrections themselves, not just their shape. The counts above are
+    # what the tutor's brief needs; this is what the after-session record needs
+    # (phase 7 step 2) — Convex's backstop for a tab that closed before its
+    # `finish` ran, in which case the worker's copy is the only one left.
+    corrections: list[dict[str, str]] = field(default_factory=list)
 
     def record_corrections(self, corrections: Iterable[Mapping[str, str]]) -> None:
         """Called with the corrections that were actually published to the UI.
@@ -102,8 +126,18 @@ class SessionFacts:
             if category:
                 self.corrections_by_category[category] += 1
                 counted += 1
+            recorded = {
+                name: " ".join(str(correction.get(name) or "").split())[:MAX_CORRECTION_CHARS]
+                for name in CORRECTION_FIELDS
+            }
+            if recorded["original"] and recorded["replacement"]:
+                self.corrections.append(recorded)
         if counted:
             self.turns_with_corrections += 1
+        # Trimmed here rather than at the reader, so a four-hour session's
+        # memory is bounded too.
+        if len(self.corrections) > MAX_RECORDED_CORRECTIONS:
+            del self.corrections[:-MAX_RECORDED_CORRECTIONS]
 
     def summary(self) -> str | None:
         """One line of evidence, or None when there is nothing worth saying."""

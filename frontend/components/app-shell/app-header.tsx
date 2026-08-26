@@ -12,6 +12,7 @@
  */
 
 import { useState } from "react"
+import Link from "next/link"
 import { useClerk, useUser } from "@clerk/nextjs"
 import { useQuery } from "convex/react"
 import { CreditCard, LogOut, Settings } from "lucide-react"
@@ -39,12 +40,23 @@ export function AppHeader() {
     <header className="flex h-14 w-full shrink-0 items-center justify-between px-6 sm:px-8">
       <Wordmark />
       <div className="flex items-center gap-1">
-        {/* Nothing until the balance is known: a flash of "0:00 left" would
-            be a lie about the one number in the header. */}
-        {viewer?.seconds !== undefined && (
-          <span className="mr-2 text-sm text-muted-foreground tabular-nums">
-            {formatClock(viewer.seconds)} left
-          </span>
+        {/* Three states. In flight: nothing, because a flash of "0:00 left"
+            would be a lie about the one number in the header. No row at all
+            (`null`): say so and offer the door, rather than silently omitting
+            the balance forever (audit §4.13). Otherwise: the number. */}
+        {viewer === null ? (
+          <Link
+            href="/welcome"
+            className="mr-2 text-sm text-muted-foreground underline decoration-muted-foreground/30 underline-offset-4 transition-colors duration-200 hover:text-foreground"
+          >
+            Finish setup
+          </Link>
+        ) : (
+          viewer?.seconds !== undefined && (
+            <span className="mr-2 text-sm text-muted-foreground tabular-nums">
+              {formatClock(viewer.seconds)} left
+            </span>
+          )
         )}
         <ThemeToggle />
         <AccountMenu email={viewer?.email ?? null} />

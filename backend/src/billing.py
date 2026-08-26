@@ -11,6 +11,12 @@ Two signed HTTP calls, both against `CONVEX_SITE_URL` with a bearer secret:
   closes the session row (`endedAt`) on the Convex side; a periodic or
   zero-hold debit must leave it open, or a purchase could not resume the same
   conversation.
+- `POST /tutor/summary` — "here is what this conversation WAS". One line about
+  what was actually talked about, the transcript, and the session's Review
+  material, posted once at teardown so the after-session summary and the
+  History modal render the same record instead of losing everything when the
+  tab closes (phase 7 step 2). Order-independent with the final debit: the
+  Convex side upserts onto the session row either way.
 - `POST /tutor/balance` — "what is this learner's balance now, and what has
   this room already been billed?". Read once at job start (to seed the
   room-cumulative total, and to budget the clock from a number nobody signed
@@ -49,6 +55,7 @@ Four rules hold here:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -64,6 +71,34 @@ CONNECT_TIMEOUT_S = 2.0
 
 DEBIT_PATH = "/tutor/debit"
 BALANCE_PATH = "/tutor/balance"
+SUMMARY_PATH = "/tutor/summary"
+
+# The summary's bounds, all of them the wire contract's (phase 7 step 2), and
+# all re-applied here because the ledger answers 400 and the whole record is
+# lost. The transcript keeps the MOST RECENT turns: a two-hour session's last
+# 200 turns are what "what were we just doing" means, and the `about` line
+# already carries the shape of the whole thing.
+MAX_ABOUT_CHARS = 200
+MAX_TRANSCRIPT_TURNS = 200
+MAX_TURN_CHARS = 500
+MAX_BODY_BYTES = 256 * 1024
+
+# The review snapshot's bounds. The worker generates far fewer than the first
+# three allow (16 vocab, 12 phrases) but up to TWELVE tables, and the ledger
+# takes eight — so this is not a formality: an unbounded review would 400 the
+# whole record, transcript and all.
+MAX_REVIEW_VOCAB = 40
+MAX_REVIEW_PHRASES = 40
+MAX_REVIEW_TABLES = 8
+MAX_TABLE_ROWS = 12
+MAX_REVIEW_ITEM_CHARS = 200
+
+# The corrections the analyzer published this session, as Convex's backstop for
+# a tab that closed before its `finish` ran. Same element shape the analyzer
+# sends the client (`analyzer.py:_validate`).
+MAX_CORRECTIONS = 200
+MAX_CORRECTION_CHARS = 500
+CORRECTION_FIELDS = ("id", "original", "replacement", "category", "severity", "explanation")
 
 # The ledger's own ceiling on a single report (24h). Clamped here so a clock
 # that somehow ran away is a 200 with a wrong number rather than a 400 and no
@@ -204,6 +239,66 @@ class BillingClient:
             )
             return balance
 
+    async def summary(
+        self,
+        *,
+        about: str | None = None,
+        transcript: list[dict[str, str]] | None = None,
+        review: dict[str, object] | None = None,
+        corrections: list[dict[str, str]] | None = None,
+    ) -> bool:
+        """Post this session's record. Returns whether the ledger took it.
+
+        Serialized on the same lock as the debits — the teardown posts both,
+        and a summary must never sit between a debit and its own sequence
+        number. Everything is optional: a session whose `about` call failed and
+        whose Review never became ready still posts its transcript, and a
+        session with nothing at all posts nothing and says so.
+
+        Never raises. A lost summary costs a History entry, not a session.
+        """
+        if not self.enabled:
+            return False
+        payload: dict = {"room": self._room, "userId": self._user_id, "jobId": self._job_id}
+        if about:
+            payload["about"] = " ".join(about.split())[:MAX_ABOUT_CHARS]
+        turns = _clean_transcript(transcript)
+        if turns:
+            payload["transcript"] = turns
+        material = _clean_review(review)
+        if material is not None:
+            payload["review"] = material
+        findings = _clean_corrections(corrections)
+        if findings:
+            payload["corrections"] = findings
+        if len(payload) <= 3:
+            # Nothing but the identifiers: a session that produced no record.
+            return False
+        payload = _fit_body(payload)
+        async with self._lock:
+            body = await self._post_json(SUMMARY_PATH, payload)
+        if not isinstance(body, dict) or body.get("ok") is not True:
+            logger.warning(
+                "summary post failed",
+                extra={
+                    "room": self._room,
+                    "jobId": self._job_id,
+                    "turns": len(payload.get("transcript", [])),
+                },
+            )
+            return False
+        logger.info(
+            "summary posted",
+            extra={
+                "room": self._room,
+                "about_chars": len(payload.get("about", "")),
+                "turns": len(payload.get("transcript", [])),
+                "corrections": len(payload.get("corrections", [])),
+                "review": "review" in payload,
+            },
+        )
+        return True
+
     async def balance(self) -> BalanceRead | None:
         """Re-read the learner's balance and this room's billed total.
 
@@ -245,6 +340,143 @@ class BillingClient:
     async def _post(self, path: str, payload: dict) -> int | None:
         body = await self._post_json(path, payload)
         return _int_field(body, "balanceSeconds")
+
+
+def _clean_transcript(turns: list[dict[str, str]] | None) -> list[dict[str, str]]:
+    """Coerce and bound the transcript: role, text, per-turn and total caps."""
+    if not turns:
+        return []
+    cleaned: list[dict[str, str]] = []
+    for turn in turns:
+        if not isinstance(turn, dict):
+            continue
+        role = turn.get("role")
+        text = turn.get("text")
+        if role not in ("learner", "tutor") or not isinstance(text, str):
+            continue
+        text = " ".join(text.split())[:MAX_TURN_CHARS]
+        if not text:
+            continue
+        cleaned.append({"role": role, "text": text})
+    # The most recent turns, oldest dropped first.
+    return cleaned[-MAX_TRANSCRIPT_TURNS:]
+
+
+def _clean_corrections(corrections: list[dict[str, str]] | None) -> list[dict[str, str]]:
+    """The analyzer's findings, exactly the six fields Convex stores.
+
+    Anything without a span and a replacement is dropped: the UI could not
+    render it and the history should not carry it.
+    """
+    if not corrections:
+        return []
+    cleaned: list[dict[str, str]] = []
+    for finding in corrections:
+        if not isinstance(finding, dict):
+            continue
+        item = {
+            name: " ".join(str(finding.get(name) or "").split())[:MAX_CORRECTION_CHARS]
+            for name in CORRECTION_FIELDS
+        }
+        if not item["original"] or not item["replacement"]:
+            continue
+        cleaned.append(item)
+    return cleaned[-MAX_CORRECTIONS:]
+
+
+def _pairs(raw: object, limit: int, first: str, second: str) -> list[dict[str, str]]:
+    """A list of two-string objects — `{target, anchor}` or `{person, form}`."""
+    if not isinstance(raw, (list, tuple)):
+        return []
+    items: list[dict[str, str]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        a, b = entry.get(first), entry.get(second)
+        if not isinstance(a, str) or not isinstance(b, str):
+            continue
+        items.append({first: a[:MAX_REVIEW_ITEM_CHARS], second: b[:MAX_REVIEW_ITEM_CHARS]})
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _clean_review(review: dict[str, object] | None) -> dict[str, object] | None:
+    """The Review snapshot, bounded to what the ledger will accept.
+
+    All three lists are always present — Convex requires the keys when `review`
+    is sent at all — and `None` means "there is nothing worth sending".
+    """
+    if not isinstance(review, dict):
+        return None
+    material = {
+        "vocab": _pairs(review.get("vocab"), MAX_REVIEW_VOCAB, "target", "anchor"),
+        "phrases": _pairs(review.get("phrases"), MAX_REVIEW_PHRASES, "target", "anchor"),
+        "tables": _tables(review.get("tables")),
+    }
+    if not any(material.values()):
+        return None
+    return material
+
+
+def _tables(raw: object) -> list[dict[str, object]]:
+    """Conjugation tables. The engine can build twelve; the ledger takes eight."""
+    if not isinstance(raw, (list, tuple)):
+        return []
+    tables: list[dict[str, object]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        verb, tense = entry.get("verb"), entry.get("tense")
+        if not isinstance(verb, str) or not isinstance(tense, str):
+            continue
+        tables.append(
+            {
+                "verb": verb[:MAX_REVIEW_ITEM_CHARS],
+                "tense": tense[:MAX_REVIEW_ITEM_CHARS],
+                "rows": _pairs(entry.get("rows"), MAX_TABLE_ROWS, "person", "form"),
+            }
+        )
+        if len(tables) >= MAX_REVIEW_TABLES:
+            break
+    return tables
+
+
+def _body_bytes(payload: dict) -> int:
+    try:
+        return len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+    except Exception:
+        return MAX_BODY_BYTES + 1
+
+
+def _fit_body(payload: dict) -> dict:
+    """Bring the body under the ledger's 256 KB ceiling, least-valuable first.
+
+    Review goes first (it is regenerable from the plan), then the transcript is
+    trimmed from the oldest end, then the corrections. `about` is never
+    dropped: it is the one line the summary screen cannot be written without.
+    """
+    if _body_bytes(payload) <= MAX_BODY_BYTES:
+        return payload
+    if "review" in payload:
+        payload = {k: v for k, v in payload.items() if k != "review"}
+        logger.warning("summary body too large: dropping the review snapshot")
+    turns = payload.get("transcript")
+    while isinstance(turns, list) and turns and _body_bytes(payload) > MAX_BODY_BYTES:
+        # Halve rather than pop: a 256 KB overrun is not one turn's worth.
+        turns = turns[max(1, len(turns) // 2) :]
+        payload["transcript"] = turns
+    if _body_bytes(payload) > MAX_BODY_BYTES:
+        payload.pop("transcript", None)
+        logger.warning("summary body too large: dropping the transcript")
+    findings = payload.get("corrections")
+    while isinstance(findings, list) and findings and _body_bytes(payload) > MAX_BODY_BYTES:
+        findings = findings[max(1, len(findings) // 2) :]
+        payload["corrections"] = findings
+    if _body_bytes(payload) > MAX_BODY_BYTES:
+        payload.pop("corrections", None)
+        logger.warning("summary body still too large: posting the about line alone")
+    return payload
 
 
 def _int_field(body: object, name: str) -> int | None:

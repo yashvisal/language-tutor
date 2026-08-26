@@ -1,4 +1,4 @@
-import { v } from "convex/values"
+import { v, type Infer } from "convex/values"
 
 import {
   internalMutation,
@@ -8,8 +8,20 @@ import {
 } from "./_generated/server"
 import type { Doc } from "./_generated/dataModel"
 import { secondsFor, userByClerkId } from "./users"
-import { sessionOutcomeValidator, sessionPlanValidator } from "./validators"
-import { OPEN_SESSION_PREFIX, OPEN_SESSION_WINDOW_MS } from "../lib/billing"
+import {
+  correctionValidator,
+  reviewMaterialValidator,
+  sessionOutcomeValidator,
+  sessionPlanValidator,
+  SUMMARY_LIMITS,
+  transcriptTurnValidator,
+} from "./validators"
+import {
+  DELTA_CAP_PREFIX,
+  MAX_DELTA_PER_CALL_S,
+  OPEN_SESSION_PREFIX,
+  OPEN_SESSION_WINDOW_MS,
+} from "../lib/billing"
 
 /**
  * The `sessions` row: one per room, written when the token is minted and
@@ -46,6 +58,21 @@ import { OPEN_SESSION_PREFIX, OPEN_SESSION_WINDOW_MS } from "../lib/billing"
  *    that reservation. Thrown with `OPEN_SESSION_PREFIX` so the route can
  *    answer 409 (a state the learner can act on) rather than 500 (a fault).
  */
+/**
+ * The plan a row adopted by a worker report gets: empty, because nobody knows
+ * what the learner picked — the token route is where a plan comes from, and by
+ * definition it did not get here. Shared by the two writers that can find
+ * themselves without a row (`debit`, `recordSummary`) so an adopted row looks
+ * the same whichever of them arrived first.
+ */
+const ADOPTED_PLAN = {
+  scenario: null,
+  topic: null,
+  tenses: [],
+  vocab: [],
+  level: null,
+}
+
 export const start = mutation({
   args: { room: v.string(), plan: sessionPlanValidator },
   returns: v.null(),
@@ -173,13 +200,7 @@ export const debit = internalMutation({
       const id = await ctx.db.insert("sessions", {
         userId: user._id,
         room: args.room,
-        plan: {
-          scenario: null,
-          topic: null,
-          tenses: [],
-          vocab: [],
-          level: null,
-        },
+        plan: ADOPTED_PLAN,
         startedAt: Date.now(),
       })
       session = await ctx.db.get(id)
@@ -188,6 +209,16 @@ export const debit = internalMutation({
     const billed = session?.secondsBilled ?? 0
     const reported = Math.round(args.seconds)
     const delta = Math.max(0, reported - billed)
+    // The worker reports every 60 active seconds, and five consecutive
+    // failures end the session, so a legitimate delta is minutes at most. A
+    // larger one is a bug or a leaked credential, and it bills nothing: the
+    // request is refused whole rather than clamped, so the mark does not move
+    // either. (Phase 7 step 1 contracts.)
+    if (delta > MAX_DELTA_PER_CALL_S) {
+      throw new Error(
+        `${DELTA_CAP_PREFIX} one report may add at most ${MAX_DELTA_PER_CALL_S}s (got ${delta}s)`
+      )
+    }
     if (delta > 0) {
       await ctx.db.insert("creditLedger", {
         userId: user._id,
@@ -249,8 +280,15 @@ export const billedSecondsForRoom = internalQuery({
 const MAX_CORRECTIONS = 200
 const MAX_CHARS = 500
 
+/** Truncate rather than reject. A stored record is history: a turn one
+ * character over a bound is still a turn that was spoken, and refusing the
+ * whole teardown report over it would lose the conversation to save a byte. */
+function clampTo(value: string, max: number): string {
+  return value.length > max ? value.slice(0, max) : value
+}
+
 function clamp(value: string): string {
-  return value.length > MAX_CHARS ? value.slice(0, MAX_CHARS) : value
+  return clampTo(value, MAX_CHARS)
 }
 
 /**
@@ -265,6 +303,14 @@ function clamp(value: string): string {
  * call — a retry, a summary re-mounted — never moves the end of the session,
  * and a room with no row (or another learner's room) is a silent no-op rather
  * than an error: nothing on the summary screen depends on this succeeding.
+ *
+ * **The client's outcome always wins.** `recordSummary` can write an outcome
+ * too, from the corrections the worker saw, as a backstop for a tab that never
+ * reached this mutation — but it only writes one where there is none, and this
+ * overwrites whatever is there. The client is the half that knows the exact
+ * `secondsTalked` and whether the clock ended the session; the worker is only
+ * guessing at both. Whichever order the two arrive in, the record ends up the
+ * client's if the client ever spoke.
  */
 export const finish = mutation({
   args: { room: v.string(), outcome: sessionOutcomeValidator },
@@ -304,6 +350,152 @@ export const finish = mutation({
   },
 })
 
+/**
+ * The worker's after-session record, behind `POST /tutor/summary` in
+ * `convex/http.ts` (which checks the shared secret — there is no Clerk
+ * identity on that path, so this must stay internal).
+ *
+ * It exists because the conversation used to die with the tab. `sessions.finish`
+ * runs on the client and carries only the corrections and the meter; what the
+ * conversation was *about*, what was actually said, and the Review material the
+ * learner was promised were all in browser memory and nowhere else. The worker
+ * has all three at teardown, and it is the half of the system that survives a
+ * closed laptop.
+ *
+ * Three properties, and each one is a failure that would otherwise be silent:
+ *
+ * - **Order-independent.** The worker may send this before or after its final
+ *   debit, and either may create the row (a manual dispatch, a token route
+ *   that failed after minting). Whichever arrives first inserts; the other
+ *   patches. Nothing here touches `secondsBilled` or `endedAt` — the meter is
+ *   `debit`'s alone, and a summary is not the end of a session.
+ * - **Field-wise last-write-wins.** A field absent from the body is left
+ *   untouched, so a worker that has the transcript but not yet the Review can
+ *   send what it has and send the rest later without erasing anything.
+ * - **Ownership before anything is written.** The clerk id arrives as an
+ *   argument, so "this room belongs to that learner" is the only thing between
+ *   a leaked secret and writing a transcript into a stranger's history.
+ *
+ * Everything is clamped rather than refused, for the reason `clampTo` gives.
+ */
+export const recordSummary = internalMutation({
+  args: {
+    room: v.string(),
+    clerkId: v.string(),
+    /** One line: what this was about, from the transcript, not the plan. */
+    about: v.optional(v.string()),
+    transcript: v.optional(v.array(transcriptTurnValidator)),
+    review: v.optional(reviewMaterialValidator),
+    /** The analyzer's findings as the WORKER saw them — the backstop for a tab
+     * that never reached `finish`. Only ever written into an outcome that does
+     * not exist yet; see the note below. */
+    corrections: v.optional(v.array(correctionValidator)),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const user = await userByClerkId(ctx, args.clerkId)
+    if (user === null) throw new Error("No such user")
+
+    let session: Doc<"sessions"> | null = await ctx.db
+      .query("sessions")
+      .withIndex("by_room", (q) => q.eq("room", args.room))
+      .unique()
+    if (session !== null && session.userId !== user._id) {
+      throw new Error("Not this learner's room")
+    }
+    if (session === null) {
+      const id = await ctx.db.insert("sessions", {
+        userId: user._id,
+        room: args.room,
+        plan: ADOPTED_PLAN,
+        startedAt: Date.now(),
+      })
+      session = await ctx.db.get(id)
+      if (session === null) throw new Error("Session row vanished")
+    }
+
+    const patch: {
+      about?: string
+      transcript?: Infer<typeof transcriptTurnValidator>[]
+      review?: Infer<typeof reviewMaterialValidator>
+      outcome?: Infer<typeof sessionOutcomeValidator>
+      corrections?: number
+    } = {}
+
+    if (args.about !== undefined) {
+      patch.about = clampTo(args.about, SUMMARY_LIMITS.aboutChars)
+    }
+    if (args.transcript !== undefined) {
+      patch.transcript = args.transcript
+        .slice(0, SUMMARY_LIMITS.transcriptTurns)
+        .map((turn) => ({
+          role: turn.role,
+          text: clampTo(turn.text, SUMMARY_LIMITS.turnChars),
+        }))
+    }
+    if (args.review !== undefined) {
+      const item = (entry: { target: string; anchor: string }) => ({
+        target: clampTo(entry.target, SUMMARY_LIMITS.reviewItemChars),
+        anchor: clampTo(entry.anchor, SUMMARY_LIMITS.reviewItemChars),
+      })
+      patch.review = {
+        vocab: args.review.vocab.slice(0, SUMMARY_LIMITS.reviewVocab).map(item),
+        phrases: args.review.phrases
+          .slice(0, SUMMARY_LIMITS.reviewPhrases)
+          .map(item),
+        tables: args.review.tables
+          .slice(0, SUMMARY_LIMITS.reviewTables)
+          .map((table) => ({
+            verb: clampTo(table.verb, SUMMARY_LIMITS.reviewItemChars),
+            tense: clampTo(table.tense, SUMMARY_LIMITS.reviewItemChars),
+            rows: table.rows.slice(0, SUMMARY_LIMITS.tableRows).map((row) => ({
+              person: clampTo(row.person, SUMMARY_LIMITS.reviewItemChars),
+              form: clampTo(row.form, SUMMARY_LIMITS.reviewItemChars),
+            })),
+          })),
+      }
+    }
+
+    // The backstop, and the one place this mutation touches the client's
+    // territory. `finish` runs in the browser at the end of a conversation and
+    // is the only writer of `outcome` — a closed laptop, a crashed tab or a
+    // killed process never reaches it, and the corrections are then lost even
+    // though the worker had them all along.
+    //
+    // So: an outcome is written here ONLY when there is none. If `finish` has
+    // already run, its record stands untouched, because it is the half that
+    // knows the real `secondsTalked` and whether the clock ended the session —
+    // both of which are guesses from out here. `secondsTalked` falls back to
+    // what the meter can prove (and to `null`, honestly, when this arrives
+    // before the final debit and the meter has proved nothing yet), and
+    // `endedByClock` to `false`, which is what "we do not know" looks like on
+    // a boolean the summary only uses to change one line of copy.
+    if (args.corrections !== undefined && session.outcome === undefined) {
+      const corrections = args.corrections
+        .slice(0, MAX_CORRECTIONS)
+        .map((correction) => ({
+          id: clamp(correction.id),
+          original: clamp(correction.original),
+          replacement: clamp(correction.replacement),
+          category: clamp(correction.category),
+          severity: clamp(correction.severity),
+          explanation: clamp(correction.explanation),
+        }))
+      patch.outcome = {
+        corrections,
+        secondsTalked: session.secondsBilled ?? null,
+        endedByClock: false,
+      }
+      // Denormalized off the outcome, exactly as `finish` writes it, so the
+      // History list keeps counting without reading the corrections.
+      patch.corrections = corrections.length
+    }
+
+    if (Object.keys(patch).length > 0) await ctx.db.patch(session._id, patch)
+    return null
+  },
+})
+
 /** How many past conversations History shows. Older than this is archaeology,
  * and the list is a glance, not a ledger. */
 const HISTORY_LIMIT = 30
@@ -325,6 +517,23 @@ const HISTORY_LIMIT = 30
  */
 export const history = query({
   args: {},
+  returns: v.array(
+    v.object({
+      id: v.id("sessions"),
+      /** The key `byRoom` takes — how the History modal reaches the same
+       * record the post-session summary rendered. */
+      room: v.string(),
+      startedAt: v.number(),
+      endedAt: v.number(),
+      secondsTalked: v.number(),
+      plan: sessionPlanValidator,
+      corrections: v.array(correctionValidator),
+      /** The one-line "what this was about", `null` for a row that ended
+       * before the worker wrote one. The list prints it where it has one and
+       * falls back to the plan's topic where it does not. */
+      about: v.union(v.string(), v.null()),
+    })
+  ),
   handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity()
     if (identity === null) return []
@@ -332,23 +541,108 @@ export const history = query({
     const user = await userByClerkId(ctx, identity.subject)
     if (user === null) return []
 
+    // `gte("endedAt", 0)` is how "finished" is said on an index: `endedAt` is
+    // a millisecond timestamp when it exists and absent otherwise, and absent
+    // sorts below every number. So this range holds exactly the finished rows,
+    // ordered by their end. The previous shape took `HISTORY_LIMIT * 2` off
+    // `by_user_startedAt` and dropped the unfinished ones in JS, which meant a
+    // learner with a run of abandoned rows — a crashed tab, a killed worker —
+    // watched real conversations fall off their own history page.
     const rows = await ctx.db
       .query("sessions")
-      .withIndex("by_user_startedAt", (q) => q.eq("userId", user._id))
+      .withIndex("by_user_endedAt", (q) =>
+        q.eq("userId", user._id).gte("endedAt", 0)
+      )
       .order("desc")
       .take(HISTORY_LIMIT * 2)
 
-    return rows
-      .filter((row) => row.endedAt !== undefined)
-      .slice(0, HISTORY_LIMIT)
-      .map((row) => ({
-        id: row._id,
-        startedAt: row.startedAt,
-        endedAt: row.endedAt ?? row.startedAt,
-        secondsTalked: row.outcome?.secondsTalked ?? row.secondsBilled ?? 0,
-        plan: row.plan,
-        corrections: row.outcome?.corrections ?? [],
-      }))
+    // A start that failed — the tutor never joined, the client closed the row
+    // so "Try again" would not meet the one-open-session guard — is a finished
+    // row with nothing in it. It is not a conversation and it is not history.
+    // The over-fetch above is for these: they are rare, and a page short by a
+    // few rows is better than one padded with 0:00 entries.
+    const conversations = rows.filter(
+      (row) =>
+        (row.secondsBilled ?? 0) > 0 ||
+        (row.outcome?.secondsTalked ?? 0) > 0 ||
+        (row.outcome?.corrections.length ?? 0) > 0
+    )
+
+    return conversations.slice(0, HISTORY_LIMIT).map((row) => ({
+      id: row._id,
+      room: row.room,
+      startedAt: row.startedAt,
+      endedAt: row.endedAt ?? row.startedAt,
+      secondsTalked: row.outcome?.secondsTalked ?? row.secondsBilled ?? 0,
+      plan: row.plan,
+      corrections: row.outcome?.corrections ?? [],
+      about: row.about ?? null,
+    }))
+  },
+})
+
+/**
+ * One conversation's whole record, by room — the read behind BOTH the
+ * post-session summary and the History modal, so the two cannot disagree about
+ * what happened.
+ *
+ * That is the point of it. The summary used to render client memory and the
+ * modal used to render the row, which is why the summary showed a Review the
+ * modal did not have and the tab closing lost both. One query, one record.
+ *
+ * `null` covers three cases on purpose and distinguishes none of them: signed
+ * out, no such room, and somebody else's room. A room name is guessable enough
+ * that "this room exists but is not yours" is a fact worth not confirming, and
+ * the surface's behaviour is the same either way — it falls back to what it
+ * has in memory. Not-owned returns `null` rather than throwing for the same
+ * reason `finish` is a silent no-op: nothing on the summary screen should
+ * break because a record is missing.
+ *
+ * Reactive, so a summary open while the worker's teardown report lands fills
+ * itself in rather than showing the learner an emptier record than they had.
+ */
+export const byRoom = query({
+  args: { room: v.string() },
+  returns: v.union(
+    v.null(),
+    v.object({
+      about: v.union(v.string(), v.null()),
+      transcript: v.union(v.array(transcriptTurnValidator), v.null()),
+      review: v.union(reviewMaterialValidator, v.null()),
+      outcome: v.union(sessionOutcomeValidator, v.null()),
+      secondsBilled: v.number(),
+      startedAt: v.number(),
+      endedAt: v.union(v.number(), v.null()),
+      plan: sessionPlanValidator,
+    })
+  ),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity()
+    if (identity === null) return null
+
+    const user = await userByClerkId(ctx, identity.subject)
+    if (user === null) return null
+
+    const session = await ctx.db
+      .query("sessions")
+      .withIndex("by_room", (q) => q.eq("room", args.room))
+      .unique()
+    if (session === null || session.userId !== user._id) return null
+
+    // Every optional column comes back as an explicit `null` rather than
+    // absent: "not written" is a state the surfaces must render (a session
+    // that ended before the worker had a Review), and a field that is
+    // sometimes missing is a field every caller has to guard twice.
+    return {
+      about: session.about ?? null,
+      transcript: session.transcript ?? null,
+      review: session.review ?? null,
+      outcome: session.outcome ?? null,
+      secondsBilled: session.secondsBilled ?? 0,
+      startedAt: session.startedAt,
+      endedAt: session.endedAt ?? null,
+      plan: session.plan,
+    }
   },
 })
 

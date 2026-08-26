@@ -1,33 +1,56 @@
 "use client"
 
 /**
- * After the conversation.
+ * After the conversation. The summary IS the review.
  *
- * Two facts and two doors. The facts: how long the learner talked, and what the
- * analyzer caught — the first time the session's corrections are seen all at
- * once rather than one utterance at a time. The doors: talk again, or go
- * home.
+ * It used to be two facts and two doors: how long the learner talked and what
+ * the analyzer caught. Everything else the session produced — what it was
+ * actually about, the vocabulary and phrases and tables the Review tab had
+ * been showing, the transcript — lived in browser memory and died with the
+ * tab, while `out-of-minutes.tsx` promised the opposite.
  *
- * Corrections are grouped by category because a category is a pattern a learner
- * can act on, where a flat list is a scorecard. No count of "mistakes", no
- * score, no streak: this is a record of what the tutor noticed, not a grade.
+ * So this screen renders TWO sources and prefers whichever is more complete:
+ *
+ * 1. The client's `SessionOutcome`, assembled at the instant of ending. It is
+ *    here immediately, and it is the only half that knows the exact metered
+ *    seconds and whether the clock ended the session.
+ * 2. `sessions.byRoom`, reactive, which is where the worker's teardown report
+ *    lands a few seconds later: the one-line "what this was about", the Review
+ *    snapshot, the transcript. The screen fills in around the learner rather
+ *    than making them wait for it — and rather than showing them nothing,
+ *    which is what a non-reactive read would do.
+ *
+ * The History modal reads the same record through the same components
+ * (`review-material.tsx`, `transcript-record.tsx`), so the two surfaces cannot
+ * tell different stories about one conversation.
+ *
+ * Corrections are grouped by category because a category is a pattern a
+ * learner can act on, where a flat list is a scorecard. No count of "mistakes",
+ * no score, no streak: this is a record of what the tutor noticed, not a grade.
  */
 
 import Link from "next/link"
 import { MoveRight } from "lucide-react"
+import { useQuery } from "convex/react"
 
 import { Overline } from "@/components/overline"
 import { CATEGORY_STYLES } from "@/components/session/correction-mark"
+import {
+  ReviewMaterialView,
+  hasReviewMaterial,
+} from "@/components/session/review-material"
+import { TranscriptRecord } from "@/components/session/transcript-record"
 import { Button } from "@/components/ui/button"
-import { CATEGORY_LABELS, type SessionOutcome } from "@/lib/session/contract"
+import { api } from "@/convex/_generated/api"
+import { formatClock } from "@/lib/billing"
+import {
+  CATEGORY_LABELS,
+  type Correction,
+  type SessionOutcome,
+} from "@/lib/session/contract"
+import { ANCHOR_LANGUAGE, TARGET_LANGUAGE } from "@/lib/session/protocol"
 import { groupCorrections } from "@/lib/session/reducer"
 import { cn } from "@/lib/utils"
-
-/** `m:ss` — the same reading the stopwatch showed, so the two agree. */
-function clock(seconds: number): string {
-  const whole = Math.max(0, Math.round(seconds))
-  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`
-}
 
 export function SessionSummary({
   outcome,
@@ -36,8 +59,44 @@ export function SessionSummary({
   outcome: SessionOutcome
   onStartAnother: () => void
 }) {
-  const groups = groupCorrections(outcome.corrections)
-  const { secondsTalked } = outcome
+  /**
+   * The worker's half of the record. `"skip"` for a session that never got a
+   * room — there is nothing to look up, and the client's outcome is the whole
+   * story. Reactive: the teardown report lands after `finish` does, and this
+   * screen is already on the learner's monitor when it arrives.
+   */
+  const record = useQuery(
+    api.sessions.byRoom,
+    outcome.room === null ? "skip" : { room: outcome.room }
+  )
+
+  /**
+   * The client's corrections win — they are the complete set, streamed to this
+   * browser one turn at a time. The stored ones are the worker's backstop for
+   * a tab that never reached `finish`, and this tab plainly did; they only
+   * matter when the client somehow ended with none, which is what a summary
+   * re-mounted after a reload looks like.
+   */
+  const corrections: Correction[] =
+    outcome.corrections.length > 0
+      ? outcome.corrections
+      : ((record?.outcome?.corrections as Correction[] | undefined) ?? [])
+  const groups = groupCorrections(corrections)
+
+  /**
+   * The meter, from whichever half can prove it. The client reads the agent's
+   * last `tutor.elapsed_s`, which is absent when the agent left before
+   * publishing one — and in exactly that case the ledger still knows what was
+   * billed. Two surfaces disagreeing about the length of one conversation is
+   * the failure this avoids.
+   */
+  const secondsTalked =
+    outcome.secondsTalked ??
+    (record && record.secondsBilled > 0 ? record.secondsBilled : null)
+
+  const about = record?.about ?? null
+  const review = record?.review ?? null
+  const transcript = record?.transcript ?? null
 
   return (
     <div className="flex min-h-svh justify-center bg-background px-8 py-[clamp(3rem,12vh,7rem)]">
@@ -48,37 +107,58 @@ export function SessionSummary({
         <h1 className="mt-3 text-xl tracking-[-0.015em] text-foreground">
           {secondsTalked === null
             ? "That's the session."
-            : `You talked for ${clock(secondsTalked)}.`}
+            : `You talked for ${formatClock(secondsTalked)}.`}
         </h1>
+
+        {/* What this was about, from the transcript rather than the plan — so
+            it describes the conversation that happened, not the one that was
+            declared. Absent until the worker's report lands, and absent
+            forever for a session too short to have been about anything. */}
+        {about && (
+          <p className="mt-2 text-sm leading-relaxed text-foreground">
+            {about}
+          </p>
+        )}
+
         <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
           {secondsTalked === null
             ? "Nice work."
             : "That's what you were charged for — time spent paused is free."}
         </p>
 
+        {/* The connection died rather than the learner ending it. One quiet
+            line, in the ordinary voice: nothing was lost, and a red banner
+            would make an ordinary network blip feel like a fault (audit B5). */}
+        {outcome.endedUnexpectedly && (
+          <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+            The connection dropped — here&rsquo;s what we have.
+          </p>
+        )}
+
         <section className="mt-10 border-t border-border/50 pt-8">
+          <Overline>What the tutor caught</Overline>
           {groups.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
+            <p className="mt-3 text-sm text-muted-foreground">
               Nothing came back from the analyzer this session.
             </p>
           ) : (
-            <div className="space-y-8">
-              {groups.map(({ category, corrections }) => (
+            <div className="mt-3 space-y-8">
+              {groups.map(({ category, corrections: group }) => (
                 <div key={category}>
                   <Overline>{CATEGORY_LABELS[category]}</Overline>
                   <ul className="mt-3 space-y-3">
-                    {corrections.map((correction) => (
+                    {group.map((correction) => (
                       <li key={correction.id}>
                         <p
                           className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm"
-                          lang="es"
+                          lang={TARGET_LANGUAGE}
                         >
                           <span className="text-muted-foreground line-through decoration-muted-foreground/40">
                             {correction.original}
                           </span>
                           <MoveRight
                             aria-hidden
-                            className="size-3.5 shrink-0 text-muted-foreground/50"
+                            className="size-3.5 shrink-0 text-muted-foreground"
                           />
                           <span
                             className={cn(
@@ -92,7 +172,7 @@ export function SessionSummary({
                         {correction.explanation && (
                           <p
                             className="mt-1 text-xs leading-relaxed text-muted-foreground"
-                            lang="en"
+                            lang={ANCHOR_LANGUAGE}
                           >
                             {correction.explanation}
                           </p>
@@ -105,6 +185,26 @@ export function SessionSummary({
             </div>
           )}
         </section>
+
+        {/* The material the Review tab was showing mid-session, now kept. It
+            arrives with the worker's report, so this section simply appears —
+            there is nothing to wait for and nothing to announce. */}
+        {hasReviewMaterial(review) && (
+          <section className="mt-10 border-t border-border/50 pt-8">
+            <Overline>To review</Overline>
+            <ReviewMaterialView
+              material={review}
+              focusTenses={outcome.plan.tenses}
+              className="mt-5"
+            />
+          </section>
+        )}
+
+        {transcript && transcript.length > 0 && (
+          <section className="mt-10 border-t border-border/50 pt-8">
+            <TranscriptRecord turns={transcript} />
+          </section>
+        )}
 
         <div className="mt-10 flex items-center gap-3 border-t border-border/50 pt-6">
           <Button size="lg" onClick={onStartAnother}>

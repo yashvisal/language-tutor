@@ -33,7 +33,14 @@ the session clock (authoritative)
   ├─ zero                              → debit, then HOLD (tutor.out_of_minutes) — no ending
   ├─ resume while held at zero         → re-read the balance; continue, or stay held
   ├─ learner's participant leaves      → hold + debit, 60s grace, then shutdown
+  ├─ any hold older than TUTOR_HOLD_IDLE_S → tutor.session_over, disconnect
+  ├─ realtime model dies unrecoverably → tutor.error="model", hold, debit, end
   └─ 10 min abandoned at zero          → tutor.session_over, disconnect
+
+teardown (the shutdown callback, every step guarded)
+  ├─ final debit ("final": true)       → Convex sets endedAt
+  ├─ POST /tutor/summary               → about + transcript + review + corrections
+  └─ usage summary                     → tokens, talk share, estimated cost (log only)
 ```
 
 Design rules worth keeping:
@@ -97,7 +104,8 @@ Design rules worth keeping:
 | `src/state.py`     | Pause state (+ what it interrupted) and rolling session facts  |
 | `src/plan.py`      | Dispatch metadata: the balance, the user, and the session plan  |
 | `src/clock.py`     | The authoritative session clock + the seconds-billed seam       |
-| `src/billing.py`   | The Convex ledger's client: `/tutor/debit`, `/tutor/balance`    |
+| `src/billing.py`   | The Convex ledger's client: `/tutor/debit`, `/tutor/balance`, `/tutor/summary` |
+| `src/summary.py`   | The after-session record: the `about` line, the transcript, the Review snapshot |
 
 ## Setup
 
@@ -131,13 +139,15 @@ TUTOR_STT_MODEL=gpt-live-transcribe
 TUTOR_ANALYZER_MODEL=gpt-5.6-luna
 TUTOR_ANALYZER_ENABLED=true
 TUTOR_TRANSLATE_MODEL=gpt-5.6-luna
+TUTOR_HOLD_IDLE_S=600               # any hold this long ends the session
 TUTOR_ALLOW_UNMETERED=0             # local development ONLY — see below
 ```
 
 `OPENAI_API_KEY` is asserted non-empty at config load: the worker refuses to
 start rather than failing inside a plugin mid-session. `TUTOR_MIN_ENDPOINT_S`
 and `TUTOR_MAX_ENDPOINT_S` warn and fall back to their defaults on an
-unparseable or out-of-range value, exactly like `TUTOR_REALTIME_SPEED`.
+unparseable or out-of-range value, exactly like `TUTOR_REALTIME_SPEED` — as
+does `TUTOR_HOLD_IDLE_S` (bounded 60s–4h, default 600).
 
 **Metering fails closed** (audit B10, 2026-08-25). A job dispatched with a
 `user_id` and no reachable ledger — `CONVEX_SITE_URL` or `TUTOR_DEBIT_SECRET`
@@ -201,6 +211,7 @@ agent will never join.
 | `tutor.out_of_minutes` (participant attribute) | `"true"` only while the session is held at zero |
 | `tutor.turn_seq` (participant attribute) | A counter, bumped on every committed learner turn — the UI closes the bubble on it |
 | `tutor.session_over` (participant attribute) | `"true"` immediately before the worker disconnects |
+| `tutor.error` (participant attribute) | `""` (nothing wrong, published at start), `"model"` (the realtime model died unrecoverably — the session is ending), or `"tutor_silent"` (no tutor audio 20s after the session started; nothing was billed) |
 | `lk.agent.state` (participant attribute) | Agent state, published by the SDK                               |
 | RPC `tutor.pause` / `tutor.resume`       | Frontend → worker, one logical call per state change (retries are idempotent) |
 | RPC `tutor.translate`                    | Frontend → worker, one selected span → its anchor translation   |
@@ -398,7 +409,7 @@ displays its numbers and never computes its own.
 
 | Moment                          | What happens                                                |
 | ------------------------------- | ----------------------------------------------------------- |
-| first tutor audio frame          | The clock starts; `tutor.elapsed_s` / `tutor.remaining_s` published. **Not** when the greeting is *requested*: a session where the model never speaks must be billed nothing. The frame is `agent_state_changed` → `"speaking"`, which the framework flips from the playout task's first-frame callback. No tutor audio within 20s is logged at **error** level and nothing else — nothing has been billed, so there is no money question, only an operational one |
+| first tutor audio frame          | The clock starts; `tutor.elapsed_s` / `tutor.remaining_s` published. **Not** when the greeting is *requested*: a session where the model never speaks must be billed nothing. The frame is `agent_state_changed` → `"speaking"`, which the framework flips from the playout task's first-frame callback. No tutor audio within 20s is logged at **error** level and published as `tutor.error` = `"tutor_silent"` — nothing has been billed, so this is an alarm the learner can act on (reload), not an ending |
 | every 60 **active** seconds      | A debit for the seconds so far. Cumulative, so the ledger takes only the delta; a worker killed at minute 45 has lost at most a minute of revenue (audit §4.1) |
 | every 5s while unheld           | Both republished — a stopwatch counting up, not a countdown |
 | every pause and resume          | Republished immediately, so the stopwatch visibly stops and starts with the hold |
@@ -407,6 +418,8 @@ displays its numbers and never computes its own.
 | zero                            | `session.interrupt()`, a debit for the seconds so far, then the **same hold a learner pause takes** plus `tutor.out_of_minutes` = `"true"`. The session does not end. |
 | `tutor.resume` while held at zero | The balance is re-read (`/tutor/balance`, at most once every 5s). More minutes → the budget grows under the same elapsed time and the conversation continues; still zero → the hold stays, acked as `{"paused": true, "resumed": false, "out_of_minutes": true}` |
 | the learner's participant leaves | The meter is **held** — a hold source of its own, never `state.paused`, which is the UI's boolean and edge-triggered by the pause RPC — the seconds so far are debited while the worker is certainly still alive, and a 60s grace starts. A reconnect inside the grace releases the hold and the same conversation carries on in the same room; otherwise `ctx.shutdown()`. `close_on_disconnect` does not cover this: a wifi drop, a tab crash and a closed laptop are none of the disconnect reasons it fires on (audit B4) |
+| any hold older than `TUTOR_HOLD_IDLE_S` (default 600s) | The same ending: `tutor.session_over` = `"true"`, `session.aclose()`, `ctx.shutdown()`, and the teardown debits what was actually used. A hold is free, which is exactly why an abandoned one is expensive to us — it held the room, the worker slot and the realtime socket indefinitely, because the idle timeout was only ever checked at zero balance (audit §3.3). The hold's age is wall time and resets on every resume; the learner-absent hold has its own, shorter (60s) grace |
+| the realtime model dies unrecoverably | `tutor.error` = `"model"`, the meter is **held** (a third hold source, `state.model_failed`), the seconds so far are debited, and the session ends through the ordinary `session_over` path so the client's `finish` runs and the learner lands on a summary rather than a frozen stage (audit §4.2). Recoverable errors are logged and nothing else — the plugin retries |
 | 10 minutes abandoned at zero    | `tutor.session_over` = `"true"`, `session.aclose()`, `ctx.shutdown()` — no goodbye; nobody is there to hear one |
 
 **Pause time is not billed.** The clock accrues only while the session is not
@@ -415,7 +428,7 @@ held — a learner studying a correction is not spending minutes (decision
 
 ### The ledger seam
 
-`src/billing.py` is the only thing in the worker that talks to Convex, over two
+`src/billing.py` is the only thing in the worker that talks to Convex, over three
 signed calls (`Authorization: Bearer $TUTOR_DEBIT_SECRET`, against
 `$CONVEX_SITE_URL`):
 
@@ -423,6 +436,7 @@ signed calls (`Authorization: Bearer $TUTOR_DEBIT_SECRET`, against
 | --- | --- | --- |
 | `POST /tutor/debit` | `{"room", "userId", "jobId", "seconds", "seq"}` | `{"balanceSeconds"}` |
 | `POST /tutor/balance` | `{"userId", "room"}` (room optional) | `{"balanceSeconds", "secondsBilled"}` |
+| `POST /tutor/summary` | `{"room", "userId", "jobId", "about"?, "transcript"?, "review"?, "corrections"?}` | `{"ok": true}` |
 
 Convex keys the debit on `ref = <room>:<jobId>:<seq>` and answers a replay with
 the same body. `secondsBilled` is the **room's** already-billed high-water mark
@@ -456,6 +470,52 @@ never tracks what it has already billed. Debits are serialized behind one lock
   conversation. A crashed worker's final debit is what lets the learner start a
   new conversation immediately instead of waiting out the one-open-session
   window.
+
+### The after-session record
+
+`POST /tutor/summary`, once, from the teardown callback beside the final debit
+and independent of it (either may land first). Until it existed, everything the
+conversation *was* died with the tab: the outcome written to Convex was
+corrections + seconds + `endedByClock`, so the summary screen showed time and
+fixes and History showed the plan's topic (phase 7 step 2).
+
+Four optional fields, each independent and each degrading to absent (absent =
+"leave that column alone", so a field the worker could not produce never
+overwrites one it produced earlier):
+
+- `about` — one line, ≤200 chars, in the **anchor** language, saying what the
+  conversation was actually about. One `TUTOR_ANALYZER_MODEL` call on the
+  transcript, `reasoning: none`, 6s budget (`src/summary.py`,
+  `ABOUT_INSTRUCTIONS` in `prompts.py`). It goes by the transcript, not by the
+  plan: if the learner drifted, the line follows them. A model that answers
+  `NONE`, fails, or hangs simply omits the field, and its tokens are counted
+  into `usage.py` through `record_text_usage` — the one seam out-of-band model
+  calls have for the cost line (the analyzer, Ask, translate and Review still
+  contribute zero; audit §4.7).
+- `transcript` — `session.history` as `{"role": "learner"|"tutor", "text"}`,
+  the **most recent** 200 turns of ≤500 chars each (oldest dropped first: a
+  long session's opening pleasantries are the part nobody comes back for, and
+  `about` already carries the shape of the whole thing). System prompts, tool
+  calls and empty turns never travel.
+- `review` — this session's Review material (`vocab` / `phrases` / `tables`),
+  exactly the `tutor.review` payload minus `ready`, if it ever became ready.
+  Bounded to the ledger's `SUMMARY_LIMITS` before it goes: the conjugation
+  engine can build twelve tables and Convex takes eight, and an over-long
+  review would 400 the whole record, transcript and all.
+- `corrections` — every finding the analyzer actually *published* this session,
+  kept on `SessionFacts` as the same six-field element the client receives
+  (`id`, `original`, `replacement`, `category`, `severity`, `explanation`),
+  most recent 200. The client writes the same list through `sessions.finish`;
+  this is the copy that survives a tab that closed first.
+
+The body is bounded at 256 KB: over that, the review snapshot goes first, then
+the transcript is trimmed from the oldest end, then the corrections, and
+`about` is never dropped.
+The whole seam — model call plus POST — runs under one 8s budget
+(`SUMMARY_BUDGET_S`) inside the guarded teardown, and shares the debit lock, so
+it can neither delay a shutdown nor interleave with a debit's sequence number.
+A session with no learner id (`billing.enabled` false) posts nothing and spends
+no model call.
 
 A failed *zero-hold* debit is remembered (`zero_debit_unacked`). Those seconds
 are still sitting in the learner's balance, so budgeting a resume from that

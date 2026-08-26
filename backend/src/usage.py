@@ -33,9 +33,34 @@ class UsageTracker:
 
     def __init__(self) -> None:
         self._usage: Any | None = None
+        # Out-of-band text calls the AgentSession knows nothing about. The
+        # session's own `session_usage_updated` covers the realtime model and
+        # the STT and nothing else (audit §4.7), so anything that opens its own
+        # OpenAI client — the analyzer, Ask, translate, Review, the teardown
+        # `about` line — has to hand its usage in here. Only the teardown
+        # summary does so far; the rest is one call each away.
+        self._aux_text_in = 0
+        self._aux_text_out = 0
 
     def on_usage(self, ev: Any) -> None:
         self._usage = getattr(ev, "usage", None)
+
+    def record_text_usage(self, response: Any, *, label: str) -> None:
+        """Count one out-of-band text call. Never raises into its caller."""
+        try:
+            usage = getattr(response, "usage", None)
+            if usage is None:
+                return
+            input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+            output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+            self._aux_text_in += max(0, input_tokens)
+            self._aux_text_out += max(0, output_tokens)
+            logger.debug(
+                "out-of-band text usage",
+                extra={"label": label, "in": input_tokens, "out": output_tokens},
+            )
+        except Exception:
+            logger.debug("could not record text usage", exc_info=True)
 
     def summary(self, *, active_s: int, room: str) -> dict[str, Any]:
         # The ledger's unit is seconds (phase 6); the cost lines want minutes,
@@ -61,12 +86,16 @@ class UsageTracker:
                 elif hasattr(mu, "audio_duration") and not hasattr(mu, "characters_count"):
                     stt_seconds += getattr(mu, "audio_duration", 0.0)
 
+        aux_text_in = self._aux_text_in
+        aux_text_out = self._aux_text_out
+
         cost = (
             audio_in * AUDIO_IN_PER_M
             + audio_in_cached * AUDIO_IN_CACHED_PER_M
             + audio_out * AUDIO_OUT_PER_M
             + text_in * TEXT_IN_PER_M
-            + text_out * TEXT_OUT_PER_M
+            + (text_out + aux_text_out) * TEXT_OUT_PER_M
+            + aux_text_in * TEXT_IN_PER_M
         ) / 1_000_000 + (stt_seconds / 60.0) * STT_PER_MIN
 
         tutor_minutes = audio_out / OUTPUT_AUDIO_TOKENS_PER_MIN
@@ -79,6 +108,8 @@ class UsageTracker:
             "audio_out_tokens": audio_out,
             "text_in_tokens": text_in,
             "text_out_tokens": text_out,
+            "aux_text_in_tokens": aux_text_in,
+            "aux_text_out_tokens": aux_text_out,
             "stt_minutes": round(stt_seconds / 60.0, 2),
             "tutor_talk_minutes": round(tutor_minutes, 2),
             "tutor_talk_share": round(tutor_minutes / active_minutes, 2)

@@ -5,7 +5,12 @@ import { api, internal } from "./_generated/api"
 import type { Doc, Id } from "./_generated/dataModel"
 import schema from "./schema"
 import type { sessionPlanValidator } from "./validators"
-import { OPEN_SESSION_PREFIX, OPEN_SESSION_WINDOW_MS } from "../lib/billing"
+import {
+  DELTA_CAP_PREFIX,
+  MAX_DELTA_PER_CALL_S,
+  OPEN_SESSION_PREFIX,
+  OPEN_SESSION_WINDOW_MS,
+} from "../lib/billing"
 
 /**
  * The money seam, tested where it is decided.
@@ -244,6 +249,45 @@ describe("sessions.debit", () => {
     expect(session.secondsBilled).toBe(150)
     // The clock holding at zero is not the end of the session.
     expect(session.endedAt).toBeUndefined()
+  })
+
+  test("refuses a report that would add more than the per-call cap", async () => {
+    const { t, userId } = await started()
+
+    await t.mutation(internal.sessions.debit, {
+      room,
+      clerkId: "user_owner",
+      jobId: "job_1",
+      seconds: 100,
+      seq: 1,
+    })
+
+    // 100 → 3701 is +3601: one second over what one call may add. The
+    // cadence is 60 s and five failures end the session, so this is never a
+    // legitimate catch-up — it is refused whole, and the mark does not move.
+    await expect(
+      t.mutation(internal.sessions.debit, {
+        room,
+        clerkId: "user_owner",
+        jobId: "job_1",
+        seconds: 3701,
+        seq: 2,
+      })
+    ).rejects.toThrow(DELTA_CAP_PREFIX)
+
+    expect(await debitsOf(t, userId)).toHaveLength(1)
+    const [session] = await sessionsOf(t, userId)
+    expect(session.secondsBilled).toBe(100)
+
+    // Exactly the cap is still fine.
+    const result = await t.mutation(internal.sessions.debit, {
+      room,
+      clerkId: "user_owner",
+      jobId: "job_1",
+      seconds: 100 + MAX_DELTA_PER_CALL_S,
+      seq: 3,
+    })
+    expect(result.balanceSeconds).toBe(GRANT - 100 - MAX_DELTA_PER_CALL_S)
   })
 
   test("is idempotent on the ref", async () => {
@@ -485,5 +529,521 @@ describe("sessions.reconcileStale", () => {
     expect(rows.unbilled!.endedAt).toBe(startedAt)
     // A conversation that is happening right now is not abandoned.
     expect(rows.recent!.endedAt).toBeUndefined()
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/*  The after-session record                                                  */
+/* -------------------------------------------------------------------------- */
+
+const REVIEW = {
+  vocab: [{ target: "la cuenta", anchor: "the bill" }],
+  phrases: [{ target: "para llevar", anchor: "to go" }],
+  tables: [
+    {
+      verb: "querer",
+      tense: "present",
+      rows: [{ person: "yo", form: "quiero" }],
+    },
+  ],
+}
+
+describe("sessions.recordSummary", () => {
+  const room = "lesson-owner-1-aaaa"
+
+  test("writes the record onto the row the token minted", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+    await t
+      .withIdentity({ subject: "user_owner" })
+      .mutation(api.sessions.start, { room, plan: PLAN })
+
+    await t.mutation(internal.sessions.recordSummary, {
+      room,
+      clerkId: "user_owner",
+      about: "Ordering at a cafe.",
+      transcript: [
+        { role: "learner", text: "hola" },
+        { role: "tutor", text: "buenas" },
+      ],
+      review: REVIEW,
+    })
+
+    // One row, not a second one keyed on the same name.
+    const rows = await sessionsOf(t, userId)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].about).toBe("Ordering at a cafe.")
+    expect(rows[0].transcript).toHaveLength(2)
+    expect(rows[0].review?.vocab[0].target).toBe("la cuenta")
+    // The record is not the meter, and it is not the end of the session.
+    expect(rows[0].secondsBilled).toBeUndefined()
+    expect(rows[0].endedAt).toBeUndefined()
+  })
+
+  test("adopts a room the app never recorded", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+
+    await t.mutation(internal.sessions.recordSummary, {
+      room: "room-unrecorded",
+      clerkId: "user_owner",
+      about: "A conversation nobody wrote a row for.",
+    })
+
+    const rows = await sessionsOf(t, userId)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].about).toBe("A conversation nobody wrote a row for.")
+  })
+
+  test("leaves a field absent from the call untouched", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+
+    await t.mutation(internal.sessions.recordSummary, {
+      room,
+      clerkId: "user_owner",
+      transcript: [{ role: "learner", text: "hola" }],
+    })
+    // The Review finished generating after the transcript was sent. Sending it
+    // on its own must not erase what the first call wrote.
+    await t.mutation(internal.sessions.recordSummary, {
+      room,
+      clerkId: "user_owner",
+      review: REVIEW,
+    })
+
+    const [row] = await sessionsOf(t, userId)
+    expect(row.transcript).toHaveLength(1)
+    expect(row.review?.phrases[0].anchor).toBe("to go")
+
+    // Sending a field again replaces it wholesale — there is no merge.
+    await t.mutation(internal.sessions.recordSummary, {
+      room,
+      clerkId: "user_owner",
+      transcript: [
+        { role: "learner", text: "adios" },
+        { role: "tutor", text: "hasta luego" },
+      ],
+    })
+    const [after] = await sessionsOf(t, userId)
+    expect(after.transcript?.map((turn) => turn.text)).toEqual([
+      "adios",
+      "hasta luego",
+    ])
+  })
+
+  test("clamps a record that is merely long instead of refusing it", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+
+    await t.mutation(internal.sessions.recordSummary, {
+      room,
+      clerkId: "user_owner",
+      about: "a".repeat(500),
+      transcript: Array.from({ length: 260 }, () => ({
+        role: "learner" as const,
+        text: "b".repeat(900),
+      })),
+      review: {
+        vocab: Array.from({ length: 60 }, () => ({
+          target: "c".repeat(400),
+          anchor: "d",
+        })),
+        phrases: [],
+        tables: Array.from({ length: 20 }, () => ({
+          verb: "querer",
+          tense: "present",
+          rows: Array.from({ length: 40 }, () => ({
+            person: "yo",
+            form: "quiero",
+          })),
+        })),
+      },
+    })
+
+    const [row] = await sessionsOf(t, userId)
+    expect(row.about).toHaveLength(200)
+    expect(row.transcript).toHaveLength(200)
+    expect(row.transcript?.[0].text).toHaveLength(500)
+    expect(row.review?.vocab).toHaveLength(40)
+    expect(row.review?.vocab[0].target).toHaveLength(200)
+    expect(row.review?.tables).toHaveLength(8)
+    expect(row.review?.tables[0].rows).toHaveLength(12)
+  })
+
+  test("refuses to write into another learner's room", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+    await makeLearner(t, "user_other")
+    await t
+      .withIdentity({ subject: "user_owner" })
+      .mutation(api.sessions.start, { room, plan: PLAN })
+
+    // A leaked secret must not let one account's transcript be written into
+    // another account's history.
+    await expect(
+      t.mutation(internal.sessions.recordSummary, {
+        room,
+        clerkId: "user_other",
+        about: "not yours",
+      })
+    ).rejects.toThrow(/Not this learner's room/)
+
+    expect((await sessionsOf(t, userId))[0].about).toBeUndefined()
+  })
+
+  test("refuses an unknown learner", async () => {
+    const t = setup()
+    await expect(
+      t.mutation(internal.sessions.recordSummary, {
+        room,
+        clerkId: "user_nobody",
+        about: "hello",
+      })
+    ).rejects.toThrow(/No such user/)
+  })
+
+  test("lands either side of the final debit", async () => {
+    // Summary first, then the debit onto the row the summary created.
+    const before = setup()
+    await makeLearner(before, "user_owner")
+    await before.mutation(internal.sessions.recordSummary, {
+      room,
+      clerkId: "user_owner",
+      about: "summary arrived first",
+      review: REVIEW,
+    })
+    await before.mutation(internal.sessions.debit, {
+      room,
+      clerkId: "user_owner",
+      jobId: "job_1",
+      seconds: 90,
+      seq: 1,
+      final: true,
+    })
+
+    // Debit first, then the summary onto the row the debit created.
+    const after = setup()
+    await makeLearner(after, "user_owner")
+    await after.mutation(internal.sessions.debit, {
+      room,
+      clerkId: "user_owner",
+      jobId: "job_1",
+      seconds: 90,
+      seq: 1,
+      final: true,
+    })
+    await after.mutation(internal.sessions.recordSummary, {
+      room,
+      clerkId: "user_owner",
+      about: "summary arrived second",
+      review: REVIEW,
+    })
+
+    for (const [t, about] of [
+      [before, "summary arrived first"],
+      [after, "summary arrived second"],
+    ] as const) {
+      const row = await t.run(async (ctx) =>
+        ctx.db
+          .query("sessions")
+          .withIndex("by_room", (q) => q.eq("room", room))
+          .unique()
+      )
+      // The same record either way: one row, the meter intact, the record
+      // intact, and the row closed.
+      expect(row!.about).toBe(about)
+      expect(row!.review?.vocab).toHaveLength(1)
+      expect(row!.secondsBilled).toBe(90)
+      expect(row!.endedAt).toBeTypeOf("number")
+    }
+  })
+})
+
+describe("sessions.byRoom", () => {
+  const room = "lesson-owner-1-aaaa"
+
+  test("is the one record the summary and the History modal both read", async () => {
+    const t = setup()
+    await makeLearner(t, "user_owner")
+    const as = t.withIdentity({ subject: "user_owner" })
+    await as.mutation(api.sessions.start, { room, plan: PLAN })
+    await t.mutation(internal.sessions.recordSummary, {
+      room,
+      clerkId: "user_owner",
+      about: "Ordering at a cafe.",
+      transcript: [{ role: "learner", text: "hola" }],
+      review: REVIEW,
+    })
+    await t.mutation(internal.sessions.debit, {
+      room,
+      clerkId: "user_owner",
+      jobId: "job_1",
+      seconds: 90,
+      seq: 1,
+      final: true,
+    })
+
+    const record = await as.query(api.sessions.byRoom, { room })
+    expect(record).not.toBeNull()
+    expect(record!.about).toBe("Ordering at a cafe.")
+    expect(record!.transcript).toHaveLength(1)
+    expect(record!.review?.tables[0].verb).toBe("querer")
+    expect(record!.secondsBilled).toBe(90)
+    expect(record!.plan.topic).toBe("food")
+    expect(record!.endedAt).toBeTypeOf("number")
+  })
+
+  test("a row with nothing written yet comes back as explicit nulls", async () => {
+    const t = setup()
+    await makeLearner(t, "user_owner")
+    const as = t.withIdentity({ subject: "user_owner" })
+    await as.mutation(api.sessions.start, { room, plan: PLAN })
+
+    const record = await as.query(api.sessions.byRoom, { room })
+    expect(record).toMatchObject({
+      about: null,
+      transcript: null,
+      review: null,
+      outcome: null,
+      secondsBilled: 0,
+      endedAt: null,
+    })
+  })
+
+  test("is null for another learner's room, an unknown room, and signed out", async () => {
+    const t = setup()
+    await makeLearner(t, "user_owner")
+    await makeLearner(t, "user_other")
+    await t
+      .withIdentity({ subject: "user_owner" })
+      .mutation(api.sessions.start, { room, plan: PLAN })
+    await t.mutation(internal.sessions.recordSummary, {
+      room,
+      clerkId: "user_owner",
+      transcript: [{ role: "learner", text: "something private" }],
+    })
+
+    // Room names are guessable enough that "this exists but is not yours" is a
+    // fact worth not confirming — and the transcript is unreadable either way.
+    expect(
+      await t
+        .withIdentity({ subject: "user_other" })
+        .query(api.sessions.byRoom, { room })
+    ).toBeNull()
+    expect(
+      await t
+        .withIdentity({ subject: "user_owner" })
+        .query(api.sessions.byRoom, { room: "room-nonexistent" })
+    ).toBeNull()
+    expect(await t.query(api.sessions.byRoom, { room })).toBeNull()
+  })
+})
+
+describe("sessions.history", () => {
+  test("pages finished rows even behind a run of abandoned ones", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+    const base = Date.now() - 10_000_000
+
+    await t.run(async (ctx) => {
+      // Forty abandoned rows, started AFTER every finished one: under the old
+      // take(limit * 2)-then-filter-in-JS shape these filled the page and
+      // pushed real conversations out of the learner's own history.
+      for (let i = 0; i < 40; i++) {
+        await ctx.db.insert("sessions", {
+          userId,
+          room: `room-open-${i}`,
+          plan: PLAN,
+          startedAt: base + 5_000_000 + i,
+        })
+      }
+      for (let i = 0; i < 35; i++) {
+        await ctx.db.insert("sessions", {
+          userId,
+          room: `room-done-${i}`,
+          plan: PLAN,
+          startedAt: base + i * 1000,
+          endedAt: base + i * 1000 + 500,
+          secondsBilled: 60,
+          about: `conversation ${i}`,
+        })
+      }
+    })
+
+    const rows = await t
+      .withIdentity({ subject: "user_owner" })
+      .query(api.sessions.history, {})
+
+    expect(rows).toHaveLength(30)
+    // Newest finished first, and every one of them finished.
+    expect(rows.every((row) => row.endedAt > 0)).toBe(true)
+    expect(rows[0].about).toBe("conversation 34")
+    expect(rows[29].about).toBe("conversation 5")
+  })
+
+  test("carries the one-line about, null where nobody wrote one", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+    await t.run(async (ctx) => {
+      await ctx.db.insert("sessions", {
+        userId,
+        room: "room-old",
+        plan: PLAN,
+        startedAt: 1000,
+        endedAt: 2000,
+        secondsBilled: 30,
+      })
+      await ctx.db.insert("sessions", {
+        userId,
+        room: "room-new",
+        plan: PLAN,
+        startedAt: 3000,
+        endedAt: 4000,
+        secondsBilled: 30,
+        about: "Ordering at a cafe.",
+      })
+    })
+
+    const rows = await t
+      .withIdentity({ subject: "user_owner" })
+      .query(api.sessions.history, {})
+    expect(rows.map((row) => row.about)).toEqual(["Ordering at a cafe.", null])
+  })
+
+  test("shows one learner nothing of another's", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+    await makeLearner(t, "user_other")
+    await t.run(async (ctx) => {
+      await ctx.db.insert("sessions", {
+        userId,
+        room: "room-done",
+        plan: PLAN,
+        startedAt: 1000,
+        endedAt: 2000,
+        about: "private",
+      })
+    })
+
+    expect(
+      await t
+        .withIdentity({ subject: "user_other" })
+        .query(api.sessions.history, {})
+    ).toEqual([])
+  })
+})
+
+describe("the corrections backstop", () => {
+  const room = "lesson-owner-1-aaaa"
+
+  const CORRECTION = {
+    id: "c1",
+    original: "yo va",
+    replacement: "yo voy",
+    category: "agreement",
+    severity: "error",
+    explanation: "First person of ir is voy.",
+  }
+
+  const OUTCOME = {
+    corrections: [{ ...CORRECTION, id: "c-client" }],
+    secondsTalked: 87,
+    endedByClock: true,
+  }
+
+  async function started(t: TestConvex) {
+    await makeLearner(t, "user_owner")
+    const as = t.withIdentity({ subject: "user_owner" })
+    await as.mutation(api.sessions.start, { room, plan: PLAN })
+    return as
+  }
+
+  function rowOf(t: TestConvex) {
+    return t.run(async (ctx) =>
+      ctx.db
+        .query("sessions")
+        .withIndex("by_room", (q) => q.eq("room", room))
+        .unique()
+    )
+  }
+
+  test("the worker's outcome stands until the client overwrites it", async () => {
+    const t = setup()
+    const as = await started(t)
+
+    await t.mutation(internal.sessions.recordSummary, {
+      room,
+      clerkId: "user_owner",
+      corrections: [CORRECTION],
+    })
+    expect((await rowOf(t))!.outcome?.corrections[0].id).toBe("c1")
+
+    // The tab came back — or never left. The client knows the real
+    // `secondsTalked` and whether the clock ended it; the worker was guessing.
+    await as.mutation(api.sessions.finish, { room, outcome: OUTCOME })
+
+    const row = await rowOf(t)
+    expect(row!.outcome?.corrections[0].id).toBe("c-client")
+    expect(row!.outcome?.secondsTalked).toBe(87)
+    expect(row!.outcome?.endedByClock).toBe(true)
+    expect(row!.corrections).toBe(1)
+  })
+
+  test("a client outcome is never overwritten by the worker's", async () => {
+    const t = setup()
+    const as = await started(t)
+
+    await as.mutation(api.sessions.finish, { room, outcome: OUTCOME })
+    await t.mutation(internal.sessions.recordSummary, {
+      room,
+      clerkId: "user_owner",
+      about: "Ordering at a cafe.",
+      corrections: [CORRECTION],
+    })
+
+    const row = await rowOf(t)
+    // The record stays the client's, whole.
+    expect(row!.outcome?.corrections[0].id).toBe("c-client")
+    expect(row!.outcome?.secondsTalked).toBe(87)
+    expect(row!.outcome?.endedByClock).toBe(true)
+    // Everything else on the same call still lands.
+    expect(row!.about).toBe("Ordering at a cafe.")
+  })
+
+  test("a tab that never finished still gets a record, metered", async () => {
+    const t = setup()
+    await started(t)
+
+    // The crash: no `finish`, ever. The worker's teardown is the only writer.
+    await t.mutation(internal.sessions.debit, {
+      room,
+      clerkId: "user_owner",
+      jobId: "job_1",
+      seconds: 137,
+      seq: 1,
+      final: true,
+    })
+    await t.mutation(internal.sessions.recordSummary, {
+      room,
+      clerkId: "user_owner",
+      about: "Ordering at a cafe.",
+      corrections: [CORRECTION],
+    })
+
+    const row = await rowOf(t)
+    // `secondsTalked` is what the meter can prove, not an invention.
+    expect(row!.outcome?.secondsTalked).toBe(137)
+    expect(row!.outcome?.endedByClock).toBe(false)
+    expect(row!.corrections).toBe(1)
+
+    // And it reaches the surfaces: the History list counts it, the record reads.
+    const rows = await t
+      .withIdentity({ subject: "user_owner" })
+      .query(api.sessions.history, {})
+    expect(rows).toHaveLength(1)
+    expect(rows[0].corrections).toHaveLength(1)
+    expect(rows[0].secondsTalked).toBe(137)
+    expect(rows[0].about).toBe("Ordering at a cafe.")
   })
 })

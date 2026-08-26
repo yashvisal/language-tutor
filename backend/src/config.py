@@ -65,6 +65,21 @@ ATTR_SESSION_OVER = "tutor.session_over"
 # the last. The UI closes the learner's bubble on this — see the join rule in
 # `frontend/lib/session/reducer.ts`.
 ATTR_TURN_SEQ = "tutor.turn_seq"
+# `tutor.error` is a short code the frontend can turn into one honest sentence.
+# Empty (or absent) means nothing has gone wrong. Two codes today:
+#
+# `model`        — the realtime model / session errored unrecoverably. The
+#                  conversation cannot continue: the worker holds the clock,
+#                  debits, and ends the session through the normal
+#                  `tutor.session_over` path.
+# `tutor_silent` — the first-audio watchdog fired: the session started and no
+#                  tutor audio ever played. Nothing was billed (the clock never
+#                  started), so this is an alarm the learner can act on
+#                  (reload), not an ending.
+ATTR_ERROR = "tutor.error"
+ERROR_MODEL = "model"
+ERROR_TUTOR_SILENT = "tutor_silent"
+ERROR_NONE = ""
 
 # Value convention for boolean participant attributes.
 ATTR_TRUE = "true"
@@ -115,6 +130,12 @@ SPEED_MAX = 1.5
 # given up by now".
 ENDPOINT_MIN_S = 0.2
 ENDPOINT_MAX_S = 30.0
+
+# How long ANY hold may last before the worker gives the session up (audit
+# §3.3). The floor is "long enough that a learner reading a correction is never
+# cut off"; the ceiling keeps a typo from parking a worker slot for a day.
+HOLD_IDLE_MIN_S = 60.0
+HOLD_IDLE_MAX_S = 4 * 60 * 60.0
 
 
 def _env_reasoning(name: str, default: str) -> str:
@@ -224,6 +245,12 @@ class TutorConfig:
 
     openai_api_key: str = field(default="", repr=False)
 
+    # How long a hold — the UI's pause, or anything else that stops the meter —
+    # may last before the session ends through the normal `session_over` path
+    # (audit §3.3). Ten minutes: the zero hold already waits exactly that long,
+    # and a learner who has been paused for ten minutes has gone.
+    hold_idle_s: float = 600.0
+
     # Metering is fail-closed (audit B10): a job dispatched with a learner id
     # and no reachable ledger is refused, because the alternative is every
     # learner talking for free and nothing paging. `TUTOR_ALLOW_UNMETERED=1`
@@ -259,6 +286,9 @@ class TutorConfig:
             analyzer_enabled=_env_bool("TUTOR_ANALYZER_ENABLED", True),
             translate_model=_env("TUTOR_TRANSLATE_MODEL", "gpt-5.6-luna"),
             openai_api_key=openai_api_key,
+            hold_idle_s=_env_float(
+                "TUTOR_HOLD_IDLE_S", 600.0, low=HOLD_IDLE_MIN_S, high=HOLD_IDLE_MAX_S
+            ),
             allow_unmetered=_env_bool("TUTOR_ALLOW_UNMETERED", False),
         )
 

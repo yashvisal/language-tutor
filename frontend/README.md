@@ -76,9 +76,9 @@ named `convex` must carry the claims `aud: convex` and `email`; without them
 Convex rejects every token as having no matching auth provider.
 
 `TUTOR_DEBIT_SECRET` lives there too (`npx convex env set TUTOR_DEBIT_SECRET
-<value>`). It is the bearer token on `POST /tutor/debit` and
-`POST /tutor/balance` in `convex/http.ts` — the seam the agent worker meters
-seconds through. Deliberately _not_ a `.env.local` var and never
+<value>`). It is the bearer token on `POST /tutor/debit`,
+`POST /tutor/balance` and `POST /tutor/summary` in `convex/http.ts` — the seam
+the agent worker meters seconds and records conversations through. Deliberately _not_ a `.env.local` var and never
 `NEXT_PUBLIC_*`: anything the browser can read is a way to spend someone
 else's balance. The worker keeps its own copy in `backend/.env.local`.
 
@@ -93,12 +93,12 @@ itself (the request body is read for `session_plan` and nothing else), signs
 the learner's Clerk id and balance into the agent's dispatch metadata, and only
 then writes the `sessions` row the worker will debit against.
 
-**`convex/http.ts`** is the worker's two routes — `POST /tutor/debit` and
-`POST /tutor/balance`, both behind a constant-time bearer check on
-`TUTOR_DEBIT_SECRET`, both machine-to-machine with no CORS. **The comment block
-at the top of that file is the wire contract**: exact paths, field names, types,
-bounds and status codes, written for whoever is on the Python side. Read it
-before changing either half.
+**`convex/http.ts`** is the worker's three routes — `POST /tutor/debit`,
+`POST /tutor/balance` and `POST /tutor/summary`, all behind a constant-time
+bearer check on `TUTOR_DEBIT_SECRET`, all machine-to-machine with no CORS.
+**The comment block at the top of that file is the wire contract**: exact paths,
+field names, types, bounds and status codes, written for whoever is on the
+Python side. Read it before changing either half.
 
 In short: the worker reports the room's _cumulative_ billed seconds under the
 ref `<room>:<jobId>:<seq>`; `sessions.debit` writes only the delta against
@@ -107,6 +107,33 @@ out-of-order report and a redispatched job all safe. The teardown report also
 carries `final: true`, which closes the `sessions` row if the client never got
 to `sessions.finish` — a crashed worker or a killed tab must not leave the
 learner locked out by the one-open-session guard.
+
+## The after-session record
+
+The meter is only half of what the worker knows. `POST /tutor/summary` is the
+other half: at teardown the worker writes onto the same `sessions` row a one-
+line `about` (what the conversation was actually about, read off the transcript
+rather than off the plan), the `transcript` itself, and the `review` snapshot
+(vocab, phrases, conjugation tables — the `tutor.review` payload minus `ready`).
+
+It exists because all three used to live only in browser memory: the summary
+screen rendered them, the tab closed, and they were gone — while
+`out-of-minutes.tsx` promised the learner they were saved. Now
+`sessions.byRoom` is the one record BOTH the post-session summary and the
+History modal read, so the two cannot disagree about what happened, and closing
+the tab loses nothing.
+
+It also carries `corrections` — the analyzer's findings as the worker saw
+them, the backstop for a tab that never reached `sessions.finish`. They are
+written into `outcome` only where there is none: the client's record always
+wins, in either order, because only the browser knows the exact `secondsTalked`
+and whether the clock ended the session.
+
+The fields are optional and independently written (a field absent from
+the body is left untouched, sending one again replaces it wholesale), and the
+call is order-independent with the final debit — either may be the one that
+creates the row. Bounds and exact field names are in the `http.ts` contract
+block.
 
 **Balance is `sum(creditLedger.seconds)`** — always summed, never a mutable
 field on `users`. Every writer checks `by_ref` first, so a replayed grant or a
@@ -136,6 +163,9 @@ pnpm test     # vitest + convex-test, against the real schema in memory
 pnpm build
 ```
 
-`pnpm test` covers the money seam (`convex/sessions.test.ts`): room ownership,
-the one-open-session guard, ref idempotency, the high-water delta, and the
-reconciliation cron.
+`pnpm test` covers the money seam and the after-session record
+(`convex/sessions.test.ts`): room ownership, the one-open-session guard, ref
+idempotency, the high-water delta, the reconciliation cron, and — for
+`recordSummary` / `byRoom` / `history` — clamping, cross-learner refusal,
+order-independence with the final debit, and paging finished rows past a run of
+abandoned ones.

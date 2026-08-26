@@ -19,6 +19,11 @@ import { useState } from "react"
 import { MoveRight } from "lucide-react"
 import { useQuery } from "convex/react"
 
+import {
+  ReviewMaterialView,
+  hasReviewMaterial,
+} from "@/components/session/review-material"
+import { TranscriptRecord } from "@/components/session/transcript-record"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -51,16 +56,20 @@ export function History() {
 
   const selected = sessions?.find((entry) => entry.id === openId) ?? null
 
+  // In flight. Nothing at all, not a heading over an empty box: a learner with
+  // no history would otherwise watch "History" appear and then vanish on the
+  // very first paint of their dashboard (audit §4.19).
+  if (sessions === undefined) return null
+
   // Nothing yet: the section vanishes rather than announcing its emptiness.
-  if (sessions !== undefined && sessions.length === 0) return null
+  if (sessions.length === 0) return null
 
   return (
     <section>
       <h2 className="text-sm font-medium text-foreground">History</h2>
 
-      {/* Reserved height, so nothing below jumps when the query lands. */}
-      <div className="mt-2 min-h-24">
-        {sessions !== undefined && sessions.length > 0 && (
+      <div className="mt-2">
+        {sessions.length > 0 && (
           <ul className="divide-y divide-foreground/[0.06] dark:divide-white/10">
             {sessions.map((entry) => (
               <li key={entry.id}>
@@ -69,8 +78,12 @@ export function History() {
                   onClick={() => setOpenId(entry.id)}
                   className="flex w-full items-baseline justify-between gap-4 rounded-md px-2 py-2.5 text-left transition-colors duration-200 hover:bg-foreground/[0.03] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
                 >
+                  {/* What it was ABOUT, which the worker writes from the
+                      transcript at teardown — the plan's topic is what the
+                      learner declared beforehand, and only the fallback for a
+                      row that ended before `about` existed. */}
                   <span className="min-w-0 flex-1 truncate text-sm text-foreground">
-                    {titleFor(entry.plan)}
+                    {entry.about?.trim() || titleFor(entry.plan)}
                   </span>
                   <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
                     {formatDate(entry.startedAt)}
@@ -108,6 +121,21 @@ function SessionDialog({
 }) {
   const rows = entry === null ? [] : planRows(entry.plan)
 
+  /**
+   * The rest of the record — the Review material and the transcript — which
+   * `sessions.history` deliberately does not carry: it is a list, and neither
+   * belongs in a payload rendered thirty rows at a time. Fetched only for the
+   * row that was actually opened, and rendered with the same two components
+   * the post-session summary uses, so one conversation has one appearance.
+   */
+  const room = entry === null ? null : roomOf(entry)
+  const record = useQuery(
+    api.sessions.byRoom,
+    room === null ? "skip" : { room }
+  )
+  const review = record?.review ?? null
+  const transcript = record?.transcript ?? null
+
   return (
     <Dialog open={entry !== null} onOpenChange={onOpenChange}>
       <DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-md">
@@ -115,7 +143,7 @@ function SessionDialog({
           <>
             <DialogHeader className="px-6 pt-6 pb-4 text-left">
               <DialogTitle className="text-lg font-semibold tracking-tight">
-                {titleFor(entry.plan)}
+                {entry.about?.trim() || titleFor(entry.plan)}
               </DialogTitle>
               <DialogDescription className="tabular-nums">
                 {formatDate(entry.startedAt)} ·{" "}
@@ -200,6 +228,25 @@ function SessionDialog({
                   </ul>
                 )}
               </div>
+
+              {hasReviewMaterial(review) && (
+                <div>
+                  <p className="text-sm font-medium text-foreground">
+                    To review
+                  </p>
+                  <ReviewMaterialView
+                    material={review}
+                    focusTenses={entry.plan.tenses}
+                    className="mt-3"
+                  />
+                </div>
+              )}
+
+              {transcript && transcript.length > 0 && (
+                <div className="pb-2">
+                  <TranscriptRecord turns={transcript} />
+                </div>
+              )}
             </div>
 
             <div className="flex items-center justify-end gap-4 border-t border-foreground/[0.06] px-6 py-4 dark:border-white/10">
@@ -210,6 +257,21 @@ function SessionDialog({
       </DialogContent>
     </Dialog>
   )
+}
+
+/**
+ * The room a stored conversation happened in — the key `sessions.byRoom` reads.
+ *
+ * Read defensively because `sessions.history` does not return `room` yet (see
+ * the phase-7 step-2 hand-off note): the modal degrades to what the list row
+ * already carries — the plan, the meter, the corrections — and gains the
+ * Review and the transcript the moment the query includes it. A hard
+ * dependency here would have made the whole History page fail to build against
+ * a backend half of a step behind.
+ */
+function roomOf(entry: HistoryEntry): string | null {
+  const value = (entry as HistoryEntry & { room?: unknown }).room
+  return typeof value === "string" && value.length > 0 ? value : null
 }
 
 /**

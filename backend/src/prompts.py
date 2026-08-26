@@ -320,6 +320,40 @@ elsewhere); no notes, no parentheses, no examples of usage — just the pair.\
 """
 
 
+# --- the after-session record: what this conversation was about ----------
+#
+# One line, in the ANCHOR language, from the transcript and nothing else. It is
+# what the learner sees on the summary screen and in History months later, so
+# it names what was actually said — not what the plan said they would say.
+
+ABOUT_INSTRUCTIONS = """\
+You are given the transcript of one {target} practice conversation between a \
+learner and their tutor.
+
+Write ONE line, in {anchor}, saying what the conversation was actually about. \
+At most 200 characters.
+
+Rules:
+- Describe what they TALKED ABOUT, concretely — the subjects, the situation, \
+the thing they were trying to say. Name the specifics that came up.
+- Go by the transcript, not by what the session was set up to be. If they \
+drifted, the line follows them.
+- No praise, no assessment of their level, no advice, no mention of \
+corrections or of the tutor's teaching.
+- Plain sentence or fragment. No quotes, no preamble, no "This conversation \
+was about", no markdown.
+- If the transcript is too short to say anything, answer with the single word \
+NONE.\
+"""
+
+
+def about_instructions(cfg: TutorConfig) -> str:
+    """The one-line "what this was about" for the after-session record."""
+    return ABOUT_INSTRUCTIONS.format(
+        target=cfg.target_language_name, anchor=cfg.anchor_language_name
+    )
+
+
 def plan_facts(plan: SessionPlan) -> list[str]:
     """The plan as plain facts, in the order a tutor would care about them."""
     lines: list[str] = []

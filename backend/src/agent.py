@@ -29,6 +29,9 @@ from livekit.agents import (
     Agent,
     AgentServer,
     AgentSession,
+    CloseEvent,
+    CloseReason,
+    ErrorEvent,
     JobContext,
     StopResponse,
     TurnHandlingOptions,
@@ -49,6 +52,7 @@ from config import (
     ANALYZER_ON,
     ATTR_ANALYZER,
     ATTR_ELAPSED_S,
+    ATTR_ERROR,
     ATTR_FALSE,
     ATTR_OUT_OF_MINUTES,
     ATTR_PAUSED,
@@ -56,6 +60,9 @@ from config import (
     ATTR_SESSION_OVER,
     ATTR_TRUE,
     ATTR_TURN_SEQ,
+    ERROR_MODEL,
+    ERROR_NONE,
+    ERROR_TUTOR_SILENT,
     RPC_PAUSE,
     RPC_RESUME,
     TutorConfig,
@@ -71,6 +78,7 @@ from prompts import (
 )
 from review import ReviewMaterial, register_review_rpc
 from state import SessionFacts, SessionState
+from summary import SUMMARY_BUDGET_S, report_session_summary
 from translate import SpanTranslator, register_translate_rpc
 from usage import UsageTracker
 
@@ -293,6 +301,24 @@ async def tutor(ctx: JobContext) -> None:
             except Exception:
                 logger.warning("billing report failed", exc_info=True)
             try:
+                # The after-session record (phase 7 step 2): what this was
+                # about, the transcript, the Review material and the
+                # corrections — the things that used to die with the tab. Order-independent with the
+                # debit above; bounded so a hung model cannot hold a shutdown.
+                await asyncio.wait_for(
+                    report_session_summary(
+                        cfg,
+                        history=session.history,
+                        billing=billing,
+                        review=review,
+                        facts=facts,
+                        usage=usage,
+                    ),
+                    timeout=SUMMARY_BUDGET_S,
+                )
+            except Exception:
+                logger.warning("session summary failed", exc_info=True)
+            try:
                 # What it cost us, for pricing decisions: tokens, talk share,
                 # estimated dollars. Logged, never billed.
                 usage.log_summary(active_s=clock.seconds_billed, room=ctx.room.name)
@@ -334,10 +360,13 @@ async def tutor(ctx: JobContext) -> None:
     # One hold, two sources: the learner's pause RPC and the clock at zero
     # balance. Both go through this object so the two feel identical on screen.
     hold = SessionHold(ctx, session, state, analyzer)
-    clock = _build_clock(ctx, session, state, budget_s, hold, billing)
+    clock = _build_clock(ctx, cfg, session, state, budget_s, hold, billing)
 
     # The learner leaving the room is the second thing that holds the meter.
     _watch_learner_presence(ctx, state, clock, billing)
+    # The model dying is the third, and the only one that ends the session
+    # rather than waiting for it to come back (audit §4.2).
+    _watch_session_errors(ctx, session, state, clock, billing)
 
     await _register_pause_rpc(ctx, session, state, facts, cfg, clock, hold, billing)
     await register_translate_rpc(ctx, session, translator)
@@ -360,6 +389,9 @@ async def tutor(ctx: JobContext) -> None:
         {
             ATTR_ANALYZER: ANALYZER_ON if cfg.analyzer_enabled else ANALYZER_OFF,
             ATTR_SESSION_OVER: ATTR_FALSE,
+            # Explicitly empty: "nothing has gone wrong", published up front so
+            # a client that joins late never has to guess.
+            ATTR_ERROR: ERROR_NONE,
         }
     )
 
@@ -369,7 +401,7 @@ async def tutor(ctx: JobContext) -> None:
     # here, first, so the learner's first metered second is a second of
     # tutoring.
     session.generate_reply(instructions=greeting_instructions(cfg, meta.plan))
-    _meter_from_first_tutor_audio(session, clock)
+    _meter_from_first_tutor_audio(ctx, session, clock)
 
 
 async def _open_ledger(
@@ -438,7 +470,9 @@ async def _open_ledger(
     return None
 
 
-def _meter_from_first_tutor_audio(session: AgentSession, clock: SessionClock) -> None:
+def _meter_from_first_tutor_audio(
+    ctx: JobContext, session: AgentSession, clock: SessionClock
+) -> None:
     """Start the clock on the first frame of tutor audio that actually plays.
 
     `agent_state_changed` → `"speaking"` is that frame: the framework flips the
@@ -449,7 +483,10 @@ def _meter_from_first_tutor_audio(session: AgentSession, clock: SessionClock) ->
 
     The watchdog does not end anything. It cannot: nothing has been billed (the
     clock never started), so there is no money question — only an operational
-    one, which is invisible unless somebody says it out loud.
+    one. It does now SAY so, to the learner as well as to the logs: a stage
+    that has been silent for twenty seconds is a failure the learner can act on
+    (reload), and until `tutor.error` existed they had no way to know that
+    (audit §4.2).
     """
 
     def _on_agent_state(ev: object) -> None:
@@ -468,8 +505,99 @@ def _meter_from_first_tutor_audio(session: AgentSession, clock: SessionClock) ->
             "metered and the learner is looking at a silent stage",
             FIRST_AUDIO_TIMEOUT_S,
         )
+        await _publish_error(ctx.room, ERROR_TUTOR_SILENT)
 
     _spawn(_watchdog(), "tutor-first-audio-watchdog")
+
+
+async def _publish_error(room: rtc.Room, code: str) -> None:
+    """Say what went wrong, in one code the frontend renders as one sentence.
+
+    Guarded like every other publish: an error the learner cannot be told about
+    is still an error, and the paths that call this are all on their way out.
+    """
+    try:
+        await room.local_participant.set_attributes({ATTR_ERROR: code})
+        logger.info("published session error", extra={"code": code})
+    except Exception:
+        logger.warning("failed to publish the session error %r", code, exc_info=True)
+
+
+def _watch_session_errors(
+    ctx: JobContext,
+    session: AgentSession,
+    state: SessionState,
+    clock: SessionClock,
+    billing: BillingClient,
+) -> None:
+    """The realtime pipeline dying, told to the learner and to the ledger.
+
+    Before this, nothing subscribed to session or model errors (audit §4.2): if
+    the OpenAI socket died the learner watched a live stage go quiet and the
+    meter kept running against a conversation that no longer existed.
+
+    Two subscriptions, one outcome, fired at most once:
+
+    - `error` with `recoverable=False` on the LLM / realtime model. The
+      realtime model is the conversation; when it is unrecoverably gone there
+      is nothing left to wait for, and the framework is closing the session
+      under us anyway.
+    - `close` with `reason=ERROR`, which is the backstop for everything else
+      (an STT or TTS failure only becomes unrecoverable after the framework's
+      own retry budget — `max_unrecoverable_errors` — and this is where that
+      verdict arrives).
+
+    Recoverable errors are logged at warning and do nothing else: the plugin
+    retries, the conversation survives, and a `tutor.error` for a hiccup would
+    train the learner to ignore the one that matters.
+
+    The order out is deliberate: hold the clock (the seconds between a dead
+    socket and a landed shutdown are not tutoring), publish the code, debit
+    while the worker is certainly alive, then end through the ordinary
+    `session_over` path so the client's `finish` runs and the learner lands on
+    a summary rather than a frozen stage. The teardown's final debit and the
+    summary post follow from `ctx.shutdown`.
+    """
+    failed = False
+
+    async def _fail() -> None:
+        state.model_failed = True
+        try:
+            await clock.notify_hold_changed()
+        except Exception:
+            logger.warning("clock republish on model failure failed", exc_info=True)
+        await _publish_error(ctx.room, ERROR_MODEL)
+        try:
+            await billing.debit(clock.seconds_billed)
+        except Exception:
+            logger.warning("debit on model failure failed", exc_info=True)
+        await _end_session(ctx, session, reason="realtime model error")
+
+    def _fire(why: str) -> None:
+        nonlocal failed
+        if failed:
+            return
+        failed = True
+        logger.error("ending the session: %s", why, extra={"seconds_billed": clock.seconds_billed})
+        _spawn(_fail(), "tutor-model-error")
+
+    def _on_error(ev: ErrorEvent) -> None:
+        error = getattr(ev, "error", None)
+        kind = getattr(error, "type", "unknown")
+        if getattr(error, "recoverable", False):
+            logger.warning("recoverable %s; the plugin will retry", kind)
+            return
+        logger.error("unrecoverable %s", kind)
+        if kind in ("realtime_model_error", "llm_error"):
+            _fire(f"unrecoverable {kind}")
+
+    def _on_close(ev: CloseEvent) -> None:
+        if getattr(ev, "reason", None) != CloseReason.ERROR:
+            return
+        _fire("the session closed on an unrecoverable error")
+
+    session.on("error", _on_error)
+    session.on("close", _on_close)
 
 
 def _is_learner(participant: rtc.Participant) -> bool:
@@ -563,6 +691,7 @@ async def _republish_hold(clock: SessionClock) -> None:
 
 def _build_clock(
     ctx: JobContext,
+    cfg: TutorConfig,
     session: AgentSession,
     state: SessionState,
     budget_s: int,
@@ -633,16 +762,25 @@ def _build_clock(
         # Every hold source, not just the UI's: a learner whose connection
         # dropped is not spending minutes either (audit B4).
         is_paused=lambda: state.clock_held,
+        # No hold lasts forever (audit §3.3): a learner who paused and left
+        # ends the same way an abandoned zero hold does.
+        hold_idle_timeout_s=cfg.hold_idle_s,
     )
     return clock
 
 
-async def _end_session(ctx: JobContext, session: AgentSession) -> None:
+async def _end_session(
+    ctx: JobContext,
+    session: AgentSession,
+    *,
+    reason: str = "out of minutes: hold abandoned",
+) -> None:
     """End the session: cut whatever is in flight, mark it over, disconnect.
 
     There is no spoken goodbye any more (vision doc 2026-08-24: no scripted
-    goodbye). This runs only when a session held at zero has been abandoned for
-    `IDLE_TIMEOUT_S` — nobody is there to hear a farewell.
+    goodbye). Every caller is a session nobody is listening to any more: a zero
+    hold abandoned for `IDLE_TIMEOUT_S`, an ordinary hold abandoned for
+    `TUTOR_HOLD_IDLE_S`, or a realtime model that died under the conversation.
 
     Every step is guarded: the disconnect at the end must happen even if the
     steps before it fail.
@@ -664,7 +802,7 @@ async def _end_session(ctx: JobContext, session: AgentSession) -> None:
 
     # Leaves the room to the learner (the summary surface is still theirs) and
     # runs the shutdown callbacks, which is where the seconds are reported.
-    ctx.shutdown(reason="out of minutes: hold abandoned")
+    ctx.shutdown(reason=reason)
 
 
 def _capture_pause_context(session: AgentSession, state: SessionState) -> None:

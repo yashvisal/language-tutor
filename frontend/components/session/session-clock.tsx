@@ -23,16 +23,11 @@
 
 import { useEffect, useState } from "react"
 
+import { formatClock } from "@/lib/billing"
 import { cn } from "@/lib/utils"
 
 /** Where the countdown starts. Matches the worker's nudge, by design. */
 const REMAINING_THRESHOLD_S = 30
-
-/** `m:ss`. Minutes are unpadded: this is a stopwatch, not a timestamp. */
-function clock(seconds: number): string {
-  const whole = Math.max(0, Math.floor(seconds))
-  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`
-}
 
 export function SessionClock({
   elapsedSeconds,
@@ -107,8 +102,8 @@ function ClockFace({
       >
         <span className="tabular-nums">
           {ending && remaining !== null
-            ? `${clock(remaining)} left`
-            : clock(elapsed)}
+            ? `${formatClock(remaining)} left`
+            : formatClock(elapsed)}
         </span>
         {held && <span>paused · free</span>}
       </span>

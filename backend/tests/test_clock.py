@@ -86,6 +86,7 @@ async def build(
     on_debit: bool = False,
     debit_interval_s: float = 60.0,
     idle_timeout_s: float = 600.0,
+    hold_idle_timeout_s: float = 600.0,
 ) -> Harness:
     rec = Recorder()
     clock_time = FakeTime()
@@ -111,6 +112,7 @@ async def build(
         is_paused=lambda: harness.paused,
         debit_interval_s=debit_interval_s,
         idle_timeout_s=idle_timeout_s,
+        hold_idle_timeout_s=hold_idle_timeout_s,
         now=clock_time,
     )
     harness = Harness(clock, clock_time, rec)
@@ -314,6 +316,65 @@ async def test_a_failing_debit_never_stops_the_clock() -> None:
         await clock.tick()
     assert clock.seconds_billed == 130
     assert not clock.ended
+
+
+# --- the ordinary hold's idle timeout (audit 3.3) ------------------------
+
+
+async def test_an_abandoned_ordinary_hold_ends_the_session() -> None:
+    """A learner who paused and walked away does not hold a worker forever."""
+    h = await build(600, hold_idle_timeout_s=120.0)
+    await h.advance(10)
+    h.paused = True
+    await h.advance(119)
+    assert h.rec.idle_ends == 0
+    assert not h.clock.ended
+
+    await h.advance(5)
+    assert h.rec.idle_ends == 1
+    assert h.clock.ended
+    # The hold was free: only the ten seconds of conversation are billed.
+    assert h.clock.seconds_billed == 10
+
+    # And it ends exactly once, however long the loop keeps running.
+    await h.advance(600)
+    assert h.rec.idle_ends == 1
+
+
+async def test_a_hold_shorter_than_the_timeout_is_just_a_hold() -> None:
+    h = await build(600, hold_idle_timeout_s=120.0)
+    h.paused = True
+    await h.advance(100)
+    h.paused = False
+    await h.advance(30)
+    assert h.rec.idle_ends == 0
+    assert not h.clock.ended
+    assert h.clock.seconds_billed == 30
+
+
+async def test_the_hold_timer_resets_on_every_resume() -> None:
+    """Three 100s holds are not one 300s hold."""
+    h = await build(600, hold_idle_timeout_s=120.0)
+    for _ in range(3):
+        h.paused = True
+        await h.advance(100)
+        h.paused = False
+        await h.advance(2)
+    assert h.rec.idle_ends == 0
+    assert not h.clock.ended
+
+
+async def test_the_zero_hold_keeps_its_own_timeout() -> None:
+    """Out of minutes is the OTHER timeout; the two must not double-fire."""
+    h = await build(30, idle_timeout_s=300.0, hold_idle_timeout_s=120.0)
+    await h.advance(31)
+    assert h.rec.zeros == 1
+    assert h.clock.out_of_minutes
+    # Past the ordinary hold's timeout, still inside the zero hold's.
+    await h.advance(200)
+    assert h.rec.idle_ends == 0
+    await h.advance(120)
+    assert h.rec.idle_ends == 1
 
 
 def main() -> int:

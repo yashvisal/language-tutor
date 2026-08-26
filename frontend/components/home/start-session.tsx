@@ -17,6 +17,7 @@
  */
 
 import { useState, useSyncExternalStore } from "react"
+import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useQuery } from "convex/react"
 
@@ -62,6 +63,15 @@ export function StartSession() {
   // stored plan carried — the profile is the answer they gave on purpose.
   const plan = edited ?? { ...stored, level: viewer?.level ?? stored.level }
 
+  /**
+   * Three states, and the middle one used to be invisible. `undefined` is the
+   * query in flight; `null` is a signed-in Clerk session with no `users` row
+   * behind it — a webhook that never fired, a half-finished sign-up — and it
+   * left Start permanently disabled with nothing on screen explaining why
+   * (audit §4.13). `/welcome` is where a row gets made, so that is the offer.
+   */
+  const loading = viewer === undefined
+  const missing = viewer === null
   const seconds = viewer?.seconds
   const known = seconds !== undefined
   const empty = known && seconds <= 0
@@ -88,11 +98,24 @@ export function StartSession() {
             {known && formatClock(seconds)}
           </p>
           <p className="mt-1.5 text-sm text-muted-foreground">
-            {empty
-              ? "Talking uses time. Studying never does."
-              : low
-                ? "Enough for a short conversation."
-                : "Counts only while you talk."}
+            {missing ? (
+              <>
+                We haven&rsquo;t finished setting up your account.{" "}
+                <Link
+                  href="/welcome"
+                  className="text-foreground underline decoration-foreground/30 underline-offset-4 transition-colors duration-200 hover:decoration-foreground"
+                >
+                  Finish setup
+                </Link>
+                .
+              </>
+            ) : empty ? (
+              "Talking uses time. Studying never does."
+            ) : low ? (
+              "Enough for a short conversation."
+            ) : (
+              "Counts only while you talk."
+            )}
           </p>
         </div>
 
@@ -112,7 +135,9 @@ export function StartSession() {
         ) : (
           <Button
             size="lg"
-            disabled={!known}
+            // Disabled while the balance is unknown — which is the query in
+            // flight, and no longer "forever, because there is no row".
+            disabled={loading || missing}
             onClick={() => setOpen(true)}
             className="shrink-0 transition-[transform,box-shadow,background-color] duration-200 hover:shadow-md"
           >

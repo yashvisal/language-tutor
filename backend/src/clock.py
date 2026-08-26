@@ -23,6 +23,14 @@ Four deliberate semantics:
   the 30 s mark passes there is nobody to hear it, so the brief is deferred and
   delivered on resume instead — the same seam the conversational resume uses.
 
+And one bound on the other side of the hold, added 2026-08-25 (audit §3.3):
+**no hold lasts forever.** A hold is free, which is exactly why an abandoned
+one is expensive to us — a learner who paused and closed the laptop held the
+room, the worker slot and the realtime socket indefinitely, because the idle
+timeout was only ever checked at zero balance. Any hold older than
+`hold_idle_timeout_s` (`TUTOR_HOLD_IDLE_S`) now ends the session through the
+same `on_idle_end` path the abandoned zero hold uses.
+
 One more, added 2026-08-25 (audit §4.1): **the ledger is told every minute, not
 only at the end.** Debits used to fire at zero and in the shutdown callback, so
 a SIGKILL at minute 45 billed nothing. The clock now calls `on_debit` every
@@ -58,6 +66,14 @@ PUBLISH_INTERVAL_S = 5.0
 # How long a session held at zero waits before the worker gives up on it. The
 # learner has gone to buy minutes, or has gone.
 IDLE_TIMEOUT_S = 600.0
+
+# The same question for an ORDINARY hold (audit §3.3): a learner who paused to
+# read a correction and then closed the laptop lid used to hold the room, the
+# worker slot and the realtime socket forever, because the idle timeout above
+# was only ever checked at zero balance. Holds are free, so this costs the
+# learner nothing and costs us a slot — which is exactly why it is bounded.
+# Overridden per-session from `TUTOR_HOLD_IDLE_S`.
+HOLD_IDLE_TIMEOUT_S = 600.0
 
 # Loop granularity. Fine enough that the nudge and zero land within a second of
 # their mark, coarse enough to be free.
@@ -95,6 +111,7 @@ class SessionClock:
         nudge_s: float = NUDGE_S,
         publish_interval_s: float = PUBLISH_INTERVAL_S,
         idle_timeout_s: float = IDLE_TIMEOUT_S,
+        hold_idle_timeout_s: float = HOLD_IDLE_TIMEOUT_S,
         tick_s: float = TICK_S,
         debit_interval_s: float = DEBIT_INTERVAL_S,
         now: Callable[[], float] = time.monotonic,
@@ -109,6 +126,7 @@ class SessionClock:
         self._nudge_s = nudge_s
         self._publish_interval_s = publish_interval_s
         self._idle_timeout_s = idle_timeout_s
+        self._hold_idle_timeout_s = hold_idle_timeout_s
         self._tick_s = tick_s
         self._debit_interval_s = debit_interval_s
         self._now = now
@@ -127,6 +145,10 @@ class SessionClock:
         self._nudge_held = False
         self._out_of_minutes = False
         self._held_at: float | None = None
+        # When the CURRENT ordinary hold began, or None while the session is
+        # running. Distinct from `_held_at`, which is the zero hold and is
+        # about a balance, not about a learner who walked away.
+        self._hold_since: float | None = None
         self._ended = False
         self._task: asyncio.Task[None] | None = None
 
@@ -240,9 +262,17 @@ class SessionClock:
         single `sleep`.
         """
         now = self._now()
-        if self._last_tick_at is not None and not self._is_paused():
+        held = self._is_paused()
+        if self._last_tick_at is not None and not held:
             self._active_s += now - self._last_tick_at
         self._last_tick_at = now
+        # A hold's age is measured in WALL time — the whole point is that the
+        # meter is not running — and it resets the moment the session resumes.
+        if held:
+            if self._hold_since is None:
+                self._hold_since = now
+        else:
+            self._hold_since = None
         await self._evaluate(now)
 
     async def _evaluate(self, now: float) -> None:
@@ -251,6 +281,10 @@ class SessionClock:
             # the learner is coming back.
             if self._held_at is not None and now - self._held_at >= self._idle_timeout_s:
                 await self._idle_end()
+            return
+
+        if self._hold_since is not None and now - self._hold_since >= self._hold_idle_timeout_s:
+            await self._hold_idle_end()
             return
 
         remaining = self.remaining_s
@@ -323,12 +357,31 @@ class SessionClock:
         await self.publish_now()
 
     async def _idle_end(self) -> None:
+        await self._end("out of minutes: idle timeout, ending the session")
+
+    async def _hold_idle_end(self) -> None:
+        """An ordinary hold that outlasted `hold_idle_timeout_s` (audit §3.3).
+
+        The same ending as the abandoned zero hold, deliberately: the client's
+        `finish` runs off `tutor.session_over` and the teardown debits the
+        seconds actually used, so a learner who paused and left is billed for
+        the conversation and not for the pause.
+        """
+        held_s = 0.0
+        if self._hold_since is not None:
+            held_s = self._now() - self._hold_since
+        await self._end(
+            "hold idle timeout, ending the session",
+            extra={"held_s": int(held_s), "hold_idle_timeout_s": int(self._hold_idle_timeout_s)},
+        )
+
+    async def _end(self, message: str, *, extra: dict | None = None) -> None:
         if self._ended:
             return
         self._ended = True
         logger.info(
-            "out of minutes: idle timeout, ending the session",
-            extra={"seconds_billed": self.seconds_billed},
+            message,
+            extra={"seconds_billed": self.seconds_billed, **(extra or {})},
         )
         try:
             await self._on_idle_end()

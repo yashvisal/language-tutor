@@ -33,6 +33,7 @@ import { ConversationStage } from "@/components/session/conversation-stage"
 import { OutOfMinutesScreen } from "@/components/session/out-of-minutes"
 import { SessionPreflight } from "@/components/session/session-preflight"
 import { SessionSummary } from "@/components/session/session-summary"
+import { TutorUnavailableScreen } from "@/components/session/tutor-unavailable"
 import { STAGE_AURA_CLASS, TutorAura } from "@/components/session/tutor-aura"
 import type { SessionPlan } from "@/lib/session/contract"
 import { useLiveSession } from "@/lib/session/live-producer"
@@ -97,6 +98,19 @@ function Session() {
       <SessionSummary
         outcome={live.outcome}
         onStartAnother={live.clearOutcome}
+      />
+    )
+  }
+
+  // The room came up without a tutor in it (audit B6). Above the pre-flight
+  // and above the connecting screen, because a failed start that fell back to
+  // either would look exactly like the session never being attempted. Try
+  // again dials the same plan — `connect` clears the failure itself.
+  if (live.tutorFailed) {
+    return (
+      <TutorUnavailableScreen
+        reason={live.tutorFailed}
+        onRetry={() => live.connect(live.plan ?? plan)}
       />
     )
   }

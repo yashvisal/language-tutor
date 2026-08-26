@@ -18,12 +18,25 @@ Run either way:
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from billing import BALANCE_PATH, DEBIT_PATH, BillingClient  # noqa: E402
+from billing import (  # noqa: E402
+    BALANCE_PATH,
+    DEBIT_PATH,
+    MAX_ABOUT_CHARS,
+    MAX_BODY_BYTES,
+    MAX_CORRECTIONS,
+    MAX_REVIEW_TABLES,
+    MAX_REVIEW_VOCAB,
+    MAX_TRANSCRIPT_TURNS,
+    MAX_TURN_CHARS,
+    SUMMARY_PATH,
+    BillingClient,
+)
 from clock import report_seconds_billed  # noqa: E402
 
 SITE = "https://example.convex.site"
@@ -265,6 +278,218 @@ async def test_debits_are_serialized() -> None:
     client = make(SlowLedger())
     await asyncio.gather(client.debit(10), client.debit(20))
     assert order == ["enter:1", "exit:1", "enter:2", "exit:2"]
+
+
+# --- the after-session record (phase 7 step 2) ---------------------------
+
+
+def _summaries(ledger: FakeLedger) -> list[dict]:
+    return [payload for path, payload in ledger.calls if path == SUMMARY_PATH]
+
+
+REVIEW = {
+    "vocab": [{"target": "el café", "anchor": "the coffee"}],
+    "phrases": [{"target": "¿me cobras?", "anchor": "can I pay?"}],
+    "tables": [{"verb": "ser", "tense": "Present", "rows": [{"person": "yo", "form": "soy"}]}],
+}
+
+CORRECTION = {
+    "id": "c_1",
+    "original": "yo es",
+    "replacement": "yo soy",
+    "category": "agreement",
+    "severity": "error",
+    "explanation": "first person of ser",
+}
+
+
+async def test_summary_carries_the_room_the_learner_and_the_job() -> None:
+    ledger = FakeLedger([{"ok": True}])
+    client = make(ledger)
+    turns = [{"role": "learner", "text": "hola"}, {"role": "tutor", "text": "buenas"}]
+    assert await client.summary(
+        about="ordering coffee",
+        transcript=turns,
+        review=REVIEW,
+        corrections=[CORRECTION],
+    )
+    (body,) = _summaries(ledger)
+    assert body["room"] == "room_xyz"
+    assert body["userId"] == "user_abc"
+    assert body["jobId"] == "JOB_1"
+    assert body["about"] == "ordering coffee"
+    assert body["transcript"] == turns
+    assert body["review"] == REVIEW
+    assert body["corrections"] == [CORRECTION]
+
+
+async def test_summary_omits_what_it_does_not_have() -> None:
+    ledger = FakeLedger([{"ok": True}])
+    client = make(ledger)
+    assert await client.summary(transcript=[{"role": "tutor", "text": "hola"}])
+    (body,) = _summaries(ledger)
+    assert "about" not in body
+    assert "review" not in body
+    assert "corrections" not in body
+
+
+async def test_a_summary_with_nothing_in_it_is_not_sent() -> None:
+    ledger = FakeLedger()
+    client = make(ledger)
+    assert await client.summary() is False
+    assert await client.summary(about="", transcript=[], review=None, corrections=[]) is False
+    # A review with three empty lists is not a review.
+    assert await client.summary(review={"vocab": [], "phrases": [], "tables": []}) is False
+    assert ledger.calls == []
+
+
+async def test_no_learner_no_summary() -> None:
+    ledger = FakeLedger()
+    client = make(ledger, user_id=None)
+    assert await client.summary(about="anything") is False
+    assert ledger.calls == []
+
+
+async def test_summary_bounds_every_string_it_sends() -> None:
+    ledger = FakeLedger([{"ok": True}])
+    client = make(ledger)
+    turns = [{"role": "learner", "text": "x" * (MAX_TURN_CHARS + 200)}] * (
+        MAX_TRANSCRIPT_TURNS + 40
+    )
+    await client.summary(about="  a\n\n  long   " + "y" * 400, transcript=turns)
+    (body,) = _summaries(ledger)
+    assert len(body["about"]) == MAX_ABOUT_CHARS
+    assert "\n" not in body["about"]
+    assert len(body["transcript"]) == MAX_TRANSCRIPT_TURNS
+    assert all(len(t["text"]) == MAX_TURN_CHARS for t in body["transcript"])
+
+
+async def test_summary_keeps_the_most_recent_turns() -> None:
+    ledger = FakeLedger([{"ok": True}])
+    client = make(ledger)
+    turns = [{"role": "learner", "text": f"turn {i}"} for i in range(MAX_TRANSCRIPT_TURNS + 5)]
+    await client.summary(transcript=turns)
+    (body,) = _summaries(ledger)
+    assert body["transcript"][0]["text"] == "turn 5"
+    assert body["transcript"][-1]["text"] == f"turn {MAX_TRANSCRIPT_TURNS + 4}"
+
+
+async def test_summary_drops_unrenderable_turns() -> None:
+    ledger = FakeLedger([{"ok": True}])
+    client = make(ledger)
+    await client.summary(
+        transcript=[
+            {"role": "learner", "text": "kept"},
+            {"role": "narrator", "text": "not a speaker"},
+            {"role": "tutor", "text": "   "},
+            {"role": "tutor"},
+            "not a turn",
+        ]
+    )
+    (body,) = _summaries(ledger)
+    assert body["transcript"] == [{"role": "learner", "text": "kept"}]
+
+
+async def test_an_oversized_body_sheds_the_review_then_the_transcript() -> None:
+    ledger = FakeLedger([{"ok": True}])
+    client = make(ledger)
+    turns = [{"role": "learner", "text": "x" * MAX_TURN_CHARS}] * MAX_TRANSCRIPT_TURNS
+    huge = {"tables": ["y" * 1000] * 300}
+    await client.summary(about="about the thing", transcript=turns, review=huge)
+    (body,) = _summaries(ledger)
+    assert "review" not in body
+    assert body["about"] == "about the thing"
+    assert len(json.dumps(body).encode("utf-8")) <= MAX_BODY_BYTES
+
+
+async def test_a_refused_summary_is_a_returned_false_never_a_raise() -> None:
+    ledger = FakeLedger([None, {"ok": False}, {"balanceSeconds": 3}])
+    client = make(ledger)
+    assert await client.summary(about="a") is False
+    assert await client.summary(about="a") is False
+    assert await client.summary(about="a") is False
+
+
+async def test_the_summary_serializes_with_the_debits() -> None:
+    """Same lock: a summary must never land between a debit and its sequence."""
+    order: list[str] = []
+
+    class SlowLedger(FakeLedger):
+        async def __call__(self, path: str, payload: dict) -> object | None:
+            order.append(f"enter:{path}")
+            await asyncio.sleep(0)
+            order.append(f"exit:{path}")
+            return {"ok": True} if path == SUMMARY_PATH else {"balanceSeconds": 1}
+
+    client = make(SlowLedger())
+    await asyncio.gather(client.debit(10, final=True), client.summary(about="a"))
+    assert order == [
+        f"enter:{DEBIT_PATH}",
+        f"exit:{DEBIT_PATH}",
+        f"enter:{SUMMARY_PATH}",
+        f"exit:{SUMMARY_PATH}",
+    ]
+
+
+async def test_the_review_snapshot_is_bounded_to_what_the_ledger_takes() -> None:
+    """The engine can build twelve tables; the ledger takes eight (`SUMMARY_LIMITS`)."""
+    ledger = FakeLedger([{"ok": True}])
+    client = make(ledger)
+    table = {
+        "verb": "ser",
+        "tense": "Present",
+        "rows": [{"person": f"p{i}", "form": f"f{i}"} for i in range(20)],
+    }
+    await client.summary(
+        review={
+            "vocab": [{"target": f"t{i}", "anchor": f"a{i}"} for i in range(MAX_REVIEW_VOCAB + 10)],
+            "phrases": [],
+            "tables": [table] * 12,
+        }
+    )
+    (body,) = _summaries(ledger)
+    assert len(body["review"]["vocab"]) == MAX_REVIEW_VOCAB
+    assert len(body["review"]["tables"]) == MAX_REVIEW_TABLES
+    assert len(body["review"]["tables"][0]["rows"]) == 12
+    # All three keys travel, always: Convex requires them when review is sent.
+    assert body["review"]["phrases"] == []
+
+
+async def test_a_review_of_the_wrong_shape_is_simply_not_sent() -> None:
+    ledger = FakeLedger([{"ok": True}])
+    client = make(ledger)
+    await client.summary(about="a", review={"vocab": "not a list", "tables": 3})
+    (body,) = _summaries(ledger)
+    assert "review" not in body
+
+
+async def test_corrections_carry_the_six_fields_and_nothing_else() -> None:
+    ledger = FakeLedger([{"ok": True}])
+    client = make(ledger)
+    await client.summary(corrections=[{**CORRECTION, "turnId": "t_1", "extra": 3}])
+    (body,) = _summaries(ledger)
+    assert body["corrections"] == [CORRECTION]
+
+
+async def test_corrections_are_bounded_and_the_unrenderable_are_dropped() -> None:
+    ledger = FakeLedger([{"ok": True}])
+    client = make(ledger)
+    findings = [dict(CORRECTION, id=f"c_{i}") for i in range(MAX_CORRECTIONS + 7)]
+    findings.append({**CORRECTION, "id": "c_bad", "replacement": ""})
+    findings.append({"id": "c_worse"})
+    await client.summary(corrections=findings)
+    (body,) = _summaries(ledger)
+    assert len(body["corrections"]) == MAX_CORRECTIONS
+    # The most recent survive, and the two unrenderable ones never counted.
+    assert body["corrections"][-1]["id"] == f"c_{MAX_CORRECTIONS + 6}"
+
+
+async def test_a_long_explanation_is_cut_not_dropped() -> None:
+    ledger = FakeLedger([{"ok": True}])
+    client = make(ledger)
+    await client.summary(corrections=[{**CORRECTION, "explanation": "x" * 900}])
+    (body,) = _summaries(ledger)
+    assert len(body["corrections"][0]["explanation"]) == 500
 
 
 def main() -> int:

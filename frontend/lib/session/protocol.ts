@@ -268,7 +268,43 @@ export const PARTICIPANT_ATTRIBUTES = {
    * learner's bubble on stage (see `openSegment` in `reducer.ts`).
    */
   turnSeq: "tutor.turn_seq",
+  /**
+   * The one thing the worker can say when the conversation cannot happen. Two
+   * values, and they are different facts (see `TUTOR_ERROR_*` below); absent
+   * whenever the session is merely fine.
+   */
+  error: "tutor.error",
 } as const
+
+/**
+ * `tutor.error`, spelled out. Named separately from the map above because both
+ * halves of the surface read it directly: the live producer to decide whether
+ * this session has a future, and the failed card to decide what to say.
+ */
+export const ATTR_ERROR = "tutor.error"
+
+/**
+ * The realtime model died and could not be brought back. The worker holds,
+ * debits what was actually spoken, and ends the session through the ordinary
+ * `session_over` path — so the learner gets their summary, with a line saying
+ * it ended on its own. Time already talked IS billed: it happened.
+ */
+export const TUTOR_ERROR_MODEL = "model"
+
+/**
+ * The tutor joined and never produced a single audio frame inside
+ * `TUTOR_SILENT_TIMEOUT_MS`. Nothing is billed — the meter starts at the first
+ * tutor audio — so this is a failed start, not a short session.
+ */
+export const TUTOR_ERROR_SILENT = "tutor_silent"
+
+/**
+ * How long the surface waits for the tutor to JOIN before calling the session
+ * failed. Generous next to a healthy dispatch (a second or two) and short
+ * enough that a learner never sits in front of a silent stage wondering
+ * whether they are supposed to speak first. Audit B6.
+ */
+export const AGENT_JOIN_TIMEOUT_MS = 12_000
 
 /** Value convention for boolean participant attributes. */
 export const ATTRIBUTE_TRUE = "true"

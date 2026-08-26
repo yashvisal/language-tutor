@@ -39,11 +39,13 @@ import {
   type ReactNode,
   useRef,
 } from "react"
+import Link from "next/link"
 import { AnimatePresence, motion, useReducedMotion } from "motion/react"
 
 import { Overline } from "@/components/overline"
 import { Button } from "@/components/ui/button"
 import type { SessionPlan } from "@/lib/session/contract"
+import type { StartFailure } from "@/lib/session/livekit"
 import {
   PLAN_LIMITS,
   TARGET_LANGUAGE_NAME,
@@ -81,6 +83,7 @@ export function PlanCards({
   onStart,
   starting = false,
   startLabel = "Start",
+  notice,
   className,
   bodyClassName,
   footerClassName,
@@ -93,6 +96,10 @@ export function PlanCards({
   onStart: (plan: SessionPlan) => void
   starting?: boolean
   startLabel?: string
+  /** One line directly above the Start button — where a failed start is said.
+   * Here rather than at the bottom of the host's column because the learner is
+   * looking at the button they just pressed, not under the fold. */
+  notice?: ReactNode
   className?: string
   bodyClassName?: string
   footerClassName?: string
@@ -219,6 +226,8 @@ export function PlanCards({
         </AnimatePresence>
       </div>
 
+      {notice}
+
       <div
         className={cn(
           "flex items-center justify-between gap-4 border-t border-foreground/[0.06] dark:border-white/10",
@@ -339,7 +348,7 @@ export function SessionPreflight({
   onChange: (plan: SessionPlan) => void
   onStart: (plan: SessionPlan) => void
   connecting: boolean
-  error: string | null
+  error: StartFailure | null
   /** Rendered above the first question, inside the same column — `/session`
    * puts its way back to `/home` here. */
   above?: ReactNode
@@ -369,16 +378,37 @@ export function SessionPreflight({
           startLabel="Start talking"
           className="mt-8"
           footerClassName="mt-8 pt-6"
+          notice={
+            error && (
+              // Ordinary text, ordinary colour. A blocked microphone is not an
+              // error the learner made and not a fault of the app — it is one
+              // sentence with the fix in it, read at the moment they press
+              // Start. 12px destructive under the fold said none of that
+              // (audit §4.3).
+              <p
+                role="alert"
+                className="mt-8 text-sm leading-relaxed text-foreground"
+              >
+                {error.message}
+                {error.action && (
+                  <>
+                    {" "}
+                    <Link
+                      href={error.action.href}
+                      className="underline underline-offset-4 decoration-foreground/30 transition-colors duration-200 hover:decoration-foreground"
+                    >
+                      {error.action.label}
+                    </Link>
+                  </>
+                )}
+              </p>
+            )
+          }
         />
 
         <p className="mt-4 text-xs text-muted-foreground">
           Microphone required. Pausing to study doesn’t use your minutes.
         </p>
-        {error && (
-          <p role="alert" className="mt-3 text-xs text-destructive">
-            {error}
-          </p>
-        )}
       </div>
     </div>
   )
