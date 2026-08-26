@@ -80,6 +80,32 @@ gets its own two when we get there.
   to `secondsBilled`** (the periodic debit is every 60 s, so a single delta
   above 3 600 s is a bug or an attack — reject it).
 
+## Edges found while building (the "connect the edges" list)
+
+Places where conversation data still fails to reach a surface. Found by the
+step-2 agents on 2026-08-25; assigned, not forgotten.
+
+- **Why a session ended.** The worker now knows zero-hold abandonment,
+  hold-idle timeout, learner disconnect, model error; the wire carries only
+  `final: true`. History cannot tell a crash from a clean end. One `reason`
+  field on the final debit. → step 3 (small).
+- **Turn count and the anchor-language ratio.** `turn_seq` is published
+  live and discarded; nothing measures the target/anchor mix — exactly the
+  input support-on-evidence needs. → step 3, with the goal work.
+- **Plan drift.** `about` records what the conversation became; nothing
+  records that it diverged from what was set up ("you set up X and did
+  Y"). → step 3, with the goal object.
+- **Ask and translate vanish.** The questions asked and every
+  select-to-translate lookup are the sharpest study record the session
+  produces and none of it is stored. → step 3 (add to `/tutor/summary`).
+- **Cost.** `est_cost_usd` now counts the `about` call but analyzer / Ask /
+  Review / translate still contribute zero (`record_text_usage` seam exists,
+  one line each), and there is no cost column on `sessions`. → step 4.
+- **Review is still the four generic tables** for most sessions (generated
+  once from the plan; the picker no longer sets tenses/scenario). The stored
+  snapshot has the right shape; step 3 fills it.
+- `users.ts` functions lack `returns` validators. → step 4.
+
 ## Decisions still needed from Yash
 
 (a) payment rail — Stripe-direct or Clerk Billing; (b) goal capture and
