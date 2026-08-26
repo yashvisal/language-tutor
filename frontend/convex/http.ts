@@ -2,7 +2,7 @@ import { httpRouter } from "convex/server"
 
 import { httpAction } from "./_generated/server"
 import { internal } from "./_generated/api"
-import { SUMMARY_LIMITS } from "./validators"
+import { SESSION_END_REASONS, SUMMARY_LIMITS } from "./validators"
 import { DELTA_CAP_PREFIX, MAX_DELTA_PER_CALL_S } from "../lib/billing"
 import { verifyWorkerToken } from "./m2m"
 
@@ -60,7 +60,8 @@ import { verifyWorkerToken } from "./m2m"
  *   "jobId": "AJ_9xKq...",
  *   "seconds": 137,
  *   "seq": 3,
- *   "final": true }
+ *   "final": true,
+ *   "reason": "ended" }
  * ```
  *
  * | field     | type   | constraint                                          |
@@ -71,6 +72,15 @@ import { verifyWorkerToken } from "./m2m"
  * | `seconds` | number | finite, `>= 0`, `<= 86400`. Rounded to an integer here. See below — this is ROOM-cumulative. |
  * | `seq`     | number | non-negative safe integer. The worker's per-job counter. |
  * | `final`   | bool   | **optional**. Absent or `false` on every periodic report and on the debit at a hold on zero. `true` on the teardown report only — the worker's last word on this room. |
+ * | `reason`  | string | **optional**, and only meaningful with `final: true`. One of `ended`, `out_of_minutes_idle`, `hold_idle`, `learner_left`, `model_error`, `ledger_failure`, `tutor_silent`. Anything else is a `400`, on every report — including the periodic ones that ignore it, so a wrong value is learned early rather than at teardown. |
+ *
+ * `reason` is why the conversation stopped, and the worker is the only half
+ * that knows: the browser sees a room close and cannot tell a model failure
+ * from a goodbye. It is written **only when `final` is true** and **only if
+ * the row does not already carry one** — never overwritten, because the first
+ * teardown report is the one that was actually there when it stopped. Note it
+ * is written on its own condition, NOT with `endedAt`: a session the client's
+ * `sessions.finish` already closed still gets its explanation.
  *
  * `final: true` sets `sessions.endedAt` if it is not already set, and never
  * overwrites one. It exists because `endedAt` is otherwise written only by the
@@ -145,6 +155,12 @@ import { verifyWorkerToken } from "./m2m"
  *   "userId": "user_2abcDEF...",
  *   "jobId": "AJ_9xKq...",
  *   "about": "Ordering at a cafe and asking about the neighbourhood.",
+ *   "goal": { "text": "Order food and drinks confidently in a cafe.",
+ *             "forms": ["present", "conditional"], "source": "tool" },
+ *   "turns": 34,
+ *   "anchorRatio": 0.12,
+ *   "asks": ["why is it 'me gustaria' and not 'yo gustaria'?"],
+ *   "lookups": [{ "source": "la cuenta", "translation": "the bill" }],
  *   "transcript": [{ "role": "learner", "text": "hola, quiero un cafe" },
  *                  { "role": "tutor",   "text": "claro, con leche?" }],
  *   "review": { "vocab":   [{ "target": "la cuenta", "anchor": "the bill" }],
@@ -161,15 +177,22 @@ import { verifyWorkerToken } from "./m2m"
  * | `about`      | string | **optional**, <= 200 chars. One line, in the learner's anchor language, describing what the conversation was actually about — read off the TRANSCRIPT, not off the plan. The plan is what they intended; this is what happened. |
  * | `transcript` | array  | **optional**, <= 200 entries. Each `{ "role": "learner" or "tutor", "text": string }`, `text` <= 500 chars. Any other `role` is a `400`, not a silent drop. |
  * | `corrections` | array | **optional**, <= 200 entries of `{ id, original, replacement, category, severity, explanation }`, every string <= 500 chars. The analyzer's findings as the WORKER saw them. See the backstop note below. |
+ * | `goal`       | object | **optional**, `{ text, forms, source }` — the goal confirmed at the top of the conversation, the session's spine. `text` non-empty after trimming and <= 200 chars (an empty one is a `400`, not an absent goal — a goal object with no line in it is a bug); `forms` <= 8 strings of <= 60 chars; `source` exactly one of `"plan"` / `"tool"` / `"extracted"`, anything else a `400`. `source` is how much to trust it: an `"extracted"` goal was never said back to the learner. |
+ * | `turns`      | number | **optional**, integer `0..100000`. Learner turns committed by the turn detector — how much the learner actually spoke, which seconds are not. |
+ * | `anchorRatio`| number | **optional**, `0..1`. The share of those turns spoken mostly in the ANCHOR language. High means the learner is falling back to English; it is the input support-on-evidence reads. |
+ * | `asks`       | array  | **optional**, <= 25 strings of <= 400 chars — the questions asked in the Ask tab, in order. Questions only; the answers are not stored, because what the learner did not know is the study record. |
+ * | `lookups`    | array  | **optional**, <= 100 entries of `{ source, translation }`, both strings <= 200 chars — every select-to-translate lookup, in order. |
  * | `review`     | object | **optional**, `{ vocab, phrases, tables }` — the `tutor.review` payload minus `ready` (`backend/src/review.py`). `vocab`/`phrases` are `{ target, anchor }`, <= 40 each; `tables` are `{ verb, tense, rows: [{ person, form }] }`, <= 8 tables of <= 12 rows; every string <= 200 chars. All three keys required when `review` is present. |
  *
  * Body ceiling: **256 KB** (its own bound; the other two routes stay at 4 KB).
  *
- * **The three payload fields are independent and last-write-wins.** A field
- * absent from the body leaves that column untouched, so a worker that has the
- * transcript but whose Review generation is still in flight can send what it
- * has now and send the rest in a second call. Sending a field again replaces
- * it wholesale — there is no merge.
+ * **Every payload field is independent and last-write-wins.** A field absent
+ * from the body leaves that column untouched, so a worker that has the goal at
+ * the top of the conversation and the transcript at teardown, and whose Review
+ * generation is still in flight, can send each one as it has it. Sending a
+ * field again replaces it wholesale — there is no merge. That is why the goal
+ * can be sent the moment it is confirmed rather than held until the end: a
+ * session that dies mid-way still records what it was set up to be.
  *
  * **Worker corrections are the backstop for a tab that never finished.** The
  * corrections normally reach Convex from the browser (`sessions.finish`), which
@@ -227,6 +250,11 @@ const MAX_BODY_BYTES = 4096
 const MAX_SUMMARY_BODY_BYTES = 262144
 
 const MAX_SECONDS = 86400
+
+/** Ceiling on the reported learner-turn count. A day of conversation at one
+ * turn every three seconds is nowhere near this; anything above it is a
+ * counter that ran away, and it is printed on the History card. */
+const MAX_TURNS = 100000
 
 const MAX_ROOM_CHARS = 256
 const MAX_USER_ID_CHARS = 256
@@ -330,6 +358,7 @@ const debit = httpAction(async (ctx, request) => {
   const seconds: unknown = body.seconds
   const seq: unknown = body.seq
   const final: unknown = body.final
+  const reason: unknown = body.reason
 
   if (room === null || userId === null || jobId === null) {
     return badRequest("expected { room, userId, jobId, seconds, seq }")
@@ -352,6 +381,16 @@ const debit = httpAction(async (ctx, request) => {
   if (final !== undefined && typeof final !== "boolean") {
     return badRequest("final must be a boolean")
   }
+  // Validated whenever it is present, even on a periodic report that will
+  // ignore it: a worker sending a reason the schema does not know is a worker
+  // whose teardown report is about to 500, and it should learn that from the
+  // first one it sends rather than from the last.
+  if (
+    reason !== undefined &&
+    !(SESSION_END_REASONS as readonly unknown[]).includes(reason)
+  ) {
+    return badRequest(`reason must be one of ${SESSION_END_REASONS.join(", ")}`)
+  }
 
   let result
   try {
@@ -362,6 +401,7 @@ const debit = httpAction(async (ctx, request) => {
       jobId,
       seq,
       final,
+      reason: reason as (typeof SESSION_END_REASONS)[number] | undefined,
     })
   } catch (error) {
     // A report that would add more than `MAX_DELTA_PER_CALL_S` is refused as
@@ -415,7 +455,8 @@ const balance = httpAction(async (ctx, request) => {
 function pair<A extends string, B extends string>(
   value: unknown,
   first: A,
-  second: B
+  second: B,
+  max: number = SUMMARY_LIMITS.reviewItemChars
 ): { [K in A | B]: string } | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return null
@@ -424,12 +465,7 @@ function pair<A extends string, B extends string>(
   const a = record[first]
   const b = record[second]
   if (typeof a !== "string" || typeof b !== "string") return null
-  if (
-    a.length > SUMMARY_LIMITS.reviewItemChars ||
-    b.length > SUMMARY_LIMITS.reviewItemChars
-  ) {
-    return null
-  }
+  if (a.length > max || b.length > max) return null
   return { [first]: a, [second]: b } as { [K in A | B]: string }
 }
 
@@ -452,7 +488,8 @@ const summary = httpAction(async (ctx, request) => {
   const jobId = boundedString(body.jobId, MAX_JOB_ID_CHARS)
   if (room === null || userId === null || jobId === null) {
     return badRequest(
-      "expected { room, userId, jobId, about?, transcript?, review?, corrections? }"
+      "expected { room, userId, jobId, about?, goal?, transcript?, review?, " +
+        "corrections?, turns?, anchorRatio?, asks?, lookups? }"
     )
   }
 
@@ -646,6 +683,146 @@ const summary = httpAction(async (ctx, request) => {
     corrections = found
   }
 
+  /* -- step 3: the goal, the counts, and the study residue ---------------- */
+
+  // The goal is the only new field that is an OBJECT, and the only one whose
+  // shape a wrong worker could get subtly wrong. `source` is checked by name
+  // because it is what the surfaces branch on — an unknown source is a 400
+  // here rather than a 500 out of the mutation's closed union.
+  let goal:
+    | { text: string; forms: string[]; source: "plan" | "tool" | "extracted" }
+    | undefined
+  if (body.goal !== undefined) {
+    const raw = body.goal
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+      return badRequest("goal must be { text, forms, source }")
+    }
+    const {
+      text: rawText,
+      forms: rawForms,
+      source: rawSource,
+    } = raw as Record<string, unknown>
+    if (typeof rawText !== "string") {
+      return badRequest("goal.text must be a string")
+    }
+    // Trimmed and required non-empty, unlike `about`: an absent `about` is an
+    // ordinary state (nobody summarized), but a goal object with no line in
+    // it is not a goal — it is a bug that would render as an empty "you set
+    // up" on the History card.
+    const text = rawText.trim()
+    if (text.length === 0 || text.length > SUMMARY_LIMITS.goalChars) {
+      return badRequest(
+        `goal.text must be a non-empty string of at most ${SUMMARY_LIMITS.goalChars} chars`
+      )
+    }
+    const formsRaw = boundedArray(rawForms, SUMMARY_LIMITS.goalForms)
+    if (formsRaw === null) {
+      return badRequest(
+        `goal.forms must be an array of at most ${SUMMARY_LIMITS.goalForms} strings`
+      )
+    }
+    const forms: string[] = []
+    for (const form of formsRaw) {
+      if (
+        typeof form !== "string" ||
+        form.length > SUMMARY_LIMITS.goalFormChars
+      ) {
+        return badRequest(
+          `goal.forms entries must be strings of at most ${SUMMARY_LIMITS.goalFormChars} chars`
+        )
+      }
+      forms.push(form)
+    }
+    if (
+      rawSource !== "plan" &&
+      rawSource !== "tool" &&
+      rawSource !== "extracted"
+    ) {
+      return badRequest('goal.source must be "plan", "tool" or "extracted"')
+    }
+    goal = { text, forms, source: rawSource }
+  }
+
+  // A count and a ratio. Both are checked at their real bounds rather than
+  // merely "is a number", because both are printed: a negative turn count or
+  // a ratio of 4 reads as a broken product, and NaN passes `typeof number`.
+  let turns: number | undefined
+  if (body.turns !== undefined) {
+    if (
+      typeof body.turns !== "number" ||
+      !Number.isSafeInteger(body.turns) ||
+      body.turns < 0 ||
+      body.turns > MAX_TURNS
+    ) {
+      return badRequest(`turns must be an integer between 0 and ${MAX_TURNS}`)
+    }
+    turns = body.turns
+  }
+
+  let anchorRatio: number | undefined
+  if (body.anchorRatio !== undefined) {
+    if (
+      typeof body.anchorRatio !== "number" ||
+      !Number.isFinite(body.anchorRatio) ||
+      body.anchorRatio < 0 ||
+      body.anchorRatio > 1
+    ) {
+      return badRequest("anchorRatio must be a number between 0 and 1")
+    }
+    anchorRatio = body.anchorRatio
+  }
+
+  // The questions, not the answers: what the learner did not know is the
+  // study record, and the answer is already in the transcript of the pause.
+  let asks: string[] | undefined
+  if (body.asks !== undefined) {
+    const raw = boundedArray(body.asks, SUMMARY_LIMITS.asks)
+    if (raw === null) {
+      return badRequest(
+        `asks must be an array of at most ${SUMMARY_LIMITS.asks} questions`
+      )
+    }
+    const questions: string[] = []
+    for (const question of raw) {
+      if (
+        typeof question !== "string" ||
+        question.length > SUMMARY_LIMITS.askChars
+      ) {
+        return badRequest(
+          `asks entries must be strings of at most ${SUMMARY_LIMITS.askChars} chars`
+        )
+      }
+      questions.push(question)
+    }
+    asks = questions
+  }
+
+  let lookups: Array<{ source: string; translation: string }> | undefined
+  if (body.lookups !== undefined) {
+    const raw = boundedArray(body.lookups, SUMMARY_LIMITS.lookups)
+    if (raw === null) {
+      return badRequest(
+        `lookups must be an array of at most ${SUMMARY_LIMITS.lookups} entries`
+      )
+    }
+    const found: Array<{ source: string; translation: string }> = []
+    for (const entry of raw) {
+      const item = pair(
+        entry,
+        "source",
+        "translation",
+        SUMMARY_LIMITS.lookupChars
+      )
+      if (item === null) {
+        return badRequest(
+          `lookups must be { source, translation } with strings of at most ${SUMMARY_LIMITS.lookupChars} chars`
+        )
+      }
+      found.push(item)
+    }
+    lookups = found
+  }
+
   // `jobId` is validated but not passed on: this write has no idempotency key
   // because it does not need one — it is a last-write-wins patch, not a
   // ledger entry. It is required on the wire so every worker report carries
@@ -657,6 +834,11 @@ const summary = httpAction(async (ctx, request) => {
     transcript,
     review,
     corrections,
+    goal,
+    turns,
+    anchorRatio,
+    asks,
+    lookups,
   })
   return ok({ ok: true })
 })

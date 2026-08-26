@@ -15,10 +15,14 @@ import { v, type Infer } from "convex/values"
 import type {
   ConjugationTable,
   Correction,
+  GoalSource,
   ReviewItem,
   ReviewMaterial,
+  SessionEndReason,
+  SessionGoal,
   SessionPlan,
   Speaker,
+  TranslationLookup,
 } from "../lib/session/contract"
 import { LEVEL_VALUES, type LevelValue } from "../lib/session/plan"
 
@@ -158,6 +162,23 @@ export const SUMMARY_LIMITS = {
    * clamps the client's to, because it lands in the same column. */
   corrections: 200,
   correctionChars: 500,
+  /* -- step 3: the goal, the end, and the study residue -------------------- */
+  /** The confirmed goal, one line. The same bound as `about` on purpose: the
+   * two are read side by side ("you set up X and did Y"), and a goal that
+   * wraps further than the outcome reads as an accident. */
+  goalChars: 200,
+  /** Forms the goal implies. Eight is already more than one conversation can
+   * push on, and the per-language catalog is shorter than that. */
+  goalForms: 8,
+  goalFormChars: 60,
+  /** The Ask thread's questions — the study record the overlay used to throw
+   * away every time the learner resumed. */
+  asks: 25,
+  askChars: 400,
+  /** Select-to-translate lookups. A hundred is a learner reading hard, not a
+   * bug; the wire's `TRANSLATE_MAX_CHARS` is what bounds each string. */
+  lookups: 100,
+  lookupChars: 200,
 } as const
 
 /**
@@ -216,4 +237,88 @@ export const reviewMaterialValidator = v.object({
 
 export type ReviewMaterialMatchesContract = Assert<
   Equals<Infer<typeof reviewMaterialValidator>, ReviewMaterial>
+>
+
+/* -------------------------------------------------------------------------- */
+/*  The goal, the end reason, and the study residue                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The confirmed goal, as stored on the row — mirrors `SessionGoal`.
+ *
+ * `source` stays a closed union rather than widening to `v.string()` the way
+ * `level` and `category` do, because unlike those it is not a catalog that can
+ * grow: there are exactly three ways a goal can arrive, and a fourth would be
+ * a new mechanism worth a schema change rather than a value that quietly
+ * appears in history. It is also the one field that says how much to TRUST the
+ * goal — an `"extracted"` goal was never said back to the learner — so a value
+ * nothing recognizes is worse than a rejected write.
+ */
+export const goalSourceValidator = v.union(
+  v.literal("plan"),
+  v.literal("tool"),
+  v.literal("extracted")
+)
+
+export type GoalSourceMatchesContract = Assert<
+  Equals<Infer<typeof goalSourceValidator>, GoalSource>
+>
+
+export const sessionGoalValidator = v.object({
+  text: v.string(),
+  forms: v.array(v.string()),
+  source: goalSourceValidator,
+})
+
+export type SessionGoalMatchesContract = Assert<
+  Equals<Infer<typeof sessionGoalValidator>, SessionGoal>
+>
+
+/**
+ * Why the conversation stopped. Closed, for the same reason `source` is: this
+ * is not a label, it is the thing History branches on to tell a crash from a
+ * goodbye, and an unrecognized reason would render as neither.
+ *
+ * The array exists beside the validator because `convex/http.ts` has to check
+ * the same set at the wire, where an unknown reason must be a `400` the worker
+ * can read rather than a `500` out of the mutation's validator.
+ */
+export const SESSION_END_REASONS = [
+  "ended",
+  "out_of_minutes_idle",
+  "hold_idle",
+  "learner_left",
+  "model_error",
+  "ledger_failure",
+  "tutor_silent",
+] as const
+
+export const endReasonValidator = v.union(
+  v.literal("ended"),
+  v.literal("out_of_minutes_idle"),
+  v.literal("hold_idle"),
+  v.literal("learner_left"),
+  v.literal("model_error"),
+  v.literal("ledger_failure"),
+  v.literal("tutor_silent")
+)
+
+export type EndReasonMatchesContract = Assert<
+  Equals<Infer<typeof endReasonValidator>, SessionEndReason>
+>
+
+/** …and the wire's copy of the set is the same set, so `http.ts` cannot drift
+ * from the column it writes into. */
+export type EndReasonListMatchesValidator = Assert<
+  Equals<(typeof SESSION_END_REASONS)[number], SessionEndReason>
+>
+
+/** One select-to-translate lookup — mirrors `TranslationLookup`. */
+export const translationLookupValidator = v.object({
+  source: v.string(),
+  translation: v.string(),
+})
+
+export type TranslationLookupMatchesContract = Assert<
+  Equals<Infer<typeof translationLookupValidator>, TranslationLookup>
 >

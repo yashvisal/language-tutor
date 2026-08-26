@@ -168,14 +168,40 @@ export interface ReviewMaterial {
 
 /**
  * The `tutor.review` reply. `ready: false` means the material is still being
- * generated — the only correct response is to poll again, not to show an
- * error, because a session's material is generated once and then never changes.
+ * generated — the only correct response is to ask again, not to show an error.
+ *
+ * `version` is the snapshot this material belongs to, matching
+ * `tutor.review_version` at the moment the worker generated it. From phase 7
+ * step 3 the material is NOT generated once and then frozen: the worker
+ * regenerates it from the transcript at a hold when there is enough new
+ * material, and bumps the attribute. The version is what lets the tab tell a
+ * re-fetch that changed nothing from one that brought a new snapshot — and it
+ * is optional because a worker that predates it still answers these calls, and
+ * a tab that cannot see a version falls back to the slow poll below.
  */
 export type ReviewResponse =
-  ({ ready: true } & ReviewMaterial) | { ready: false }
+  | ({ ready: true; version?: number } & ReviewMaterial)
+  | { ready: false; version?: number }
 
 /** Gap between review polls while the worker says the material is not ready. */
 export const REVIEW_POLL_MS = 1500
+
+/**
+ * The fallback cadence, once the fast poll above has given up or the worker
+ * answered without a version. Review arrives by PUSH now — the worker bumps
+ * `tutor.review_version` and the tab re-fetches — so this exists only for the
+ * two cases where the push cannot be trusted: material that has never arrived,
+ * and a worker whose reply carries no version at all. Slow on purpose: it is a
+ * safety net, not a mechanism.
+ */
+export const REVIEW_FALLBACK_POLL_MS = 30_000
+
+/**
+ * How long the Review tab wears its "Updated" marker after new material has
+ * replaced what was on screen. Long enough to be noticed by someone reading,
+ * short enough that it is not a badge.
+ */
+export const REVIEW_UPDATED_MS = 6000
 
 /**
  * How many times to ask before giving up. At ~1.5s a poll this is half a
@@ -274,7 +300,34 @@ export const PARTICIPANT_ATTRIBUTES = {
    * whenever the session is merely fine.
    */
   error: "tutor.error",
+  /** The confirmed goal, one line. See `ATTR_GOAL`. */
+  goal: "tutor.goal",
+  /** The Review snapshot counter. See `ATTR_REVIEW_VERSION`. */
+  reviewVersion: "tutor.review_version",
 } as const
+
+/**
+ * The session's confirmed goal, as one line of text — empty until the tutor and
+ * the learner have agreed one (phase 7 step 3: the conversation starts with
+ * goal setting). Published as an attribute rather than sent as an event because
+ * it is a fact about the session that a tab joining late must also see, and
+ * because it changes at most once.
+ *
+ * Named separately from the map above for the same reason as `ATTR_ERROR`: the
+ * producer reads it directly, and the surfaces that render it should not have
+ * to know which bag the key lives in.
+ */
+export const ATTR_GOAL = "tutor.goal"
+
+/**
+ * Integer string, `"0"` at the start of a session and incremented every time
+ * the worker has a NEW Review snapshot. This is what makes Review a push:
+ * the tab watches this attribute and re-fetches `tutor.review` when it moves,
+ * instead of polling a material that used to be generated once and then never
+ * changed. A worker that never bumps it is indistinguishable from the old one,
+ * and the slow fallback poll covers that case.
+ */
+export const ATTR_REVIEW_VERSION = "tutor.review_version"
 
 /**
  * `tutor.error`, spelled out. Named separately from the map above because both

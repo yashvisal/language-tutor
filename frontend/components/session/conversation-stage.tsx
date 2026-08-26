@@ -59,6 +59,7 @@ import type {
   AskExchange,
   Correction,
   PauseReason,
+  ReviewState,
   SessionEvent,
   StudySession,
   TranslateFn,
@@ -132,7 +133,14 @@ export interface ConversationStageProps {
 const EMPTY_THREAD: AskExchange[] = []
 const NO_TAB = () => {}
 const NO_ASK = () => {}
-const NO_REVIEW = () => Promise.resolve(null)
+/** Settled and empty, not waiting: with no producer nothing is ever coming. */
+const NO_REVIEW: ReviewState = {
+  material: null,
+  loading: false,
+  absent: true,
+  version: null,
+  updatedAt: null,
+}
 
 export function ConversationStage({
   state,
@@ -385,7 +393,10 @@ export function ConversationStage({
             tab={study?.tab ?? "transcript"}
             onTabChange={study?.setTab ?? NO_TAB}
             onAsk={study?.ask ?? NO_ASK}
-            fetchReview={study?.fetchReview ?? NO_REVIEW}
+            review={study?.review ?? NO_REVIEW}
+            // The goal is the session's spine and the Review tab is where a
+            // learner meets it mid-conversation; the stage stays minimal.
+            goal={study?.goal ?? null}
             focusTenses={focusTenses}
             // A question is stamped to the turn that was on stage when it was
             // asked — the moment the learner stopped at, not the tab they typed

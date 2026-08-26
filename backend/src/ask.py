@@ -44,6 +44,7 @@ from prompts import (
     plan_facts,
 )
 from state import SessionFacts
+from usage import UsageTracker
 
 logger = logging.getLogger("tutor.ask")
 
@@ -66,6 +67,10 @@ MAX_THREAD_MESSAGES = 16
 # paragraph is not a question.
 MAX_QUESTION_CHARS = 400
 MAX_THREAD_MESSAGE_CHARS = 800
+
+# The questions kept for the after-session record (phase 7 step 3). The cap on
+# how many is already `MAX_QUESTIONS`, which is also the ledger's bound.
+MAX_RECORDED_QUESTIONS = MAX_QUESTIONS
 
 # The frontend gives up at 5s (`ASK_TIMEOUT_MS`), so the worker's own budget
 # sits just inside it: a clean "ask timed out" the tab can render beats a
@@ -90,6 +95,7 @@ class AskCoach:
         cfg: TutorConfig,
         plan: SessionPlan | None = None,
         facts: SessionFacts | None = None,
+        usage: UsageTracker | None = None,
     ) -> None:
         self._cfg = cfg
         self._plan = plan
@@ -97,14 +103,24 @@ class AskCoach:
         self._instructions = ask_instructions(cfg)
         self._client: openai.AsyncOpenAI | None = None
         self._warm_task: asyncio.Task[None] | None = None
+        self._usage = usage
         self._asked = 0
         self._last_limit_line: str | None = None
+        # What they actually asked, oldest first, for the after-session record:
+        # the questions a learner types are the sharpest study record a session
+        # produces, and none of them were stored before (the "edges" list).
+        self._questions: list[str] = []
 
     # --- observation -----------------------------------------------------
 
     @property
     def asked(self) -> int:
         return self._asked
+
+    @property
+    def questions(self) -> list[str]:
+        """Every question that got a real answer, oldest first."""
+        return list(self._questions)
 
     @property
     def at_limit(self) -> bool:
@@ -155,12 +171,18 @@ class AskCoach:
     # --- answering -------------------------------------------------------
 
     def _situation(self) -> list[str]:
-        """What the coach knows about the session it is being asked about."""
-        lines = plan_facts(self._plan) if self._plan is not None else []
-        summary = self._facts.summary() if self._facts is not None else None
-        if summary:
-            lines.append(summary)
-        return lines
+        """What the coach knows about the session it is being asked about.
+
+        The goal leads (phase 7 step 3: the confirmed goal is the session's
+        spine, and the Ask context is one of the four places it feeds), then
+        the plan it started from, then the evidence so far.
+        """
+        evidence = self._facts.evidence() if self._facts is not None else []
+        goal = self._facts.goal if self._facts is not None else None
+        leading = evidence[:1] if goal is not None and goal.settled else []
+        rest = evidence[len(leading) :]
+        plan = plan_facts(self._plan) if self._plan is not None else []
+        return leading + plan + rest
 
     def _prompt(
         self,
@@ -200,12 +222,23 @@ class AskCoach:
             # effort puts time-to-first-token outside an interactive budget.
             reasoning={"effort": "none"},
         )
+        if self._usage is not None:
+            self._usage.record_text_usage(response, label="ask")
         return (response.output_text or "").strip()
 
-    def count_question(self) -> None:
+    def count_question(self, question: str = "") -> None:
         """Burn one of the session's questions. Only a real answer costs one —
-        a timeout or a failure must not spend a learner's allowance."""
+        a timeout or a failure must not spend a learner's allowance.
+
+        The question itself is kept for the after-session record: it is the
+        same event, so it is counted and recorded in one place.
+        """
         self._asked += 1
+        cleaned = " ".join(question.split())[:MAX_QUESTION_CHARS]
+        if cleaned:
+            self._questions.append(cleaned)
+            if len(self._questions) > MAX_RECORDED_QUESTIONS:
+                del self._questions[:-MAX_RECORDED_QUESTIONS]
 
 
 def _coerce_thread(value: object) -> list[tuple[str, str]]:
@@ -285,7 +318,7 @@ async def register_ask_rpc(ctx: JobContext, session: AgentSession, coach: AskCoa
             logger.warning("tutor.ask returned nothing", extra={"turn_id": turn_id})
             return json.dumps({"error": "ask failed"})
 
-        coach.count_question()
+        coach.count_question(question)
         logger.info(
             "answered question",
             extra={

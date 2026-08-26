@@ -28,7 +28,8 @@ from config import (
 )
 from plan import SessionPlan
 from prompts import analyzer_instructions
-from state import SessionFacts
+from state import SessionFacts, SessionGoal
+from usage import UsageTracker
 
 logger = logging.getLogger("tutor.analyzer")
 
@@ -37,11 +38,18 @@ logger = logging.getLogger("tutor.analyzer")
 CATEGORIES = ["tense", "agreement", "word-order", "vocabulary", "naturalness"]
 SEVERITIES = ["error", "unnatural", "suggestion"]
 
+# What language the turn as a whole was in. Not a correction — evidence: it is
+# the anchor-language ratio the support rule reads (phase 7 step 3), and it
+# rides on this call because the analyzer already reads every settled learner
+# turn and a second model call for one word would be absurd.
+TURN_LANGUAGES = ["target", "anchor", "mixed"]
+
 CORRECTIONS_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["corrections"],
+    "required": ["language", "corrections"],
     "properties": {
+        "language": {"type": "string", "enum": TURN_LANGUAGES},
         "corrections": {
             "type": "array",
             "items": {
@@ -65,7 +73,7 @@ CORRECTIONS_SCHEMA = {
                     "explanation": {"type": "string"},
                 },
             },
-        }
+        },
     },
 }
 
@@ -136,15 +144,23 @@ class CorrectionAnalyzer:
         room: rtc.Room,
         facts: SessionFacts | None = None,
         plan: SessionPlan | None = None,
+        usage: UsageTracker | None = None,
     ) -> None:
         self._cfg = cfg
         self._room = room
         self._facts = facts
-        # The session plan only tilts the weighting; the instructions are built
-        # once here, exactly as before, because the plan cannot change mid-session.
+        self._plan = plan
+        self._usage = usage
+        # The plan only tilts the weighting, and it cannot change mid-session —
+        # but the GOAL can arrive one exchange in, so the instructions are
+        # rebuilt exactly once, by `set_goal`, when it does.
         self._instructions = analyzer_instructions(cfg, plan)
         self._client = openai.AsyncOpenAI(api_key=cfg.openai_api_key or None, max_retries=0)
         self._tasks: set[asyncio.Task[None]] = set()
+
+    def set_goal(self, goal: SessionGoal) -> None:
+        """Re-weight towards the session's confirmed goal (phase 7 step 3)."""
+        self._instructions = analyzer_instructions(self._cfg, self._plan, goal)
 
     def analyze_in_background(
         self,
@@ -171,7 +187,7 @@ class CorrectionAnalyzer:
     async def _run(self, *, turn_id: str, text: str, context: list[ContextTurn]) -> None:
         started = time.monotonic()
         try:
-            corrections = await asyncio.wait_for(
+            language, corrections = await asyncio.wait_for(
                 self._request(text=text, context=context), timeout=REQUEST_TIMEOUT
             )
         except asyncio.CancelledError:
@@ -180,12 +196,19 @@ class CorrectionAnalyzer:
             logger.exception("analyzer call failed", extra={"turn_id": turn_id})
             return
 
+        # Evidence, not feedback: recorded whether or not anything is published,
+        # because a clean turn in the anchor language is exactly the turn the
+        # support rule needs to know about.
+        if self._facts is not None:
+            self._facts.record_turn_language(language)
+
         latency_ms = int((time.monotonic() - started) * 1000)
         logger.info(
             "analyzed turn",
             extra={
                 "turn_id": turn_id,
                 "corrections": len(corrections),
+                "turn_language": language,
                 "latency_ms": latency_ms,
             },
         )
@@ -201,7 +224,9 @@ class CorrectionAnalyzer:
         if self._facts is not None:
             self._facts.record_corrections(corrections)
 
-    async def _request(self, *, text: str, context: list[ContextTurn]) -> list[dict[str, str]]:
+    async def _request(
+        self, *, text: str, context: list[ContextTurn]
+    ) -> tuple[str, list[dict[str, str]]]:
         # Already truncated to CONTEXT_TURNS by the caller — see the comment on
         # the constant. Truncating again here would hide a mismatch.
         prompt = (
@@ -227,8 +252,15 @@ class CorrectionAnalyzer:
             },
         )
 
+        if self._usage is not None:
+            self._usage.record_text_usage(response, label="analyzer")
         payload = json.loads(response.output_text)
-        return self._validate(payload.get("corrections") or [], text)
+        language = payload.get("language")
+        if language not in TURN_LANGUAGES:
+            # A model that omitted it (or invented a fourth value) has not
+            # failed the turn: default to the ordinary case.
+            language = "target"
+        return language, self._validate(payload.get("corrections") or [], text)
 
     def _validate(self, raw: list[dict], utterance: str) -> list[dict[str, str]]:
         """Drop anything the UI cannot render: the span must really be there."""

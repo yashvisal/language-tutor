@@ -48,7 +48,7 @@ import {
 } from "@/components/ui/tooltip"
 import type {
   AskExchange,
-  ReviewMaterial,
+  ReviewState,
   StudyTab,
   Turn,
 } from "@/lib/session/contract"
@@ -66,7 +66,8 @@ export function StudyOverlay({
   tab,
   onTabChange,
   onAsk,
-  fetchReview,
+  review,
+  goal,
   focusTenses,
   heroTurnId,
   outOfMinutes = false,
@@ -79,7 +80,14 @@ export function StudyOverlay({
   tab: StudyTab
   onTabChange: (tab: StudyTab) => void
   onAsk: (question: string, turnId: string | null) => void
-  fetchReview: () => Promise<ReviewMaterial | null>
+  /** This session's material and how fresh it is; see `ReviewState`. */
+  review: ReviewState
+  /**
+   * The confirmed goal, one line. It appears on the Review tab and nowhere
+   * else: the stage during a conversation carries the current moment, and a
+   * standing line of intent above it would be furniture.
+   */
+  goal?: string | null
   focusTenses?: readonly string[]
   heroTurnId: string | null
   /**
@@ -204,7 +212,11 @@ export function StudyOverlay({
               <TranscriptTab turns={turns} thread={thread} />
             </TabsContent>
             <TabsContent value="review">
-              <ReviewTab fetchReview={fetchReview} focusTenses={focusTenses} />
+              <ReviewTab
+                review={review}
+                goal={goal}
+                focusTenses={focusTenses}
+              />
             </TabsContent>
             <TabsContent value="ask" className="h-full">
               <AskTab

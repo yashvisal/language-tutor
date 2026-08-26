@@ -65,6 +65,18 @@ ATTR_SESSION_OVER = "tutor.session_over"
 # the last. The UI closes the learner's bubble on this — see the join rule in
 # `frontend/lib/session/reducer.ts`.
 ATTR_TURN_SEQ = "tutor.turn_seq"
+# `tutor.review_version` is a monotonically increasing integer, bumped every
+# time a NEW Review snapshot lands (phase 7 step 3). It starts at "0" — nothing
+# generated yet — and the tab refetches `tutor.review` whenever it rises. Push,
+# not poll: the Review is generated from the confirmed goal and regenerated
+# from the transcript at a hold, so it is no longer a thing made once.
+ATTR_REVIEW_VERSION = "tutor.review_version"
+# `tutor.goal` is the one line the learner agreed this session is for, published
+# once, when the goal is captured. Absent until then. The surface does not need
+# it to work — the goal drives the tutor, the analyzer and the Review — but a
+# session whose goal is invisible on screen is a session the learner cannot see
+# the shape of.
+ATTR_GOAL = "tutor.goal"
 # `tutor.error` is a short code the frontend can turn into one honest sentence.
 # Empty (or absent) means nothing has gone wrong. Two codes today:
 #
@@ -86,6 +98,13 @@ ATTR_TRUE = "true"
 ATTR_FALSE = "false"
 ANALYZER_ON = "on"
 ANALYZER_OFF = "off"
+
+# The language the opening goal exchange happens in. `target` by default (the
+# vision doc's rule: the conversation opens in the target language); `anchor`
+# is the escape hatch a later "which language" card would flip. The standing
+# one-anchor-line allowance applies either way, so a learner who stalls still
+# gets help.
+GOAL_LANGS = ("target", "anchor")
 
 # RPC methods the frontend invokes on the agent participant.
 RPC_PAUSE = "tutor.pause"
@@ -144,6 +163,15 @@ ENDPOINT_MAX_S = 30.0
 # cut off"; the ceiling keeps a typo from parking a worker slot for a day.
 HOLD_IDLE_MIN_S = 60.0
 HOLD_IDLE_MAX_S = 4 * 60 * 60.0
+
+
+def _env_choice(name: str, default: str, choices: tuple[str, ...]) -> str:
+    """One of a fixed set, from the environment. A typo warns once and falls back."""
+    value = _env(name, default).strip().lower()
+    if value not in choices:
+        logger.warning("%s=%r is not one of %s; using %r", name, value, choices, default)
+        return default
+    return value
 
 
 def _env_reasoning(name: str, default: str) -> str:
@@ -216,6 +244,8 @@ class TutorConfig:
 
     target_lang: str = "es"
     anchor_lang: str = "en"
+    # Which of the two the opening goal exchange is held in. See `GOAL_LANGS`.
+    goal_lang: str = "target"
 
     # Endpointing. min must comfortably exceed the STT's interim flush lag
     # (~0.5s for gpt-live-transcribe) — below that, turns commit before their
@@ -311,6 +341,7 @@ class TutorConfig:
         return cls(
             target_lang=_env("TUTOR_TARGET_LANG", "es"),
             anchor_lang=_env("TUTOR_ANCHOR_LANG", "en"),
+            goal_lang=_env_choice("TUTOR_GOAL_LANG", "target", GOAL_LANGS),
             min_endpointing_s=_env_float(
                 "TUTOR_MIN_ENDPOINT_S", 1.2, low=ENDPOINT_MIN_S, high=ENDPOINT_MAX_S
             ),
@@ -336,6 +367,13 @@ class TutorConfig:
     @property
     def target_language_name(self) -> str:
         return language_name(self.target_lang)
+
+    @property
+    def goal_language_name(self) -> str:
+        """The language the opening goal exchange is held in."""
+        if self.goal_lang == "anchor":
+            return self.anchor_language_name
+        return self.target_language_name
 
     @property
     def anchor_language_name(self) -> str:

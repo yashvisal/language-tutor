@@ -26,6 +26,7 @@ from livekit.agents import AgentSession, JobContext
 from analyzer import ContextTurn, context_lines, recent_context
 from config import RPC_TRANSLATE, TutorConfig
 from prompts import translate_instructions
+from usage import UsageTracker
 
 logger = logging.getLogger("tutor.translate")
 
@@ -43,6 +44,13 @@ MAX_SPAN_CHARS = 600
 
 SPEAKERS = ("learner", "tutor")
 
+# The lookups kept for the after-session record (phase 7 step 3, the "edges"
+# list: every select-to-translate lookup is the sharpest study record a session
+# produces and none of it was stored). Bounded here, at the ledger's numbers,
+# because this is the place the list is built.
+MAX_LOOKUPS = 100
+MAX_LOOKUP_CHARS = 200
+
 
 class SpanTranslator:
     """Translates one selected span from the target language into the anchor.
@@ -53,15 +61,34 @@ class SpanTranslator:
     real gain.
     """
 
-    def __init__(self, cfg: TutorConfig) -> None:
+    def __init__(self, cfg: TutorConfig, usage: UsageTracker | None = None) -> None:
         self._cfg = cfg
+        self._usage = usage
         self._instructions = translate_instructions(cfg)
+        # What the learner looked up, oldest first, for the after-session
+        # record. Trimmed as it grows, like every other session-long list here.
+        self._lookups: list[dict[str, str]] = []
         # Built on first use. Constructing the client loads the CA bundle and
         # builds an SSL context, and the translator is constructed on every job
         # while plenty of sessions never translate anything — so that cost does
         # not belong on the path to `session.start`.
         self._client: openai.AsyncOpenAI | None = None
         self._warm_task: asyncio.Task[None] | None = None
+
+    @property
+    def lookups(self) -> list[dict[str, str]]:
+        """Every span the learner translated, as `{source, translation}`."""
+        return list(self._lookups)
+
+    def _record(self, source: str, translation: str) -> None:
+        self._lookups.append(
+            {
+                "source": " ".join(source.split())[:MAX_LOOKUP_CHARS],
+                "translation": " ".join(translation.split())[:MAX_LOOKUP_CHARS],
+            }
+        )
+        if len(self._lookups) > MAX_LOOKUPS:
+            del self._lookups[:-MAX_LOOKUPS]
 
     def _get_client(self) -> openai.AsyncOpenAI:
         if self._client is None:
@@ -122,7 +149,12 @@ class SpanTranslator:
             # time-to-first-token well outside an interactive budget.
             reasoning={"effort": "none"},
         )
-        return (response.output_text or "").strip()
+        if self._usage is not None:
+            self._usage.record_text_usage(response, label="translate")
+        translation = (response.output_text or "").strip()
+        if translation:
+            self._record(text, translation)
+        return translation
 
 
 async def register_translate_rpc(

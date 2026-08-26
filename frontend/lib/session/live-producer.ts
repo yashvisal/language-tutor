@@ -95,6 +95,8 @@ import {
   AGENT_JOIN_TIMEOUT_MS,
   ASK_TIMEOUT_MS,
   ATTR_ERROR,
+  ATTR_GOAL,
+  ATTR_REVIEW_VERSION,
   MAX_RESUME_ASKS,
   REVIEW_TIMEOUT_MS,
   TRANSLATE_TIMEOUT_MS,
@@ -1279,7 +1281,26 @@ export function useLiveSession(): LiveSession {
     [agentIdentity, room]
   )
 
-  const study = useStudy(studyBackend, noteAsk)
+  /**
+   * The goal and the Review snapshot counter, both read straight off the
+   * agent's attributes: `useAgent` re-renders on every
+   * `ParticipantAttributesChanged`, so a derived read IS the subscription, and
+   * neither fact has to outlive the participant the way `tutor.error` does
+   * (the summary reads the stored goal from Convex, not from here).
+   *
+   * The goal is `""` until the tutor and the learner have agreed one — an
+   * empty attribute is "not yet", not "no goal", and both render as nothing.
+   */
+  const goalAttribute = agent.attributes?.[ATTR_GOAL]?.trim()
+  const goal = goalAttribute ? goalAttribute : null
+  /**
+   * Every change to this is the worker saying "there is new material". Null
+   * for a worker that publishes none, which the study hook treats as "fall
+   * back to the slow poll" rather than as version zero.
+   */
+  const reviewVersion = intAttribute(agent.attributes?.[ATTR_REVIEW_VERSION])
+
+  const study = useStudy(studyBackend, { onAsk: noteAsk, reviewVersion, goal })
 
   useEffect(() => {
     tabRef.current = study.tab

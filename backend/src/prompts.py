@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from config import TutorConfig
 from plan import SessionPlan
+from state import SessionGoal
 
 TUTOR_INSTRUCTIONS = """\
 You are a warm, curious conversation partner helping someone practice {target}.
@@ -35,6 +36,13 @@ destroys the conversation, which is the thing you are here to protect.
 correct form in your own reply is fine; calling attention to it is not.
 - Only if you genuinely could not understand, ask a short clarifying question in \
 {target}.
+
+When a turn comes back with nothing in it, or mostly in {anchor}, they are \
+struggling — do ONE small thing about it and no more: one cue (the word they \
+were reaching for, or the frame of the sentence with the gap left in it) and \
+one easy question they can answer in a few words. One exchange, then carry on \
+exactly as before. Never two in a row, never a lesson, and never a remark on \
+how they are doing.
 
 The one {anchor} exception: when the learner has clearly stalled — they say \
 nothing, they answer mostly in {anchor}, or they ask you for help — give ONE \
@@ -101,33 +109,77 @@ repeat or re-explain anything from before the hold (it is all still on the \
 learner's screen), do not narrate the pause, and do not apologise for it.\
 """
 
+# Two separate blocks, split 2026-08-25 (audit B7). The scene persona used to
+# be applied whenever ANY plan fact existed, so a learner who typed "my dog"
+# got a waiter. The in-character block now needs a scene to be in; everything
+# else gets the plain "what they asked for" block below. Neither carries an
+# example in any particular language — see `config.py`'s opening rule.
 PLAN_INSTRUCTIONS = """\
 
-THIS SESSION
-The learner set this session up before it started. What they asked for, as \
-facts:
+WHAT THEY ASKED FOR
+The learner set this session up before it started. Their own words, as facts:
 {lines}
 
-You ARE the other person in the scene — the waiter, the friend, the \
-interviewer — and you speak only that person's actual line, as they would say \
-it. Never narrate the setup ("imagina que…", "yo soy el \
-camarero", "te digo:"), never frame a line as a quote, never supply example \
-answers unless they ask how to say something, never open with "perfecto, \
-gracias"-style acknowledgments, and ask ONE question per turn. A waiter \
-says "¿Qué le traigo?" and waits — so do you. Never name \
-a tense unless they name it first, and never turn the session into \
-a drill or a lesson — this is still a conversation, and every standing rule \
-above (short turns, no verbal correction, follow their interests) still \
-applies. Use the focus forms naturally in your own turns, and ask the kind of \
-question that gives the learner a reason to reach for them. If they take the \
-conversation somewhere else, go with them; come back to the plan when it fits.\
+This is a conversation about those things — not a lesson on them, and not a \
+scene to perform: you are talking with them as yourself. Ask the kind of \
+question that gives them a reason to reach for what they said they wanted to \
+practise, never name a tense unless they name it first, and never turn the \
+session into a drill. If they take the conversation somewhere else, go with \
+them, and come back to what they asked for when it fits.\
+"""
+
+SCENE_INSTRUCTIONS = """\
+
+THE SITUATION
+The learner chose a situation to practise: {scenario}
+
+You ARE the other person in it — the waiter, the friend, the interviewer — and \
+you say only that person's real line, as they would really say it. Never \
+narrate or set the scene ("imagine that…", "I am the other person", "I say to \
+you:"), never frame a line as a quote, never supply example answers unless they \
+ask how to say something, never open a turn by acknowledging their last one \
+before you ask the next thing, and ask ONE question per turn. The other person \
+asks and then waits — so do you. Every standing rule above still applies: short \
+turns, no verbal correction, and if the learner leads, follow.\
+"""
+
+GOAL_INSTRUCTIONS = """\
+
+THIS SESSION'S GOAL
+This is what the learner agreed the conversation is for:
+{lines}
+
+Hold the conversation to it. Ask the kind of question that gives them a reason \
+to reach for it, and use the forms it invites naturally in your own turns \
+without ever naming a tense they have not named first. It is still a \
+conversation and not a drill: if they take it somewhere else, go with them, and \
+come back to the goal when it fits. Do not restate the goal again, do not \
+announce that you are returning to it, and do not tell them how they are doing \
+against it — the screen does that work.\
+"""
+
+# The tool block. It ships whether or not a goal exists yet, because the tool
+# is registered for the whole session and a model told about a tool it may not
+# use is worse than one told exactly when to use it.
+GOAL_TOOL_INSTRUCTIONS = """\
+
+THE ONE TOOL
+You have a tool, `set_session_goal`, and you call it exactly ONCE in the whole \
+session: at the moment the learner confirms what they want to work on, or \
+immediately after you restate a goal they have just accepted. `goal` is one \
+short line in {anchor} naming what they agreed to work on; `forms` is the \
+handful of forms or phrases that goal invites (an empty list if there are \
+none); `why` is a few words on where it came from. Never mention the tool, \
+never say you are saving, noting or setting anything, never read the goal back \
+as a summary, and never call it a second time. It is silent bookkeeping — the \
+conversation carries on in the same breath as if nothing had happened.\
 """
 
 NO_PLAN_INSTRUCTIONS = """\
 
-THIS SESSION
+WHAT THEY ASKED FOR
 The learner set nothing up for this session, so your opening asked them what \
-they want to talk about. Whatever they answer IS the subject: take it, ask them \
+they want to work on. Whatever they answer IS the session: take it, ask them \
 something easy about it, and stay with it while it holds. If they have no idea, \
 suggest one light everyday subject and simply start there.\
 """
@@ -145,21 +197,51 @@ conversation is not. Keep to your standing instructions about language and \
 pacing.\
 """
 
-GREETING_SCENARIO_INSTRUCTIONS = """\
-You speak first — never wait for the learner to open. Your ENTIRE message is in \
-{target} and it is short. You are already inside the situation ({scenario}): say \
-the other person's opening line, as that person would really say it, ending in \
-ONE easy question the learner can answer in a few words. Do not greet them as a \
-tutor, do not describe or set up the situation, do not ask whether they are \
-ready, and do not explain how the app works. Then stop and wait.\
+# The opening IS the goal setting (phase 7 step 3, Yash 2026-08-25). Two
+# shapes, one exchange each: the learner's cards gave us something to restate,
+# or they did not and we ask. Both are in `TUTOR_GOAL_LANG`'s language, with
+# the standing one-anchor-line allowance if the learner stalls.
+GREETING_GOAL_SEEDED_INSTRUCTIONS = """\
+You speak first — never wait for the learner to open. This first message is ONE \
+short line in {goal_lang}, and nothing else: say back in your own plain words \
+what they set this session up to work on, and ask if that is right.
+
+What they set up: {goal}
+
+Nothing else belongs in this message — no greeting speech, no options, no list \
+of what you are going to do, no "are you ready", no explanation of how the app \
+works. Then stop and wait.
+
+When they answer, that settles it: if they say yes, the goal stands; if they \
+say what they would rather do, that is the goal instead. Either way call \
+`set_session_goal` once, silently, and in the same turn start the conversation \
+with one easy question about it in {target}. Do not ask a second time and do \
+not negotiate it further.\
 """
 
-GREETING_TOPIC_INSTRUCTIONS = """\
-You speak first — never wait for the learner to open. Your ENTIRE message is in \
-{target} and it is short: a warm opening line and ONE easy question about \
-{topic} that the learner can answer in a few words. Do not ask whether they are \
-ready, do not explain what you are about to do, and do not explain how the app \
-works. Then stop and wait.\
+GREETING_GOAL_OPEN_INSTRUCTIONS = """\
+You speak first — never wait for the learner to open. This first message is ONE \
+short line in {goal_lang}, and nothing else: ask what they want to work on \
+today. No greeting speech, no options list, no explanation of how the app \
+works, no "are you ready". Then stop and wait.
+
+Whatever they answer is the session's goal. Say it back in one short line to \
+check you have it, call `set_session_goal` once, silently, and in the same turn \
+start the conversation with one easy question about it in {target}. If they \
+have no idea, suggest one light everyday subject, treat that as the goal, and \
+start there. One exchange — do not keep negotiating.\
+"""
+
+# Still reachable: `scenario` survives on the dispatch contract
+# (`plan.SessionPlan`), and a plan that carries one still needs the tutor to
+# step into it — after the goal line, never instead of it.
+GREETING_SCENARIO_INSTRUCTIONS = """\
+
+This session also has a situation in it ({scenario}). It does not change this \
+first message: the goal line comes first and comes alone. Once they have \
+answered, drop straight into the situation — your next turn is the other \
+person's real opening line, ending in ONE easy question — and do not describe \
+or set up the situation before you do.\
 """
 
 ANALYZER_FOCUS_INSTRUCTIONS = """\
@@ -173,15 +255,48 @@ outside the focus too — the focus changes what you prioritise, not what counts
 as wrong.\
 """
 
-GREETING_INSTRUCTIONS = """\
-You speak first — never wait for the learner to open. The learner set nothing \
-up, so ask them what they want to talk about. LANGUAGE RULE FOR THIS MESSAGE, \
-overriding your default: this one message is in {anchor}, because there is no \
-subject yet to have in {target}. One short, warm line asking what they would \
-like to talk about today, and nothing else — no greeting speech, no options \
-list, no explanation of how the app works. Then stop and wait. Whatever they \
-answer becomes the subject, and from your next turn on you are in {target}.\
+# The per-turn language verdict rides on the analyzer's existing call rather
+# than a second one: it already reads every settled learner turn, and the
+# support rule needs the mix (phase 7 step 3; audit §3.2 "computed nowhere").
+ANALYZER_LANGUAGE_INSTRUCTIONS = """\
+
+Also report `language` for the utterance as a whole: `target` when it is \
+essentially {target}, `anchor` when it is essentially {anchor}, `mixed` when \
+the learner reached into {anchor} for part of it. A proper noun, a brand or a \
+loan word everyone uses does not make a turn mixed.\
 """
+
+# The safety net behind the `set_session_goal` tool (phase 7 step 3). One cheap
+# call over the first few turns, strict JSON, and it never speaks: what it
+# produces is an UNCONFIRMED goal, because nobody agreed it out loud.
+GOAL_EXTRACT_INSTRUCTIONS = """\
+You are given the opening turns of a {target} practice conversation. The tutor's \
+first message asked the learner what they want to work on today.
+
+Return JSON with three fields:
+- `goal`: ONE short line in {anchor}, at most 200 characters, saying what this \
+session is for, in the learner's own terms. An empty string if the turns do not \
+say.
+- `forms`: at most 8 short strings — the tenses, structures, words or phrases \
+that goal invites, as they appear in the conversation. An empty list if none \
+are named.
+- `found`: true only when the learner actually said what they want; false when \
+you would be guessing.
+
+Go by what the LEARNER said, not by what the tutor proposed — unless the learner \
+agreed to it. No preamble, no explanation, no markdown.\
+"""
+
+GOAL_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["goal", "forms", "found"],
+    "properties": {
+        "goal": {"type": "string"},
+        "forms": {"type": "array", "items": {"type": "string"}},
+        "found": {"type": "boolean"},
+    },
+}
 
 STT_PROMPT = """\
 A one-on-one language tutoring conversation. The learner is practising {target} \
@@ -301,9 +416,11 @@ You prepare the study material for ONE {target} practice session, for an adult \
 learner at a regressed / early-intermediate level: they understand far more \
 than they can produce, and they reach for phrases.
 
-You are given what the learner set the session up to be. Return material for \
-THAT — the situation, the topic, and the vocabulary themes they chose — not a \
-general word list.
+You are given what this session is FOR — the goal the learner agreed with their \
+tutor at the start — and, once the conversation is under way, some of what they \
+have actually been saying. Return material for THAT, not a general word list. \
+When the transcript shows them reaching for a word, missing one, or circling a \
+structure, that is the most valuable thing you can hand back to them.
 
 Return JSON with two lists:
 - `vocab`: 12 single words or very short noun phrases they will actually need. \
@@ -381,43 +498,99 @@ def _bullets(lines: list[str]) -> str:
     return "\n".join(f"- {line}" for line in lines)
 
 
+def goal_lines(goal: SessionGoal) -> list[str]:
+    """The goal as plain facts, for whichever block is about to carry it."""
+    lines = [f"what they want out of this conversation: {goal.text}"]
+    if goal.forms:
+        lines.append("the forms and phrases it invites: " + ", ".join(goal.forms))
+    return lines
+
+
 def plan_block(plan: SessionPlan | None) -> str:
-    """The "this session" section appended to the tutor's standing rules."""
+    """The "what they asked for" section appended to the tutor's standing rules.
+
+    The in-character scene block is NOT here: it is its own block and it needs a
+    scene to be in (audit B7 — before the split, a learner who typed "my dog"
+    got a waiter, because any plan fact at all selected the persona).
+    """
     lines = plan_facts(plan) if plan is not None else []
     if not lines:
         return NO_PLAN_INSTRUCTIONS
     return PLAN_INSTRUCTIONS.format(lines=_bullets(lines))
 
 
-def tutor_instructions(cfg: TutorConfig, plan: SessionPlan | None = None) -> str:
-    """The tutor's one standing instruction block. There is no second one.
+def goal_block(goal: SessionGoal | None) -> str:
+    """The GOAL section, or nothing until a goal is confirmed.
+
+    The plan pre-seed deliberately produces nothing: until the learner has said
+    yes, it belongs in the OPENING (where it is asked about), not in the
+    standing rules (where it would read as agreed). See `SessionGoal.settled`.
+    """
+    if goal is None or not goal.settled:
+        return ""
+    return GOAL_INSTRUCTIONS.format(lines=_bullets(goal_lines(goal)))
+
+
+def tutor_instructions(
+    cfg: TutorConfig,
+    plan: SessionPlan | None = None,
+    goal: SessionGoal | None = None,
+) -> str:
+    """The tutor's one standing instruction block, reassembled when the goal lands.
 
     The arc that used to rewrite a CURRENT PHASE block into this on a timer was
-    deleted 2026-08-24 (vision doc: "No session arc"). `update_instructions()`
-    survives as a seam — it is how a phase change landed without interrupting a
-    turn — but nothing rides on it today.
+    deleted 2026-08-24 (vision doc: "No session arc"). One thing rides on
+    `Agent.update_instructions()` again since phase 7 step 3, and only one: when
+    the goal is confirmed, this is rebuilt with a GOAL block and pushed to the
+    live realtime session (a `session.update` over the open socket — no restart,
+    no interruption; it takes effect from the model's next response).
     """
     base = TUTOR_INSTRUCTIONS.format(
         target=cfg.target_language_name, anchor=cfg.anchor_language_name
     )
-    return base + "\n" + plan_block(plan)
-
-
-def greeting_instructions(cfg: TutorConfig, plan: SessionPlan | None = None) -> str:
-    """Open the session: one line in the target language, one easy question.
-
-    The conversation starts immediately — the learner's pre-flight WAS the
-    consent, so there is nothing to ask permission for (audit 2026-08-23: four
-    consent gates, all in the anchor language, on a product whose success line
-    is "I speak Spanish"). The only anchor-language opening left is the null
-    plan, which has no subject yet to ask about.
-    """
-    langs = {"target": cfg.target_language_name, "anchor": cfg.anchor_language_name}
+    blocks = [base, plan_block(plan)]
     if plan is not None and plan.scenario:
-        return GREETING_SCENARIO_INSTRUCTIONS.format(scenario=plan.scenario, **langs)
-    if plan is not None and plan.topic:
-        return GREETING_TOPIC_INSTRUCTIONS.format(topic=plan.topic, **langs)
-    return GREETING_INSTRUCTIONS.format(**langs)
+        blocks.append(SCENE_INSTRUCTIONS.format(scenario=plan.scenario))
+    goal_section = goal_block(goal)
+    if goal_section:
+        blocks.append(goal_section)
+    blocks.append(GOAL_TOOL_INSTRUCTIONS.format(anchor=cfg.anchor_language_name))
+    return "\n".join(blocks)
+
+
+def greeting_instructions(
+    cfg: TutorConfig,
+    plan: SessionPlan | None = None,
+    goal: SessionGoal | None = None,
+) -> str:
+    """Open the session by setting the goal. One exchange, then the conversation.
+
+    Two shapes (phase 7 step 3, Yash 2026-08-25): a pre-seeded goal is restated
+    in one line and confirmed; no pre-seed asks what they want to work on. Both
+    are in `TUTOR_GOAL_LANG`'s language — the target language by default, per
+    the vision doc's rule that the conversation opens in it, with the standing
+    one-anchor-line allowance if the learner stalls. There are no consent gates
+    beyond that single confirmation, and no "are you ready" (audit 2026-08-23).
+    """
+    langs = {
+        "target": cfg.target_language_name,
+        "anchor": cfg.anchor_language_name,
+        "goal_lang": cfg.goal_language_name,
+    }
+    if goal is not None:
+        opening = GREETING_GOAL_SEEDED_INSTRUCTIONS.format(goal=goal.text, **langs)
+    else:
+        opening = GREETING_GOAL_OPEN_INSTRUCTIONS.format(**langs)
+    if plan is not None and plan.scenario:
+        opening += "\n" + GREETING_SCENARIO_INSTRUCTIONS.format(scenario=plan.scenario)
+    return opening
+
+
+def goal_extract_instructions(cfg: TutorConfig) -> str:
+    """The silent safety net's prompt. See `agent.py`'s extraction task."""
+    return GOAL_EXTRACT_INSTRUCTIONS.format(
+        target=cfg.target_language_name, anchor=cfg.anchor_language_name
+    )
 
 
 def nudge_instructions() -> str:
@@ -435,20 +608,41 @@ def stt_prompt(cfg: TutorConfig) -> str:
     return STT_PROMPT.format(target=cfg.target_language_name, anchor=cfg.anchor_language_name)
 
 
-def analyzer_instructions(cfg: TutorConfig, plan: SessionPlan | None = None) -> str:
+def analyzer_instructions(
+    cfg: TutorConfig,
+    plan: SessionPlan | None = None,
+    goal: SessionGoal | None = None,
+) -> str:
+    """The analyzer's persona plus this session's focus.
+
+    Rebuilt once mid-session, when the goal lands (`CorrectionAnalyzer.set_goal`):
+    the plan cannot change, but the goal replaces it as the thing worth
+    weighting corrections towards.
+    """
     base = ANALYZER_INSTRUCTIONS.format(
         target=cfg.target_language_name, anchor=cfg.anchor_language_name
     )
+    language = ANALYZER_LANGUAGE_INSTRUCTIONS.format(
+        target=cfg.target_language_name, anchor=cfg.anchor_language_name
+    )
     # Only the forms and the words: a scenario tells the tutor who to be, but it
-    # does not tell the analyzer what to look at.
+    # does not tell the analyzer what to look at. The goal comes first once it
+    # exists — it is the session's spine, and the plan is only how it started.
     lines: list[str] = []
+    if goal is not None:
+        lines.append(f"what this session is for: {goal.text}")
+        if goal.forms:
+            lines.append("the forms that goal invites: " + ", ".join(goal.forms))
     if plan is not None and plan.tenses:
         lines.append("the forms the learner is practising: " + ", ".join(plan.tenses))
+    if plan is not None and plan.focus_note:
+        # The most valuable thing on the pre-flight screen, and until 2026-08-25
+        # it reached the tutor and never the analyzer (audit B7).
+        lines.append(f"what they asked specifically about: {plan.focus_note}")
     if plan is not None and plan.vocab:
         lines.append("the vocabulary they are working in: " + ", ".join(plan.vocab))
-    if not lines:
-        return base
-    return base + "\n" + ANALYZER_FOCUS_INSTRUCTIONS.format(lines=_bullets(lines))
+    focus = "" if not lines else ANALYZER_FOCUS_INSTRUCTIONS.format(lines=_bullets(lines))
+    return base + focus + language
 
 
 def translate_instructions(cfg: TutorConfig) -> str:
@@ -468,7 +662,11 @@ def ask_session_context(lines: list[str]) -> str:
 
 
 def review_instructions(cfg: TutorConfig) -> str:
-    """The Review tab's vocabulary and phrases. Tables are NOT generated here."""
+    """The Review tab's vocabulary and phrases, from the goal and the transcript.
+
+    Tables are NOT generated here: they come out of `conjugation/`, because a
+    model that invents a paradigm teaches a wrong ending nobody would catch.
+    """
     return REVIEW_INSTRUCTIONS.format(
         target=cfg.target_language_name, anchor=cfg.anchor_language_name
     )

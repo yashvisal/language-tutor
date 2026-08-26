@@ -160,6 +160,33 @@ MAX_CORRECTIONS = 200
 MAX_CORRECTION_CHARS = 500
 CORRECTION_FIELDS = ("id", "original", "replacement", "category", "severity", "explanation")
 
+# What the conversation was FOR, and the evidence of what it became (phase 7
+# step 3). Same rule as everything above: the ledger's bounds, re-applied here,
+# because a field that is too long costs the whole record.
+MAX_GOAL_CHARS = 200
+MAX_GOAL_FORMS = 8
+MAX_GOAL_FORM_CHARS = 60
+GOAL_SOURCES = ("plan", "tool", "extracted")
+MAX_ASKS = 25
+MAX_ASK_CHARS = 400
+MAX_LOOKUPS = 100
+MAX_LOOKUP_CHARS = 200
+
+# Why the session ended, sent with the final debit and only with it. Every
+# ending path in `agent.py` maps to exactly one of these; `ended` is the
+# teardown default (the learner left the page, or the job simply finished), and
+# History renders the difference between that and a crash.
+END_REASONS = (
+    "ended",
+    "out_of_minutes_idle",
+    "hold_idle",
+    "learner_left",
+    "model_error",
+    "ledger_failure",
+    "tutor_silent",
+)
+DEFAULT_END_REASON = "ended"
+
 # The ledger's own ceiling on a single report (24h). Clamped here so a clock
 # that somehow ran away is a 200 with a wrong number rather than a 400 and no
 # debit at all.
@@ -223,6 +250,9 @@ class BillingClient:
         self._ceiling_reached = False
         self._on_ceiling: Callable[[], Awaitable[None]] | None = None
         self._seq = 0
+        # Why this session ended, reported on the final debit. Set by the
+        # ending paths as they run; the default is the ordinary end.
+        self._end_reason = DEFAULT_END_REASON
         # The room's high-water mark before this job started. Set once, at job
         # start, from the balance read — never refreshed, because every later
         # read already contains this job's own debits.
@@ -257,6 +287,26 @@ class BillingClient:
         lock is not reentrant.
         """
         self._on_ceiling = handler
+
+    def set_end_reason(self, reason: str, *, weak: bool = False) -> None:
+        """Record why the session is ending, for the final debit.
+
+        `weak=True` is for a path that only SUSPECTS an ending — the
+        first-audio watchdog, which fires on a silent stage that may still
+        recover — and never overwrites a reason an actual ending already set.
+        An unknown code is ignored rather than sent: the ledger validates the
+        enum and a 400 would cost the closing debit.
+        """
+        if reason not in END_REASONS:
+            logger.warning("ignoring an unknown end reason %r", reason)
+            return
+        if weak and self._end_reason != DEFAULT_END_REASON:
+            return
+        self._end_reason = reason
+
+    @property
+    def end_reason(self) -> str:
+        return self._end_reason
 
     @property
     def billed_before(self) -> int:
@@ -326,6 +376,9 @@ class BillingClient:
             }
             if final:
                 payload["final"] = True
+                # Only with `final` (the wire contract): a periodic debit has
+                # no reason to carry, because nothing has ended.
+                payload["reason"] = self._end_reason
             balance = await self._post(DEBIT_PATH, payload)
             if balance is None:
                 self._consecutive_failures += 1
@@ -388,6 +441,11 @@ class BillingClient:
         transcript: list[dict[str, str]] | None = None,
         review: dict[str, object] | None = None,
         corrections: list[dict[str, str]] | None = None,
+        goal: dict[str, object] | None = None,
+        turns: int | None = None,
+        anchor_ratio: float | None = None,
+        asks: list[str] | None = None,
+        lookups: list[dict[str, str]] | None = None,
     ) -> bool:
         """Post this session's record. Returns whether the ledger took it.
 
@@ -404,15 +462,30 @@ class BillingClient:
         payload: dict = {"room": self._room, "userId": self._user_id, "jobId": self._job_id}
         if about:
             payload["about"] = " ".join(about.split())[:MAX_ABOUT_CHARS]
-        turns = _clean_transcript(transcript)
-        if turns:
-            payload["transcript"] = turns
+        # NOT `turns`: that is the parameter above, and shadowing it here cost
+        # the learner-turn count its place in the record until it was caught.
+        conversation = _clean_transcript(transcript)
+        if conversation:
+            payload["transcript"] = conversation
         material = _clean_review(review)
         if material is not None:
             payload["review"] = material
         findings = _clean_corrections(corrections)
         if findings:
             payload["corrections"] = findings
+        wanted = _clean_goal(goal)
+        if wanted is not None:
+            payload["goal"] = wanted
+        if isinstance(turns, int) and turns > 0:
+            payload["turns"] = turns
+        if isinstance(anchor_ratio, (int, float)) and not isinstance(anchor_ratio, bool):
+            payload["anchorRatio"] = round(min(1.0, max(0.0, float(anchor_ratio))), 3)
+        questions = _clean_asks(asks)
+        if questions:
+            payload["asks"] = questions
+        looked_up = _clean_lookups(lookups)
+        if looked_up:
+            payload["lookups"] = looked_up
         if len(payload) <= 3:
             # Nothing but the identifiers: a session that produced no record.
             return False
@@ -437,6 +510,11 @@ class BillingClient:
                 "turns": len(payload.get("transcript", [])),
                 "corrections": len(payload.get("corrections", [])),
                 "review": "review" in payload,
+                "goal": "goal" in payload,
+                "learner_turns": payload.get("turns"),
+                "anchor_ratio": payload.get("anchorRatio"),
+                "asks": len(payload.get("asks", [])),
+                "lookups": len(payload.get("lookups", [])),
             },
         )
         return True
@@ -630,6 +708,59 @@ def _clean_corrections(corrections: list[dict[str, str]] | None) -> list[dict[st
             continue
         cleaned.append(item)
     return cleaned[-MAX_CORRECTIONS:]
+
+
+def _clean_goal(goal: dict[str, object] | None) -> dict[str, object] | None:
+    """The session's goal, bounded. `None` when there is no goal to send."""
+    if not isinstance(goal, dict):
+        return None
+    text = " ".join(str(goal.get("text") or "").split())[:MAX_GOAL_CHARS]
+    if not text:
+        return None
+    forms: list[str] = []
+    raw_forms = goal.get("forms")
+    if isinstance(raw_forms, (list, tuple)):
+        for entry in raw_forms:
+            form = " ".join(str(entry or "").split())[:MAX_GOAL_FORM_CHARS]
+            if form and form not in forms:
+                forms.append(form)
+            if len(forms) >= MAX_GOAL_FORMS:
+                break
+    source = goal.get("source")
+    return {
+        "text": text,
+        "forms": forms,
+        "source": source if source in GOAL_SOURCES else "plan",
+    }
+
+
+def _clean_asks(asks: list[str] | None) -> list[str]:
+    """The questions the learner typed in Ask, oldest first."""
+    if not asks:
+        return []
+    cleaned: list[str] = []
+    for ask in asks:
+        if not isinstance(ask, str):
+            continue
+        text = " ".join(ask.split())[:MAX_ASK_CHARS]
+        if text:
+            cleaned.append(text)
+    return cleaned[-MAX_ASKS:]
+
+
+def _clean_lookups(lookups: list[dict[str, str]] | None) -> list[dict[str, str]]:
+    """Every select-to-translate lookup, as `{source, translation}`."""
+    if not lookups:
+        return []
+    cleaned: list[dict[str, str]] = []
+    for lookup in lookups:
+        if not isinstance(lookup, dict):
+            continue
+        source = " ".join(str(lookup.get("source") or "").split())[:MAX_LOOKUP_CHARS]
+        translation = " ".join(str(lookup.get("translation") or "").split())[:MAX_LOOKUP_CHARS]
+        if source and translation:
+            cleaned.append({"source": source, "translation": translation})
+    return cleaned[-MAX_LOOKUPS:]
 
 
 def _pairs(raw: object, limit: int, first: str, second: str) -> list[dict[str, str]]:

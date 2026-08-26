@@ -153,6 +153,76 @@ export interface SessionPlan {
 }
 
 /**
+ * Where the session's confirmed goal came from — the three ways step 3's goal
+ * crystallization can land one, in descending order of confidence.
+ *
+ * - `"plan"`: the pre-flight cards already said enough (topic / focusNote /
+ *   note), so the tutor only restated it and the learner said yes.
+ * - `"tool"`: the tutor called `set_session_goal` when the learner confirmed —
+ *   the ordinary path when the plan was thin.
+ * - `"extracted"`: the safety net. The tool never fired, so the goal was read
+ *   silently off the opening exchange. Real, but nobody said it back.
+ */
+export type GoalSource = "plan" | "tool" | "extracted"
+
+/**
+ * The session's spine: what the learner and the tutor agreed, in one line, at
+ * the top of the conversation. It drives the tutor's standing instructions,
+ * the analyzer's focus, the Ask context and the Review — and it rides the
+ * after-session record so History can say what was SET UP as well as what was
+ * done ("you set up X and did Y"; `about` is the Y).
+ *
+ * `forms` are the grammatical forms the goal implies, as catalog values where
+ * they came from the plan and as free text where the tutor named them. Empty
+ * is a real answer — a goal can be purely topical.
+ */
+export interface SessionGoal {
+  /** One line, <= 200 chars, in the learner's anchor language. */
+  text: string
+  /** <= 8 entries, <= 60 chars each. */
+  forms: string[]
+  source: GoalSource
+}
+
+/**
+ * Why a conversation stopped. The worker is the only half that knows, and
+ * before this the wire carried nothing but `final: true` — so History could
+ * not tell a clean goodbye from a crash, and the summary could not explain
+ * itself.
+ *
+ * - `"ended"` — the learner ended it, or the tutor closed it cleanly.
+ * - `"out_of_minutes_idle"` — the clock hit zero and nobody bought more.
+ * - `"hold_idle"` — held on the study surface and never resumed.
+ * - `"learner_left"` — the participant left the room and did not come back.
+ * - `"model_error"` — the realtime model failed.
+ * - `"ledger_failure"` — five consecutive debit failures held the clock and
+ *   ended the session (phase 7 step 1's ceiling).
+ * - `"tutor_silent"` — the tutor never produced audio at all: a start that
+ *   failed rather than a conversation that ended.
+ */
+export type SessionEndReason =
+  | "ended"
+  | "out_of_minutes_idle"
+  | "hold_idle"
+  | "learner_left"
+  | "model_error"
+  | "ledger_failure"
+  | "tutor_silent"
+
+/**
+ * One select-to-translate lookup, as stored. The span the learner highlighted
+ * and what it came back as — the sharpest record a session produces of what
+ * they did not understand, and until now it lived in an overlay that unmounted
+ * on resume.
+ */
+export interface TranslationLookup {
+  /** The selected target-language span, <= 200 chars. */
+  source: string
+  /** Its anchor-language translation, <= 200 chars. */
+  translation: string
+}
+
+/**
  * A finished session, snapshotted at the moment it ended — the whole input to
  * the post-session summary.
  *
@@ -259,14 +329,47 @@ export interface StudySession {
   /** Asks a question and files it under the turn on stage. Never rejects. */
   ask: (question: string, turnId: string | null) => void
   /**
-   * This session's review material, awaited by the Review tab. Polls while the
-   * worker is still generating and resolves null when it never arrives —
-   * "not available" is a quiet line, not an error.
+   * This session's review material and everything the tab needs to say about
+   * it. State rather than a promise because the material is no longer fetched
+   * once and frozen: the worker regenerates it during the session and pushes a
+   * new version, so what the tab renders changes UNDER it (see `ReviewState`).
    */
-  fetchReview: () => Promise<ReviewMaterial | null>
+  review: ReviewState
+  /**
+   * The session's confirmed goal, one line, or null before one exists. It is
+   * here — on the study surface's state — because the Review tab is the one
+   * place it is shown live: the stage stays minimal (plans/product-vision.md,
+   * "the screen carries the minimum the current moment needs").
+   */
+  goal: string | null
   /** The tab the learner last had open. Remembered for the session. */
   tab: StudyTab
   setTab: (tab: StudyTab) => void
+}
+
+/**
+ * The Review tab's whole world, owned by the producer for the length of the
+ * session so that it survives the overlay unmounting on every resume.
+ *
+ * Four states, and they are not the same fact:
+ *
+ * - `loading` — nothing has arrived yet and something is in flight. The only
+ *   state that shimmers, and only ever before the FIRST material: a refresh
+ *   behind an existing snapshot must not blank the page a learner is reading.
+ * - `absent` — asked, waited, and nothing came. A quiet line, not an error and
+ *   not a retry button.
+ * - material, with a `version` — the ordinary state.
+ * - `updatedAt` — the moment new material REPLACED material already on screen.
+ *   The tab wears a one-word marker for a few seconds and then stops; null
+ *   whenever the current material is the first that ever landed.
+ */
+export interface ReviewState {
+  material: ReviewMaterial | null
+  loading: boolean
+  absent: boolean
+  /** The snapshot `material` came from, where the worker named one. */
+  version: number | null
+  updatedAt: number | null
 }
 
 /* -------------------------------------------------------------------------- */

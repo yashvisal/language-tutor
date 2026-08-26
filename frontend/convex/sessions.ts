@@ -10,11 +10,14 @@ import type { Doc } from "./_generated/dataModel"
 import { secondsFor, userByClerkId } from "./users"
 import {
   correctionValidator,
+  endReasonValidator,
   reviewMaterialValidator,
+  sessionGoalValidator,
   sessionOutcomeValidator,
   sessionPlanValidator,
   SUMMARY_LIMITS,
   transcriptTurnValidator,
+  translationLookupValidator,
 } from "./validators"
 import {
   DELTA_CAP_PREFIX,
@@ -153,6 +156,12 @@ export const start = mutation({
  * It never *overwrites* an `endedAt`: the client's `finish` is still the one
  * that writes the outcome, and whichever of the two arrives first is the more
  * accurate end. This only ever fills in an end that nobody else was going to.
+ *
+ * **`reason` says why.** It rides the same final report because the worker is
+ * the only half that knows — the browser sees a room close and cannot tell a
+ * model failure from a goodbye. It is written on its own condition (`final`,
+ * and no reason on the row yet) rather than with `endedAt`, so a session the
+ * client already closed still gets its explanation.
  */
 export const debit = internalMutation({
   args: {
@@ -167,6 +176,13 @@ export const debit = internalMutation({
      * on every periodic one. See the `endedAt` note in the doc block above.
      */
     final: v.optional(v.boolean()),
+    /**
+     * Why the conversation stopped. Only meaningful alongside `final: true` —
+     * a periodic report has no end to explain, and one sent on a periodic
+     * report is validated and then ignored rather than recorded, because a
+     * session that is still happening has not ended for any reason yet.
+     */
+    reason: v.optional(endReasonValidator),
   },
   returns: v.object({ balanceSeconds: v.number() }),
   handler: async (ctx, args) => {
@@ -228,7 +244,11 @@ export const debit = internalMutation({
         createdAt: Date.now(),
       })
     }
-    const patch: { secondsBilled?: number; endedAt?: number } = {}
+    const patch: {
+      secondsBilled?: number
+      endedAt?: number
+      endReason?: Infer<typeof endReasonValidator>
+    } = {}
     if (reported > billed) patch.secondsBilled = reported
     // Only on the worker's last report. A periodic debit, or the debit at a
     // hold on zero, leaves `endedAt` unset: the clock holding at zero is not
@@ -239,6 +259,23 @@ export const debit = internalMutation({
       session.endedAt === undefined
     ) {
       patch.endedAt = Date.now()
+    }
+    // The reason travels on the same report but is written on its own
+    // condition, because the two facts are not the same fact. `endedAt` may
+    // already be set by the client's `finish` — the tab knew the session was
+    // over first — and the reason would then be dropped along with it, which
+    // is precisely the case History most needs explained. So: written when
+    // the worker says this was the end and the row does not already carry
+    // one. Never overwritten: the first `final` report is the one that was
+    // actually there when it stopped, and a redispatched job's teardown is
+    // guessing about a session it did not see end.
+    if (
+      args.final === true &&
+      args.reason !== undefined &&
+      session !== null &&
+      session.endReason === undefined
+    ) {
+      patch.endReason = args.reason
     }
     if (session !== null && Object.keys(patch).length > 0) {
       await ctx.db.patch(session._id, patch)
@@ -390,6 +427,18 @@ export const recordSummary = internalMutation({
      * that never reached `finish`. Only ever written into an outcome that does
      * not exist yet; see the note below. */
     corrections: v.optional(v.array(correctionValidator)),
+    /** The confirmed goal — what the conversation was SET UP to be, against
+     * `about`'s what it became. */
+    goal: v.optional(sessionGoalValidator),
+    /** Learner turns committed. Rounded and floored at zero here. */
+    turns: v.optional(v.number()),
+    /** 0..1, the share of those turns spoken mostly in the anchor language.
+     * Clamped into range rather than refused, like every other bound here. */
+    anchorRatio: v.optional(v.number()),
+    /** The Ask thread's questions, in order. */
+    asks: v.optional(v.array(v.string())),
+    /** Select-to-translate lookups, in order. */
+    lookups: v.optional(v.array(translationLookupValidator)),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -420,6 +469,11 @@ export const recordSummary = internalMutation({
       review?: Infer<typeof reviewMaterialValidator>
       outcome?: Infer<typeof sessionOutcomeValidator>
       corrections?: number
+      goal?: Infer<typeof sessionGoalValidator>
+      turns?: number
+      anchorRatio?: number
+      asks?: string[]
+      lookups?: Infer<typeof translationLookupValidator>[]
     } = {}
 
     if (args.about !== undefined) {
@@ -454,6 +508,46 @@ export const recordSummary = internalMutation({
             })),
           })),
       }
+    }
+
+    // Step 3's fields, on exactly the same terms as the three above: each one
+    // independent, absent means "leave the column alone", present replaces
+    // wholesale, and everything is clamped rather than refused.
+    if (args.goal !== undefined) {
+      patch.goal = {
+        text: clampTo(args.goal.text, SUMMARY_LIMITS.goalChars),
+        forms: args.goal.forms
+          .slice(0, SUMMARY_LIMITS.goalForms)
+          .map((form) => clampTo(form, SUMMARY_LIMITS.goalFormChars)),
+        source: args.goal.source,
+      }
+    }
+    // A count, so it is an integer and it is not negative. Both are wire
+    // checks too; this is the half that has to hold if the bound on the other
+    // side is ever loosened, because a negative turn count would render.
+    if (args.turns !== undefined) {
+      patch.turns = Math.max(0, Math.round(args.turns))
+    }
+    // A ratio, so it is in [0, 1]. NaN would pass the schema's `v.number()`
+    // and then print as "NaN% anchor", so it lands as 0 — "we measured
+    // nothing" — rather than propagating.
+    if (args.anchorRatio !== undefined) {
+      patch.anchorRatio = Number.isFinite(args.anchorRatio)
+        ? Math.min(1, Math.max(0, args.anchorRatio))
+        : 0
+    }
+    if (args.asks !== undefined) {
+      patch.asks = args.asks
+        .slice(0, SUMMARY_LIMITS.asks)
+        .map((question) => clampTo(question, SUMMARY_LIMITS.askChars))
+    }
+    if (args.lookups !== undefined) {
+      patch.lookups = args.lookups
+        .slice(0, SUMMARY_LIMITS.lookups)
+        .map((lookup) => ({
+          source: clampTo(lookup.source, SUMMARY_LIMITS.lookupChars),
+          translation: clampTo(lookup.translation, SUMMARY_LIMITS.lookupChars),
+        }))
     }
 
     // The backstop, and the one place this mutation touches the client's
@@ -532,6 +626,15 @@ export const history = query({
        * before the worker wrote one. The list prints it where it has one and
        * falls back to the plan's topic where it does not. */
       about: v.union(v.string(), v.null()),
+      /** The confirmed goal's TEXT only — what the conversation was set up to
+       * be. The list wants one line, not the object; the modal reads
+       * `byRoom` for the forms and the source. `null` where no goal was ever
+       * confirmed, which is every row written before step 3. */
+      goal: v.union(v.string(), v.null()),
+      /** Why it stopped, `null` where nobody said — which is what a row from
+       * before this field, or a session the reconciliation cron closed, looks
+       * like. Absent must never be read as a clean end. */
+      endReason: v.union(endReasonValidator, v.null()),
     })
   ),
   handler: async (ctx) => {
@@ -577,6 +680,8 @@ export const history = query({
       plan: row.plan,
       corrections: row.outcome?.corrections ?? [],
       about: row.about ?? null,
+      goal: row.goal?.text ?? null,
+      endReason: row.endReason ?? null,
     }))
   },
 })
@@ -614,6 +719,15 @@ export const byRoom = query({
       startedAt: v.number(),
       endedAt: v.union(v.number(), v.null()),
       plan: sessionPlanValidator,
+      /** The whole goal object here, unlike `history`, which carries only the
+       * line: this is the read behind both the summary and the History modal,
+       * and both of them want the forms and how the goal was captured. */
+      goal: v.union(sessionGoalValidator, v.null()),
+      endReason: v.union(endReasonValidator, v.null()),
+      turns: v.union(v.number(), v.null()),
+      anchorRatio: v.union(v.number(), v.null()),
+      asks: v.union(v.array(v.string()), v.null()),
+      lookups: v.union(v.array(translationLookupValidator), v.null()),
     })
   ),
   handler: async (ctx, args) => {
@@ -642,6 +756,15 @@ export const byRoom = query({
       startedAt: session.startedAt,
       endedAt: session.endedAt ?? null,
       plan: session.plan,
+      goal: session.goal ?? null,
+      endReason: session.endReason ?? null,
+      // `null`, not `0`: "the worker never measured this" and "the learner
+      // took no turns" are different facts, and only one of them is worth
+      // printing. Zero would make every pre-step-3 session look silent.
+      turns: session.turns ?? null,
+      anchorRatio: session.anchorRatio ?? null,
+      asks: session.asks ?? null,
+      lookups: session.lookups ?? null,
     }
   },
 })

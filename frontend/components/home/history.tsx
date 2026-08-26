@@ -23,6 +23,12 @@ import {
   ReviewMaterialView,
   hasReviewMaterial,
 } from "@/components/session/review-material"
+import {
+  AsksList,
+  EndReasonNote,
+  GoalLine,
+  LookupsList,
+} from "@/components/session/session-record"
 import { TranscriptRecord } from "@/components/session/transcript-record"
 import { Button } from "@/components/ui/button"
 import {
@@ -128,13 +134,21 @@ function SessionDialog({
    * row that was actually opened, and rendered with the same two components
    * the post-session summary uses, so one conversation has one appearance.
    */
-  const room = entry === null ? null : roomOf(entry)
+  const room = entry?.room ?? null
   const record = useQuery(
     api.sessions.byRoom,
     room === null ? "skip" : { room }
   )
   const review = record?.review ?? null
   const transcript = record?.transcript ?? null
+  /**
+   * The goal from the full record where it has arrived, and from the list row
+   * otherwise — `sessions.history` carries the line and `byRoom` the object,
+   * and the modal opens before the second query resolves. Same value either
+   * way; this only stops the line appearing a beat late.
+   */
+  const goal = record?.goal?.text ?? entry?.goal ?? null
+  const endReason = entry?.endReason ?? record?.endReason ?? null
 
   return (
     <Dialog open={entry !== null} onOpenChange={onOpenChange}>
@@ -152,6 +166,17 @@ function SessionDialog({
             </DialogHeader>
 
             <div className="max-h-[60svh] [scrollbar-width:thin] [scrollbar-color:var(--border)_transparent] space-y-6 overflow-y-auto px-6 py-1">
+              {/* What the session was SET UP to be — the line the tutor and
+                  the learner agreed at the top of it. The list row shows only
+                  what it BECAME (`about`); the goal lives in here, because a
+                  row that says both says neither. */}
+              <GoalLine goal={goal} />
+
+              {/* And why it stopped, where that is worth saying. Absent for an
+                  ordinary ending, and for every row that predates the field —
+                  which is why a missing reason is never read as a clean end. */}
+              <EndReasonNote reason={endReason} />
+
               <div>
                 <p className="text-sm font-medium text-foreground">
                   What you talked about
@@ -229,6 +254,12 @@ function SessionDialog({
                 )}
               </div>
 
+              {/* The same two pieces the post-session summary shows, from the
+                  same components: what the learner asked, and what they had to
+                  look up. */}
+              <AsksList asks={record?.asks} />
+              <LookupsList lookups={record?.lookups} />
+
               {hasReviewMaterial(review) && (
                 <div>
                   <p className="text-sm font-medium text-foreground">
@@ -257,21 +288,6 @@ function SessionDialog({
       </DialogContent>
     </Dialog>
   )
-}
-
-/**
- * The room a stored conversation happened in — the key `sessions.byRoom` reads.
- *
- * Read defensively because `sessions.history` does not return `room` yet (see
- * the phase-7 step-2 hand-off note): the modal degrades to what the list row
- * already carries — the plan, the meter, the corrections — and gains the
- * Review and the transcript the moment the query includes it. A hard
- * dependency here would have made the whole History page fail to build against
- * a backend half of a step behind.
- */
-function roomOf(entry: HistoryEntry): string | null {
-  const value = (entry as HistoryEntry & { room?: unknown }).room
-  return typeof value === "string" && value.length > 0 ? value : null
 }
 
 /**

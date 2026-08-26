@@ -2,11 +2,14 @@ import { defineSchema, defineTable } from "convex/server"
 import { v } from "convex/values"
 
 import {
+  endReasonValidator,
   levelValidator,
   reviewMaterialValidator,
+  sessionGoalValidator,
   sessionOutcomeValidator,
   sessionPlanValidator,
   transcriptTurnValidator,
+  translationLookupValidator,
 } from "./validators"
 
 /**
@@ -118,6 +121,52 @@ export default defineSchema({
      * the Review tab saw them. Made once per session and never regenerated,
      * so if it is not stored it is gone. */
     review: v.optional(reviewMaterialValidator),
+
+    /**
+     * Step 3's half of the same record: what was SET UP, how much was
+     * actually done, and why it stopped. Written by the worker on the same
+     * two calls (`/tutor/summary` for all but the last, `/tutor/debit` for
+     * `endReason`), all optional, all independently written, none of them
+     * backfilled onto older rows.
+     *
+     * Together with `about` they let History say the sentence it could not
+     * say before: "you set up X, talked for N turns, and it ended because Y."
+     */
+
+    /** The confirmed goal — the session's spine. `text` is one line (<= 200
+     * chars), `forms` the grammatical forms it implies (<= 8 x 60), `source`
+     * how it was captured (plan / tool / extracted), which is also how much
+     * to trust it: an extracted goal was never said back to the learner. */
+    goal: v.optional(sessionGoalValidator),
+    /**
+     * Why the conversation stopped, from the worker's teardown debit — the
+     * one half that knows. Absent on a row that is still open, and on every
+     * row written before this field existed, so absent means "we do not
+     * know", never "it ended cleanly". Written once and never overwritten:
+     * the first `final` report is the one that was actually there.
+     */
+    endReason: v.optional(endReasonValidator),
+    /** Learner turns committed by the worker's turn detector — the honest
+     * measure of how much the learner actually spoke, which seconds are not
+     * (a held session bills nothing and a silent one bills the same as a
+     * talkative one). */
+    turns: v.optional(v.number()),
+    /**
+     * 0..1: the share of those turns spoken mostly in the ANCHOR language.
+     * High is the learner falling back to English, which is the exact input
+     * support-on-evidence needs — and a number the tutor was measuring live
+     * and discarding.
+     */
+    anchorRatio: v.optional(v.number()),
+    /** The questions asked in the Ask tab, in order (<= 25 x 400 chars).
+     * Answers are not stored: the question is what the learner did not know,
+     * and that is the study record. */
+    asks: v.optional(v.array(v.string())),
+    /** Every select-to-translate lookup (<= 100, strings <= 200) — the span
+     * highlighted and what it came back as. It lived in an overlay that
+     * unmounted on resume, which meant the sharpest signal in the session was
+     * also the only one nothing kept. */
+    lookups: v.optional(v.array(translationLookupValidator)),
   })
     .index("by_room", ["room"])
     .index("by_user", ["userId"])

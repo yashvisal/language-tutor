@@ -35,6 +35,7 @@ from livekit.agents import (
     JobContext,
     StopResponse,
     TurnHandlingOptions,
+    function_tool,
     inference,
     llm,
     room_io,
@@ -57,6 +58,7 @@ from config import (
     ATTR_OUT_OF_MINUTES,
     ATTR_PAUSED,
     ATTR_REMAINING_S,
+    ATTR_REVIEW_VERSION,
     ATTR_SESSION_OVER,
     ATTR_TRUE,
     ATTR_TURN_SEQ,
@@ -67,6 +69,7 @@ from config import (
     RPC_RESUME,
     TutorConfig,
 )
+from goal import GoalKeeper
 from plan import JobMetadata, SessionPlan
 from prompts import (
     BRIDGE_INTENTS,
@@ -77,8 +80,8 @@ from prompts import (
     tutor_instructions,
 )
 from review import ReviewMaterial, register_review_rpc
-from state import SessionFacts, SessionState
-from summary import SUMMARY_BUDGET_S, report_session_summary
+from state import SessionFacts, SessionGoal, SessionState, goal_from_plan
+from summary import SUMMARY_BUDGET_S, report_session_summary, transcript_turns
 from translate import SpanTranslator, register_translate_rpc
 from usage import UsageTracker
 
@@ -153,6 +156,17 @@ def _publish_turn_commit(room: rtc.Room, state: SessionState) -> None:
     _spawn(_publish(), "tutor-turn-seq")
 
 
+def _context_turns(turn_ctx: llm.ChatContext, new_message: llm.ChatMessage) -> list[dict[str, str]]:
+    """The conversation so far as `{role, text}`, including the turn that just
+    committed. `turn_ctx` is the framework's temporary copy, which does not yet
+    contain `new_message`."""
+    turns = transcript_turns(turn_ctx)
+    text = " ".join((new_message.text_content or "").split())
+    if text:
+        turns.append({"role": "learner", "text": text})
+    return turns
+
+
 class TutorAgent(Agent):
     """The conversation partner. Analysis happens beside it, never inside it."""
 
@@ -163,12 +177,43 @@ class TutorAgent(Agent):
         state: SessionState,
         room: rtc.Room,
         plan: SessionPlan | None = None,
+        goals: GoalKeeper | None = None,
     ) -> None:
         super().__init__(instructions=tutor_instructions(cfg, plan))
         self._cfg = cfg
         self._analyzer = analyzer
         self._state = state
         self._room = room
+        self._goals = goals
+
+    # The session's one tool (phase 7 step 3). It exists because the goal the
+    # conversation is aimed at should be what the learner AGREED to, not what a
+    # model inferred afterwards — and a tool call is the only seam that can say
+    # so. `goal.py` owns everything that happens next; a missed call is caught
+    # by the extraction safety net there.
+    @function_tool
+    async def set_session_goal(self, goal: str, forms: list[str], why: str) -> str:
+        """Record what this session is for, once, when the learner confirms it.
+
+        Call this exactly once per session, at the moment the learner agrees
+        what they want to work on. Never mention it, never say you are saving
+        or noting anything, and never call it again.
+
+        Args:
+            goal: One short line naming what they agreed to work on.
+            forms: The forms or phrases that goal invites; empty if there are none.
+            why: A few words on where the goal came from.
+        """
+        logger.info("set_session_goal called", extra={"goal": goal, "why": why})
+        if self._goals is None:
+            return "Saved. Continue the conversation without mentioning this."
+        await self._goals.adopt(SessionGoal.make(goal, forms, source="tool", confirmed=True))
+        # Deliberately an instruction, not data: a realtime model speaks after a
+        # tool result, and what it must do is carry on as if nothing happened.
+        return (
+            "Saved. Do not mention this or acknowledge it in any way — "
+            "continue the conversation with your next question."
+        )
 
     # The analyzer trigger. Fires with the full committed turn because turn
     # detection happens agent-side — with model-owned turn detection this node
@@ -181,6 +226,15 @@ class TutorAgent(Agent):
         # hold is still a committed turn, and the StopResponse it raises only
         # suppresses the tutor's reply.
         _publish_turn_commit(self._room, self._state)
+
+        # The goal's safety net: by the third committed turn the opening
+        # exchange has happened, and if the tool never fired the session still
+        # needs a goal (see `goal.py`). No-op once one exists.
+        if self._goals is not None:
+            try:
+                self._goals.maybe_extract(_context_turns(turn_ctx, new_message))
+            except Exception:
+                logger.warning("goal extraction trigger failed", exc_info=True)
 
         text = (new_message.text_content or "").strip()
         if text and self._analyzer is not None:
@@ -274,14 +328,51 @@ async def tutor(ctx: JobContext) -> None:
         ),
     )
 
-    analyzer = CorrectionAnalyzer(cfg, ctx.room, facts, meta.plan) if cfg.analyzer_enabled else None
-    translator = SpanTranslator(cfg)
-    # The study surface (phase 4, WS4c). Both are text-only and run while the
-    # session is held, which is exactly when the voice model costs nothing.
-    coach = AskCoach(cfg, meta.plan, facts)
-    review = ReviewMaterial(cfg, meta.plan)
+    # Built first: every out-of-band text call hands its tokens in here, which
+    # is the only way they reach the cost line (audit §4.7 — the analyzer, Ask,
+    # translate and Review all contributed zero until phase 7 step 3).
     usage = UsageTracker()
     session.on("session_usage_updated", usage.on_usage)
+
+    analyzer = (
+        CorrectionAnalyzer(cfg, ctx.room, facts, meta.plan, usage=usage)
+        if cfg.analyzer_enabled
+        else None
+    )
+    translator = SpanTranslator(cfg, usage=usage)
+    # The study surface (phase 4, WS4c). Both are text-only and run while the
+    # session is held, which is exactly when the voice model costs nothing.
+    coach = AskCoach(cfg, meta.plan, facts, usage=usage)
+    review = ReviewMaterial(cfg, meta.plan, usage=usage)
+
+    async def _publish_review_version(version: int) -> None:
+        # Push, not poll (phase 7 step 3): the Review used to be made once and
+        # never change, so the tab stopped asking at `ready: true`. Now it is
+        # regenerated from the transcript, and this is how the tab is told.
+        await ctx.room.local_participant.set_attributes({ATTR_REVIEW_VERSION: str(version)})
+
+    review.set_snapshot_handler(_publish_review_version)
+
+    # The goal: pre-seeded from the learner's own cards, deterministically and
+    # with no model call, so the tutor's opening has something to restate. It is
+    # UNCONFIRMED — a proposal the first exchange asks about, not the session's
+    # goal — so nothing downstream runs on it yet.
+    seeded_goal = goal_from_plan(meta.plan)
+    facts.set_goal(seeded_goal)
+    if seeded_goal is not None:
+        logger.info("goal pre-seeded from the plan", extra=seeded_goal.log_fields())
+    goals = GoalKeeper(
+        cfg,
+        facts,
+        state,
+        ctx.room,
+        plan=meta.plan,
+        review=review,
+        analyzer=analyzer,
+        billing=billing,
+        usage=usage,
+        spawn=_spawn,
+    )
 
     async def _shutdown() -> None:
         # Every step is guarded and independent: one failing teardown must not
@@ -313,6 +404,9 @@ async def tutor(ctx: JobContext) -> None:
                         review=review,
                         facts=facts,
                         usage=usage,
+                        turns_taken=state.turn_seq,
+                        coach=coach,
+                        translator=translator,
                     ),
                     timeout=SUMMARY_BUDGET_S,
                 )
@@ -340,6 +434,10 @@ async def tutor(ctx: JobContext) -> None:
             await review.aclose()
         except Exception:
             logger.warning("review shutdown failed", exc_info=True)
+        try:
+            await goals.aclose()
+        except Exception:
+            logger.warning("goal keeper shutdown failed", exc_info=True)
         if analyzer is not None:
             try:
                 await analyzer.aclose()
@@ -348,8 +446,10 @@ async def tutor(ctx: JobContext) -> None:
 
     ctx.add_shutdown_callback(_shutdown)
 
+    tutor_agent = TutorAgent(cfg, analyzer, state, ctx.room, meta.plan, goals)
+    goals.attach(tutor_agent)
     await session.start(
-        agent=TutorAgent(cfg, analyzer, state, ctx.room, meta.plan),
+        agent=tutor_agent,
         room=ctx.room,
         room_options=room_io.RoomOptions(
             # Text input is off: this is a voice surface, not a chat box.
@@ -359,7 +459,7 @@ async def tutor(ctx: JobContext) -> None:
 
     # One hold, two sources: the learner's pause RPC and the clock at zero
     # balance. Both go through this object so the two feel identical on screen.
-    hold = SessionHold(ctx, session, state, analyzer)
+    hold = SessionHold(ctx, session, state, analyzer, facts, review)
     clock = _build_clock(ctx, cfg, session, state, budget_s, hold, billing)
 
     # The learner leaving the room is the second thing that holds the meter.
@@ -378,10 +478,12 @@ async def tutor(ctx: JobContext) -> None:
     # coach's client, whose first question is a learner sitting on a spinner.
     translator.warm_in_background()
     coach.warm_in_background()
-    # The Review tab's material is made once per session and never changes, so
-    # it is made NOW rather than on the first open — by the time anyone pauses
-    # to study, it is already sitting there.
-    review.generate_in_background()
+    # The Review is NOT generated here any more (phase 7 step 3). It is made
+    # from the confirmed goal, which does not exist yet: generating from the
+    # plan at session start is what gave every session the same four generic
+    # tables (audit §3.2) and reviewed restaurants for a session about taxis
+    # (backlog #2). A hold before the goal lands still resolves the tab, with
+    # the tables alone.
 
     # Tell the frontend whether corrections are coming at all, so it can skip
     # the analyzing phase entirely when the analyzer is off.
@@ -389,6 +491,8 @@ async def tutor(ctx: JobContext) -> None:
         {
             ATTR_ANALYZER: ANALYZER_ON if cfg.analyzer_enabled else ANALYZER_OFF,
             ATTR_SESSION_OVER: ATTR_FALSE,
+            # "0" = nothing generated yet. Every new snapshot bumps it.
+            ATTR_REVIEW_VERSION: "0",
             # Explicitly empty: "nothing has gone wrong", published up front so
             # a client that joins late never has to guess.
             ATTR_ERROR: ERROR_NONE,
@@ -400,8 +504,8 @@ async def tutor(ctx: JobContext) -> None:
     # the greeting was asked for (audit B4b). The greeting is still requested
     # here, first, so the learner's first metered second is a second of
     # tutoring.
-    session.generate_reply(instructions=greeting_instructions(cfg, meta.plan))
-    _meter_from_first_tutor_audio(ctx, session, clock)
+    session.generate_reply(instructions=greeting_instructions(cfg, meta.plan, seeded_goal))
+    _meter_from_first_tutor_audio(ctx, session, clock, billing)
 
 
 async def _open_ledger(
@@ -477,7 +581,10 @@ async def _open_ledger(
 
 
 def _meter_from_first_tutor_audio(
-    ctx: JobContext, session: AgentSession, clock: SessionClock
+    ctx: JobContext,
+    session: AgentSession,
+    clock: SessionClock,
+    billing: BillingClient | None = None,
 ) -> None:
     """Start the clock on the first frame of tutor audio that actually plays.
 
@@ -512,6 +619,11 @@ def _meter_from_first_tutor_audio(
             FIRST_AUDIO_TIMEOUT_S,
         )
         await _publish_error(ctx.room, ERROR_TUTOR_SILENT)
+        # Weak: this does not end anything (nothing was billed — the clock
+        # never started), but if the session ends without a better reason,
+        # "the tutor never spoke" is the honest one for History.
+        if billing is not None:
+            billing.set_end_reason("tutor_silent", weak=True)
 
     _spawn(_watchdog(), "tutor-first-audio-watchdog")
 
@@ -577,7 +689,9 @@ def _watch_session_errors(
             await billing.debit(clock.seconds_billed)
         except Exception:
             logger.warning("debit on model failure failed", exc_info=True)
-        await _end_session(ctx, session, reason="realtime model error")
+        await _end_session(
+            ctx, session, reason="realtime model error", code="model_error", billing=billing
+        )
 
     def _fire(why: str) -> None:
         nonlocal failed
@@ -656,6 +770,7 @@ def _watch_learner_presence(
             DISCONNECT_GRACE_S,
             extra={"seconds_billed": clock.seconds_billed},
         )
+        billing.set_end_reason("learner_left")
         ctx.shutdown(reason="learner disconnected")
 
     def _on_disconnected(participant: rtc.RemoteParticipant) -> None:
@@ -756,7 +871,19 @@ def _build_clock(
         await billing.debit(clock.seconds_billed)
 
     async def _idle_end() -> None:
-        await _end_session(ctx, session)
+        # One callback, two endings: the clock uses it for an abandoned
+        # out-of-minutes hold and for any ordinary hold that outlasted
+        # `TUTOR_HOLD_IDLE_S`. `out_of_minutes` is what tells them apart.
+        if clock.out_of_minutes:
+            await _end_session(ctx, session, billing=billing)
+            return
+        await _end_session(
+            ctx,
+            session,
+            reason="hold idle timeout: hold abandoned",
+            code="hold_idle",
+            billing=billing,
+        )
 
     async def _ledger_ceiling() -> None:
         """The debits stopped landing: hold the meter and end the session.
@@ -774,7 +901,13 @@ def _build_clock(
             await clock.notify_hold_changed()
         except Exception:
             logger.warning("clock republish on ledger failure failed", exc_info=True)
-        await _end_session(ctx, session, reason="ledger failure ceiling reached")
+        await _end_session(
+            ctx,
+            session,
+            reason="ledger failure ceiling reached",
+            code="ledger_failure",
+            billing=billing,
+        )
 
     billing.set_ceiling_handler(_ledger_ceiling)
 
@@ -800,8 +933,14 @@ async def _end_session(
     session: AgentSession,
     *,
     reason: str = "out of minutes: hold abandoned",
+    code: str = "out_of_minutes_idle",
+    billing: BillingClient | None = None,
 ) -> None:
     """End the session: cut whatever is in flight, mark it over, disconnect.
+
+    `code` is the wire's `reason` enum (`billing.END_REASONS`) and `reason` is
+    the human sentence in the logs and in `ctx.shutdown`. They are separate on
+    purpose: the enum is a contract History renders, and a log line is not.
 
     There is no spoken goodbye any more (vision doc 2026-08-24: no scripted
     goodbye). Every caller is a session nobody is listening to any more: a zero
@@ -811,6 +950,10 @@ async def _end_session(
     Every step is guarded: the disconnect at the end must happen even if the
     steps before it fail.
     """
+    if billing is not None:
+        # Before the teardown debit, which is the one that carries it.
+        billing.set_end_reason(code)
+
     try:
         await session.interrupt()
     except Exception:
@@ -1079,9 +1222,10 @@ def _resume_facts(state: SessionState, facts: SessionFacts, brief: ResumeBrief) 
     elif state.reply_was_pending:
         lines.append("you were about to reply to their last turn when the hold began")
 
-    summary = facts.summary()
-    if summary:
-        lines.append(summary)
+    # The goal, the turn count and the anchor-language mix, then the
+    # corrections. All of it is evidence the tutor never had before phase 7
+    # step 3 (audit §3.2: "support on evidence" was half-built).
+    lines.extend(facts.evidence())
 
     return lines
 
@@ -1113,11 +1257,40 @@ class SessionHold:
         session: AgentSession,
         state: SessionState,
         analyzer: CorrectionAnalyzer | None,
+        facts: SessionFacts | None = None,
+        review: ReviewMaterial | None = None,
     ) -> None:
         self._ctx = ctx
         self._session = session
         self._state = state
         self._analyzer = analyzer
+        self._facts = facts
+        self._review = review
+
+    def _regenerate_review(self) -> None:
+        """A hold is when the Review is remade — and the only time it is.
+
+        The learner opened the study surface, so the material should be about
+        what they have actually been saying, not what the plan said they would
+        (backlog #2). Gated on the goal existing and on enough new turns since
+        the last generation (`ReviewMaterial.should_regenerate`), because each
+        one is a model call. The last good material keeps being served while
+        the new one is in flight, so the tab never empties.
+        """
+        review, facts = self._review, self._facts
+        if review is None or facts is None:
+            return
+        goal = facts.goal
+        if not review.should_regenerate(goal, self._state.turn_seq):
+            return
+        try:
+            review.generate(
+                goal,
+                transcript=transcript_turns(self._session.history),
+                turn_seq=self._state.turn_seq,
+            )
+        except Exception:
+            logger.warning("regenerating the review at the hold failed", exc_info=True)
 
     async def publish(self, paused: bool) -> None:
         await self._ctx.room.local_participant.set_attributes(
@@ -1183,6 +1356,7 @@ class SessionHold:
         logger.info("session %s", "paused" if paused else "resumed")
         if paused:
             await _flush_open_user_turn(session, state, self._analyzer, self._ctx.room)
+            self._regenerate_review()
         return True
 
 

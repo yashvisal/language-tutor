@@ -163,11 +163,31 @@ written into `outcome` only where there is none: the client's record always
 wins, in either order, because only the browser knows the exact `secondsTalked`
 and whether the clock ended the session.
 
-The fields are optional and independently written (a field absent from
+Step 3 added the rest of what History needs to say what was **set up**, what
+was **done**, and **why it stopped** — all optional, all on the same terms:
+
+| field         | route             | shape                                                    |
+| ------------- | ----------------- | -------------------------------------------------------- |
+| `goal`        | `/tutor/summary`  | `{ text (<= 200), forms (<= 8 x 60), source }`, `source` one of `plan` / `tool` / `extracted`. The confirmed goal — the session's spine, sent the moment it is confirmed rather than held to teardown. `source` is how much to trust it: an `extracted` goal was never said back to the learner. |
+| `turns`       | `/tutor/summary`  | integer `0..100000`. Learner turns committed — how much they actually spoke, which seconds are not. |
+| `anchorRatio` | `/tutor/summary`  | `0..1`. The share of those turns spoken mostly in the anchor language: the learner falling back to English, and the input support-on-evidence reads. |
+| `asks`        | `/tutor/summary`  | `<= 25` strings of `<= 400` chars — the Ask tab's questions, in order. Questions only; what the learner did not know is the study record. |
+| `lookups`     | `/tutor/summary`  | `<= 100` of `{ source, translation }`, strings `<= 200` — every select-to-translate lookup. It lived in an overlay that unmounted on resume. |
+| `endReason`   | `/tutor/debit`    | as `reason` on the **final** report only: `ended`, `out_of_minutes_idle`, `hold_idle`, `learner_left`, `model_error`, `ledger_failure`, `tutor_silent`. |
+
+`endReason` is the one field with a rule of its own: **written once, never
+overwritten.** The first `final: true` report is the one that was actually
+there when it stopped; a redispatched job's teardown is guessing. It is also
+written independently of `endedAt`, so a session the client's `sessions.finish`
+already closed still gets its explanation — the case History most needs. Absent
+means "we do not know", never "it ended cleanly".
+
+Every field is optional and independently written (a field absent from
 the body is left untouched, sending one again replaces it wholesale), and the
 call is order-independent with the final debit — either may be the one that
 creates the row. Bounds and exact field names are in the `http.ts` contract
-block.
+block; over a bound is a `400` at the wire and a clamp in the mutation, so a
+bound raised on one side never turns a teardown report into a `500`.
 
 **Balance is `sum(creditLedger.seconds)`** — always summed, never a mutable
 field on `users`. Every writer checks `by_ref` first, so a replayed grant or a
@@ -202,4 +222,7 @@ pnpm build
 idempotency, the high-water delta, the reconciliation cron, and — for
 `recordSummary` / `byRoom` / `history` — clamping, cross-learner refusal,
 order-independence with the final debit, and paging finished rows past a run of
-abandoned ones.
+abandoned ones. Step 3 adds the goal / turns / anchor-ratio / asks / lookups
+bounds and the `endReason` rules (ignored on a periodic report, written by the
+first final one, never moved by a later one, written even onto a row the client
+already closed).

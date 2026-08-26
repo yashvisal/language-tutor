@@ -1047,3 +1047,377 @@ describe("the corrections backstop", () => {
     expect(rows[0].about).toBe("Ordering at a cafe.")
   })
 })
+
+/**
+ * Step 3's half of the after-session record: what was set up, how much was
+ * done, and why it stopped.
+ *
+ * Same three properties as the fields before them, so the same three
+ * questions: does a bound clamp rather than refuse, is each field independent
+ * of the others, and does what is written reach the two surfaces. Plus the one
+ * property `endReason` has that nothing else on the row does — it is written
+ * once, by the first worker that says the session ended, and never again.
+ */
+describe("the goal, the counts and the study residue", () => {
+  const room = "lesson-owner-1-aaaa"
+
+  const GOAL = {
+    text: "Order food and drinks confidently in a cafe.",
+    forms: ["present", "conditional"],
+    source: "tool" as const,
+  }
+
+  test("stores the confirmed goal, source and all", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+
+    await t.mutation(internal.sessions.recordSummary, {
+      room,
+      clerkId: "user_owner",
+      goal: GOAL,
+    })
+
+    const [row] = await sessionsOf(t, userId)
+    expect(row.goal?.text).toBe(GOAL.text)
+    expect(row.goal?.forms).toEqual(["present", "conditional"])
+    // How the goal was captured is how much to trust it: an "extracted" goal
+    // was never said back to the learner, and the surfaces say so.
+    expect(row.goal?.source).toBe("tool")
+  })
+
+  test("clamps a goal that is merely long instead of refusing it", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+
+    await t.mutation(internal.sessions.recordSummary, {
+      room,
+      clerkId: "user_owner",
+      goal: {
+        text: "g".repeat(500),
+        forms: Array.from({ length: 20 }, () => "f".repeat(200)),
+        source: "extracted",
+      },
+    })
+
+    const [row] = await sessionsOf(t, userId)
+    expect(row.goal?.text).toHaveLength(200)
+    expect(row.goal?.forms).toHaveLength(8)
+    expect(row.goal?.forms[0]).toHaveLength(60)
+  })
+
+  test("rounds the turn count and never lets it go negative", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+
+    await t.mutation(internal.sessions.recordSummary, {
+      room,
+      clerkId: "user_owner",
+      turns: 34.6,
+    })
+    expect((await sessionsOf(t, userId))[0].turns).toBe(35)
+
+    // A negative count would print. The wire rejects it; this is the half
+    // that has to hold if that bound is ever loosened.
+    await t.mutation(internal.sessions.recordSummary, {
+      room,
+      clerkId: "user_owner",
+      turns: -5,
+    })
+    expect((await sessionsOf(t, userId))[0].turns).toBe(0)
+  })
+
+  test("clamps the anchor ratio into 0..1, NaN included", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+
+    for (const [sent, stored] of [
+      [0.12, 0.12],
+      [4, 1],
+      [-1, 0],
+      // `v.number()` accepts NaN and "NaN% anchor" would render. Zero is
+      // "we measured nothing", which is what it means.
+      [Number.NaN, 0],
+    ] as const) {
+      await t.mutation(internal.sessions.recordSummary, {
+        room,
+        clerkId: "user_owner",
+        anchorRatio: sent,
+      })
+      expect((await sessionsOf(t, userId))[0].anchorRatio).toBe(stored)
+    }
+  })
+
+  test("clamps the Ask questions and the translate lookups", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+
+    await t.mutation(internal.sessions.recordSummary, {
+      room,
+      clerkId: "user_owner",
+      asks: Array.from({ length: 40 }, () => "q".repeat(900)),
+      lookups: Array.from({ length: 150 }, () => ({
+        source: "s".repeat(400),
+        translation: "t".repeat(400),
+      })),
+    })
+
+    const [row] = await sessionsOf(t, userId)
+    expect(row.asks).toHaveLength(25)
+    expect(row.asks?.[0]).toHaveLength(400)
+    expect(row.lookups).toHaveLength(100)
+    expect(row.lookups?.[0].source).toHaveLength(200)
+    expect(row.lookups?.[0].translation).toHaveLength(200)
+  })
+
+  test("each new field is independent, and sending one again replaces it", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+
+    // The goal is confirmed at the TOP of the conversation, so it is sent
+    // long before the counts exist. A session that dies mid-way must still
+    // record what it was set up to be.
+    await t.mutation(internal.sessions.recordSummary, {
+      room,
+      clerkId: "user_owner",
+      goal: GOAL,
+    })
+    await t.mutation(internal.sessions.recordSummary, {
+      room,
+      clerkId: "user_owner",
+      turns: 34,
+      anchorRatio: 0.2,
+      asks: ["why the conditional here?"],
+      lookups: [{ source: "la cuenta", translation: "the bill" }],
+    })
+
+    const [row] = await sessionsOf(t, userId)
+    expect(row.goal?.text).toBe(GOAL.text)
+    expect(row.turns).toBe(34)
+    expect(row.asks).toEqual(["why the conditional here?"])
+
+    // Wholesale, not merged.
+    await t.mutation(internal.sessions.recordSummary, {
+      room,
+      clerkId: "user_owner",
+      asks: ["a", "b"],
+    })
+    const [after] = await sessionsOf(t, userId)
+    expect(after.asks).toEqual(["a", "b"])
+    expect(after.goal?.text).toBe(GOAL.text)
+    expect(after.turns).toBe(34)
+  })
+
+  test("byRoom hands the surfaces every new field, and explicit nulls without them", async () => {
+    const t = setup()
+    await makeLearner(t, "user_owner")
+    const as = t.withIdentity({ subject: "user_owner" })
+    await as.mutation(api.sessions.start, { room, plan: PLAN })
+
+    // Nothing written yet: "the worker never measured this" is a state the
+    // surfaces must render, and `0` would make it look like a silent session.
+    expect(await as.query(api.sessions.byRoom, { room })).toMatchObject({
+      goal: null,
+      endReason: null,
+      turns: null,
+      anchorRatio: null,
+      asks: null,
+      lookups: null,
+    })
+
+    await t.mutation(internal.sessions.recordSummary, {
+      room,
+      clerkId: "user_owner",
+      goal: GOAL,
+      turns: 34,
+      anchorRatio: 0.12,
+      asks: ["why the conditional here?"],
+      lookups: [{ source: "la cuenta", translation: "the bill" }],
+    })
+    await t.mutation(internal.sessions.debit, {
+      room,
+      clerkId: "user_owner",
+      jobId: "job_1",
+      seconds: 90,
+      seq: 1,
+      final: true,
+      reason: "out_of_minutes_idle",
+    })
+
+    const record = await as.query(api.sessions.byRoom, { room })
+    expect(record).toMatchObject({
+      endReason: "out_of_minutes_idle",
+      turns: 34,
+      anchorRatio: 0.12,
+      asks: ["why the conditional here?"],
+      lookups: [{ source: "la cuenta", translation: "the bill" }],
+    })
+    // The whole object here, not just the line — the modal wants the forms
+    // and the source too.
+    expect(record!.goal).toEqual(GOAL)
+  })
+
+  test("history carries the goal line and the end reason, null where nobody said", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+    await t.run(async (ctx) => {
+      await ctx.db.insert("sessions", {
+        userId,
+        room: "room-old",
+        plan: PLAN,
+        startedAt: 1000,
+        endedAt: 2000,
+        secondsBilled: 30,
+      })
+      await ctx.db.insert("sessions", {
+        userId,
+        room: "room-new",
+        plan: PLAN,
+        startedAt: 3000,
+        endedAt: 4000,
+        secondsBilled: 30,
+        goal: GOAL,
+        endReason: "learner_left",
+      })
+      // A start that failed: finished, but nothing in it. Still not history,
+      // and the new columns must not sneak one back onto the page.
+      await ctx.db.insert("sessions", {
+        userId,
+        room: "room-failed",
+        plan: PLAN,
+        startedAt: 5000,
+        endedAt: 5001,
+        goal: GOAL,
+        endReason: "tutor_silent",
+        turns: 0,
+      })
+    })
+
+    const rows = await t
+      .withIdentity({ subject: "user_owner" })
+      .query(api.sessions.history, {})
+
+    expect(rows.map((row) => row.room)).toEqual(["room-new", "room-old"])
+    // The list wants one line, not the object.
+    expect(rows[0].goal).toBe(GOAL.text)
+    expect(rows[0].endReason).toBe("learner_left")
+    // Absent is `null`, and `null` must never be read as a clean end.
+    expect(rows[1].goal).toBeNull()
+    expect(rows[1].endReason).toBeNull()
+  })
+})
+
+describe("why a session ended", () => {
+  const room = "lesson-owner-1-aaaa"
+
+  function rowOf(t: TestConvex) {
+    return t.run(async (ctx) =>
+      ctx.db
+        .query("sessions")
+        .withIndex("by_room", (q) => q.eq("room", room))
+        .unique()
+    )
+  }
+
+  test("a reason on a periodic report is ignored, not recorded", async () => {
+    const t = setup()
+    await makeLearner(t, "user_owner")
+
+    // A session that is still happening has not ended for any reason yet. If
+    // this were written, the first minute of every conversation would decide
+    // what History says about how it finished.
+    await t.mutation(internal.sessions.debit, {
+      room,
+      clerkId: "user_owner",
+      jobId: "job_1",
+      seconds: 60,
+      seq: 1,
+      reason: "model_error",
+    })
+
+    const row = await rowOf(t)
+    expect(row!.endReason).toBeUndefined()
+    expect(row!.endedAt).toBeUndefined()
+    expect(row!.secondsBilled).toBe(60)
+  })
+
+  test("the first final report writes the reason and no later one moves it", async () => {
+    const t = setup()
+    await makeLearner(t, "user_owner")
+
+    await t.mutation(internal.sessions.debit, {
+      room,
+      clerkId: "user_owner",
+      jobId: "job_1",
+      seconds: 90,
+      seq: 2,
+      final: true,
+      reason: "hold_idle",
+    })
+    expect((await rowOf(t))!.endReason).toBe("hold_idle")
+
+    // A redispatched job's teardown is guessing about a session it did not
+    // see end. The first report was the one that was actually there.
+    await t.mutation(internal.sessions.debit, {
+      room,
+      clerkId: "user_owner",
+      jobId: "job_2",
+      seconds: 120,
+      seq: 1,
+      final: true,
+      reason: "ledger_failure",
+    })
+    const row = await rowOf(t)
+    expect(row!.endReason).toBe("hold_idle")
+    // and the meter still moved, so this is a no-op on the reason alone.
+    expect(row!.secondsBilled).toBe(120)
+  })
+
+  test("a final report with no reason leaves the column absent", async () => {
+    const t = setup()
+    await makeLearner(t, "user_owner")
+
+    await t.mutation(internal.sessions.debit, {
+      room,
+      clerkId: "user_owner",
+      jobId: "job_1",
+      seconds: 90,
+      seq: 1,
+      final: true,
+    })
+    // Absent means "we do not know", never "it ended cleanly" — which is why
+    // there is no default here.
+    expect((await rowOf(t))!.endReason).toBeUndefined()
+    expect((await rowOf(t))!.endedAt).toBeTypeOf("number")
+  })
+
+  test("a session the client already closed still gets its reason", async () => {
+    const t = setup()
+    await makeLearner(t, "user_owner")
+    const as = t.withIdentity({ subject: "user_owner" })
+    await as.mutation(api.sessions.start, { room, plan: PLAN })
+
+    // The tab ended it first, so `endedAt` is already set. The reason is
+    // written on its own condition precisely so it is not dropped along with
+    // the `endedAt` the worker was not going to write — this is the case
+    // History most needs explained.
+    await as.mutation(api.sessions.finish, {
+      room,
+      outcome: { corrections: [], secondsTalked: 87, endedByClock: false },
+    })
+    const closedAt = (await rowOf(t))!.endedAt
+
+    await t.mutation(internal.sessions.debit, {
+      room,
+      clerkId: "user_owner",
+      jobId: "job_1",
+      seconds: 90,
+      seq: 1,
+      final: true,
+      reason: "ended",
+    })
+
+    const row = await rowOf(t)
+    expect(row!.endReason).toBe("ended")
+    expect(row!.endedAt).toBe(closedAt)
+  })
+})

@@ -21,8 +21,18 @@ on demand
   ├─ RPC tutor.review                  → this session's study material
   └─ RPC tutor.pause / tutor.resume    → hold, then conversational re-entry
 
+the goal (the session's spine)
+  ├─ before the first word             → pre-seeded from the plan, deterministically
+  ├─ the opening exchange              → restate + confirm, or ask; one exchange
+  ├─ set_session_goal (function tool)  → the confirmed goal, silently
+  ├─ no tool call by the 3rd turn      → one Luna extraction from the transcript
+  └─ when it lands                     → standing instructions, analyzer focus,
+                                         Review, tutor.goal, the ledger
+
 the study surface (while held — voice is idle and unbilled)
-  ├─ at session start                  → review material generated once
+  ├─ when the goal lands               → review material generated from it
+  ├─ at a hold, 3+ new learner turns    → regenerated from the transcript
+  ├─ every new snapshot                → tutor.review_version rises (push, not poll)
   └─ per question                      → Luna, coaching persona, invisible cap
 
 the session clock (authoritative)
@@ -38,8 +48,9 @@ the session clock (authoritative)
   └─ 10 min abandoned at zero          → tutor.session_over, disconnect
 
 teardown (the shutdown callback, every step guarded)
-  ├─ final debit ("final": true)       → Convex sets endedAt
+  ├─ final debit ("final": true, "reason") → Convex sets endedAt
   ├─ POST /tutor/summary               → about + transcript + review + corrections
+  │                                      + goal + turns + anchorRatio + asks + lookups
   └─ usage summary                     → tokens, talk share, estimated cost (log only)
 ```
 
@@ -99,9 +110,10 @@ Design rules worth keeping:
 | `src/analyzer.py`  | Background structured-output corrections + shared turn context |
 | `src/translate.py` | `tutor.translate` RPC: one selected span → one translation     |
 | `src/ask.py`       | `tutor.ask` RPC: the Ask tab's coaching chat + its invisible cap |
-| `src/review.py`    | `tutor.review` RPC: the Review tab's material, made once       |
+| `src/review.py`    | `tutor.review` RPC: the Review tab's material, from the goal + transcript |
+| `src/goal.py`      | The session's goal: the extraction safety net and the fan-out  |
 | `src/conjugation/` | The deterministic conjugation engine (registry + `es`)         |
-| `src/state.py`     | Pause state (+ what it interrupted) and rolling session facts  |
+| `src/state.py`     | Pause state (+ what it interrupted), the `SessionGoal`, rolling session facts |
 | `src/plan.py`      | Dispatch metadata: the balance, the user, and the session plan  |
 | `src/clock.py`     | The authoritative session clock + the seconds-billed seam       |
 | `src/billing.py`   | The Convex ledger's client: `/tutor/debit`, `/tutor/balance`, `/tutor/summary` |
@@ -129,6 +141,7 @@ CLERK_WORKER_MACHINE_SECRET_KEY=ak_...   # mints the M2M token for /tutor/*
 # optional — defaults shown
 TUTOR_TARGET_LANG=es
 TUTOR_ANCHOR_LANG=en
+TUTOR_GOAL_LANG=target              # target | anchor — the opening goal exchange
 TUTOR_REALTIME_MODEL=gpt-realtime-2.1
 TUTOR_REALTIME_REASONING=minimal           # minimal | low — see config.py
 TUTOR_REALTIME_SPEED=1.0               # output audio speed multiplier
@@ -153,6 +166,13 @@ makes `TutorConfig.from_env()` raise `UnmeteredProductionError` and the worker
 logs one warning at boot that its environment is undeclared. Explicit over heuristic (phase 7):
 dev and prod share LiveKit Cloud and a `*.convex.site` host, and a Clerk
 machine key carries no test/live marker, so nothing here can be inferred.
+
+`TUTOR_GOAL_LANG` picks the language of the opening goal exchange and nothing
+else: `target` (the default — the vision doc's rule is that the conversation
+opens in the target language) or `anchor`. The standing one-anchor-line
+allowance applies either way, so a learner who stalls on the first question
+still gets help. It exists so a later "which language" card can flip it without
+a prompt change; there is no language picker now.
 
 `OPENAI_API_KEY` is asserted non-empty at config load: the worker refuses to
 start rather than failing inside a plugin mid-session. `TUTOR_MIN_ENDPOINT_S`
@@ -225,6 +245,8 @@ agent will never join.
 | `tutor.remaining_s` (participant attribute) | `balance_s - elapsed_s`, floored at 0, as a string |
 | `tutor.out_of_minutes` (participant attribute) | `"true"` only while the session is held at zero |
 | `tutor.turn_seq` (participant attribute) | A counter, bumped on every committed learner turn — the UI closes the bubble on it |
+| `tutor.review_version` (participant attribute) | An integer as a string, `"0"` at session start and bumped on every new Review snapshot — the tab refetches `tutor.review` when it rises |
+| `tutor.goal` (participant attribute) | The one line the learner agreed this session is for. Absent until the goal is captured |
 | `tutor.session_over` (participant attribute) | `"true"` immediately before the worker disconnects |
 | `tutor.error` (participant attribute) | `""` (nothing wrong, published at start), `"model"` (the realtime model died unrecoverably — the session is ending), or `"tutor_silent"` (no tutor audio 20s after the session started; nothing was billed) |
 | `lk.agent.state` (participant attribute) | Agent state, published by the SDK                               |
@@ -338,10 +360,11 @@ every worker-side failure is an `error` field, never a raise.
 ```json
 // request
 {}
-// response — poll until ready; a session's material is made once and never changes
-{ "ready": false }
+// response — `version` rises with every new snapshot (see tutor.review_version)
+{ "ready": false, "version": 0 }
 {
   "ready": true,
+  "version": 2,
   "vocab":   [{ "target": "la cuenta", "anchor": "the bill" }],
   "phrases": [{ "target": "¿Qué me recomienda?", "anchor": "What do you recommend?" }],
   "tables":  [{ "verb": "querer", "tense": "Preterite · pretérito",
@@ -349,13 +372,26 @@ every worker-side failure is an `error` field, never a raise.
 }
 ```
 
-Generation starts in the background immediately after session start, so the
-first Review open is usually instant. `ready: false` always means "poll again",
-never an error.
+**Generation follows the goal, not the plan** (phase 7 step 3). Nothing is
+generated at session start any more: the material is made when the goal lands
+(a session that drifted from restaurants to taxis used to review restaurants —
+backlog #2 — and with the picker no longer setting tenses or scenarios, every
+session got the same four generic tables). A hold or a poll before the goal
+exists still resolves the tab, with the tables alone. At a hold, once at least
+3 learner turns have committed since the last generation, it is regenerated
+from the goal **and the transcript so far**; the last good material keeps being
+served while that is in flight, so the tab never empties, and a failed
+regeneration keeps it for good. `ready: false` always means "poll again", never
+an error.
 
-`vocab` (~12) and `phrases` (~8) are generated once by Luna as strict JSON for
-the plan's scenario, topic and vocab themes. **`tables` are not generated at
-all** — they come from `src/conjugation/`, a shipped engine:
+`version` starts at 0 and rises by one per snapshot. The same number is
+published as the `tutor.review_version` participant attribute the moment a
+snapshot lands, so the tab is *told* to refetch instead of polling something
+that used to never change.
+
+`vocab` (~12) and `phrases` (~8) are generated by Luna as strict JSON from the
+goal, the plan behind it, and the recent transcript. **`tables` are not
+generated at all** — they come from `src/conjugation/`, a shipped engine:
 
 - A registry keyed by language code (`conjugation/tables_for`); only `es` is
   implemented, and nothing above the engine module knows a word of Spanish.
@@ -374,6 +410,55 @@ tables alone, which cannot fail. A tab that polls forever is the worse outcome.
 
 The engine is checked in `tests/test_conjugation.py`: every regular paradigm and
 every irregular override, spot-checked against reference forms.
+
+## The goal: the session's spine
+
+The conversation starts with goal setting (phase 7 step 3, Yash 2026-08-25).
+There is no arc, no phases and no consent gates — one exchange, then the
+conversation.
+
+```text
+plan cards (topic / focusNote / note)
+  └─ goal_from_plan()            deterministic, no model call → an UNCONFIRMED
+                                 proposal: focusNote else topic else scenario
+                                 else note; forms = picked tenses, else the
+                                 quoted fragments in the note
+the opening (one generate_reply, in TUTOR_GOAL_LANG's language)
+  ├─ with a proposal             one line restating it + "is that right?"
+  └─ without                     "what do you want to work on today?"
+the learner answers
+  ├─ set_session_goal(...)       the tutor's own tool → source "tool", confirmed
+  └─ nothing by the 3rd turn     one Luna call over the opening turns, 6s,
+                                 strict JSON → source "extracted", unconfirmed
+when a goal lands (first writer wins — never two goals)
+  ├─ Agent.update_instructions() a GOAL block in the standing rules, pushed to
+  │                              the live realtime session
+  ├─ analyzer.set_goal()         the focus re-weights to the goal's forms
+  ├─ review.generate(goal)       the Review is finally about something
+  ├─ tutor.goal                  published for the surface
+  └─ POST /tutor/summary         the goal alone, immediately
+```
+
+`set_session_goal(goal, forms, why)` is the worker's only function tool
+(`TutorAgent`, `src/agent.py`; everything downstream is `src/goal.py`). The
+standing instructions say to call it exactly once, at the moment the learner
+confirms, and never to narrate the call; the tool result is itself an
+instruction to carry on without acknowledging it, because a realtime model
+speaks after a tool result. Realtime models at `reasoning=minimal` are weak
+tool-callers, which is what the extraction safety net is for — and why the
+goal records its own `source`.
+
+`Agent.update_instructions()` on the OpenAI realtime plugin sends a
+`session.update` over the already-open socket (`update_instructions` →
+`RealtimeSession.send_event`, agents 1.6.10): no reconnect, no restart, no
+interrupted turn, and it takes effect from the model's next response. It is
+also recorded as an `AgentConfigUpdate` in the chat context. This is the seam
+the deleted arc left behind, and the goal is the one thing that rides it.
+
+The goal then feeds four surfaces, which is what "spine" means: the tutor's
+standing instructions, the analyzer's focus, the Ask context (it leads the
+session facts), and the Review. The resume brief carries it too, along with the
+turn count and the anchor-language ratio.
 
 ## Dispatch metadata
 
@@ -533,6 +618,25 @@ never tracks what it has already billed. Debits are serialized behind one lock
   new conversation immediately instead of waiting out the one-open-session
   window.
 
+### Why the session ended
+
+The final debit — the teardown one, the only one carrying `"final": true` —
+also carries `"reason"`, one of:
+
+| `reason` | What happened |
+| --- | --- |
+| `ended` | The ordinary end: the learner left the page, or the job simply finished. The default. |
+| `out_of_minutes_idle` | Held at zero and abandoned for 10 minutes. |
+| `hold_idle` | An ordinary hold that outlasted `TUTOR_HOLD_IDLE_S`. |
+| `learner_left` | The learner's participant left the room and did not come back inside the 60s grace. |
+| `model_error` | The realtime model died unrecoverably (`tutor.error="model"`). |
+| `ledger_failure` | Five consecutive failed debits: the clock is held and the session ends. (This debit does not go out either — the accepted under-bill.) |
+| `tutor_silent` | The first-audio watchdog fired and nothing better was ever recorded. Set *weakly*: any real ending overwrites it. |
+
+Only the final debit carries it; a periodic or zero-hold debit has nothing to
+report, because nothing has ended. Before this, History could not tell a crash
+from a clean end (the "edges" list, phase 7 step 3).
+
 ### The after-session record
 
 `POST /tutor/summary`, once, from the teardown callback beside the final debit
@@ -541,7 +645,7 @@ conversation *was* died with the tab: the outcome written to Convex was
 corrections + seconds + `endedByClock`, so the summary screen showed time and
 fixes and History showed the plan's topic (phase 7 step 2).
 
-Four optional fields, each independent and each degrading to absent (absent =
+Nine optional fields, each independent and each degrading to absent (absent =
 "leave that column alone", so a field the worker could not produce never
 overwrites one it produced earlier):
 
@@ -569,6 +673,22 @@ overwrites one it produced earlier):
   (`id`, `original`, `replacement`, `category`, `severity`, `explanation`),
   most recent 200. The client writes the same list through `sessions.finish`;
   this is the copy that survives a tab that closed first.
+
+- `goal` — `{ text (<=200), forms (<=8 x <=60), source: "plan"|"tool"|"extracted" }`,
+  what the conversation was FOR. With `about` beside it, History can finally say
+  what was set up and what was actually done (the plan-drift edge). It is also
+  posted **once, early** — the moment the goal is captured — so a session whose
+  teardown never runs still says what it was for; `/tutor/summary` upserts, and
+  the teardown post fills in the rest.
+- `turns` — how many learner turns committed (`tutor.turn_seq`'s final value).
+- `anchorRatio` — 0..1, how much of the learner's talking was in the anchor
+  language. The analyzer returns a `language` verdict (`target` / `anchor` /
+  `mixed`, defaulting to `target` when absent) with every turn it reviews, and
+  a mixed turn counts half. Absent when the analyzer is off.
+- `asks` — the questions the learner typed in Ask that got a real answer
+  (<=25 x <=400).
+- `lookups` — every select-to-translate lookup as `{source, translation}`
+  (<=100 x <=200 each).
 
 The body is bounded at 256 KB: over that, the review snapshot goes first, then
 the transcript is trimmed from the oldest end, then the corrections, and
@@ -651,14 +771,18 @@ off the session at pause time:
 
 The brief states facts only — hold duration, hold reasons, the study tab, the
 inspected correction, the questions asked, whether the tutor was mid-reply, and
-one line of rolling session facts ("corrections shown to them so far this session: 3 tense, 1 word-order").
-It never scripts a line; how to re-enter is `TUTOR_INSTRUCTIONS`' job.
+then the rolling evidence: what the session is for, how many turns the learner
+has taken and how much of their talking was in the anchor language (once there
+are at least 3 judged turns), and the corrections so far ("corrections shown to
+them so far this session: 3 tense, 1 word-order"). It never scripts a line; how
+to re-enter is `TUTOR_INSTRUCTIONS`' job.
 
-`SessionFacts` (`src/state.py`) is the seam for that last line: the analyzer
-reports its *published* corrections into it and it renders one summary. Future
-sources (prior-session summaries, a reflection agent, goal tracking) plug into
-the same object. It is evidence that is *observed*, deliberately separate from
-the phase-4 learner profile, which is configuration that is *set*.
+`SessionFacts` (`src/state.py`) is the seam for those lines: the analyzer
+reports its *published* corrections and each turn's language into it, the goal
+lands on it, and `evidence()` renders the lot. Future sources (prior-session
+summaries, a reflection agent) plug into the same object. It is evidence that
+is *observed*, deliberately separate from the phase-4 learner profile, which is
+configuration that is *set*.
 
 The resume response is `{"paused": false, "resumed": <bool>}`, where `resumed`
 reports whether a re-entry reply was *requested* — generation is
@@ -671,6 +795,10 @@ uv run python -m compileall -q src
 uv run ruff check src tests
 uv run ruff format --check src tests   # drop --check to let it do the fixing
 
-# the conjugation engine — pytest if it is installed, a plain script otherwise
+uv run pytest -q            # the whole suite
+
+# every test file also runs as a plain script, without pytest
 uv run python tests/test_conjugation.py
+uv run python tests/test_prompts.py
+uv run python tests/test_goal.py
 ```

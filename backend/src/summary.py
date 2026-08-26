@@ -6,7 +6,7 @@ modal showed the *plan's* topic and the same fixes, and everything the
 conversation actually was disappeared when the tab closed (phase 7 step 2;
 `out-of-minutes.tsx` even promises the transcript and review are "saved").
 
-Four things go up, all optional, all best-effort:
+Nine things go up, all optional, all best-effort:
 
 - **`about`** — one line, in the ANCHOR language, saying what the conversation
   was actually about. One cheap text call at teardown, on the transcript, with
@@ -22,6 +22,16 @@ Four things go up, all optional, all best-effort:
   session, from `SessionFacts`. The client writes the same list through
   `sessions.finish`, but only if its tab is still open when the session ends;
   this is the copy that survives a closed laptop.
+- **`goal`** — what the conversation was FOR (text, forms, source), from
+  `SessionFacts.goal`. With `about` beside it, History can finally say what was
+  set up and what was actually done — the plan-drift edge (phase 7 step 3).
+- **`turns`** and **`anchorRatio`** — how many turns the learner took and how
+  much of their talking was in the anchor language. Published live as
+  `tutor.turn_seq` and computed by the analyzer per turn; both were discarded
+  at teardown before this.
+- **`asks`** and **`lookups`** — the questions they typed in Ask and every
+  select-to-translate lookup. The sharpest study record a session produces, and
+  none of it was stored (the "edges" list).
 
 Everything here is guarded twice: each piece fails to nothing, and the whole
 thing runs under one budget in the shutdown callback (`SUMMARY_BUDGET_S`), so a
@@ -35,11 +45,13 @@ import logging
 
 import openai
 
+from ask import AskCoach
 from billing import MAX_TRANSCRIPT_TURNS, MAX_TURN_CHARS, BillingClient
 from config import TutorConfig
 from prompts import about_instructions
 from review import ReviewMaterial
 from state import SessionFacts
+from translate import SpanTranslator
 from usage import UsageTracker
 
 logger = logging.getLogger("tutor.summary")
@@ -160,6 +172,9 @@ async def report_session_summary(
     review: ReviewMaterial | None = None,
     facts: SessionFacts | None = None,
     usage: UsageTracker | None = None,
+    turns_taken: int = 0,
+    coach: AskCoach | None = None,
+    translator: SpanTranslator | None = None,
 ) -> bool:
     """Build and post this session's record. Returns whether the ledger took it.
 
@@ -174,9 +189,15 @@ async def report_session_summary(
     turns = transcript_turns(history)
     about = await about_line(cfg, turns, usage=usage)
     snapshot = review.snapshot() if review is not None else None
+    goal = facts.goal if facts is not None else None
     return await billing.summary(
         about=about,
         transcript=turns,
         review=snapshot,
         corrections=list(facts.corrections) if facts is not None else None,
+        goal=goal.as_wire() if goal is not None else None,
+        turns=turns_taken,
+        anchor_ratio=facts.anchor_ratio if facts is not None else None,
+        asks=coach.questions if coach is not None else None,
+        lookups=translator.lookups if translator is not None else None,
     )
