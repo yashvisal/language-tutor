@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from livekit.agents import llm
 from livekit.plugins import openai
@@ -230,7 +230,7 @@ _LANGUAGE_NAMES = {
     "pt": "Portuguese",
     "ja": "Japanese",
     "ko": "Korean",
-    "zh": "Chinese",
+    "zh": "Mandarin Chinese",
 }
 
 
@@ -399,6 +399,12 @@ class TutorConfig:
             "max_endpointing_s": self.max_endpointing_s,
             "hold_idle_s": self.hold_idle_s,
         }
+
+    def with_session_language(self, language: str | None) -> TutorConfig:
+        """Apply a validated dispatch selection to this job, never the worker defaults."""
+        if language is None:
+            return self
+        return replace(self, target_lang=language, anchor_lang="en")
 
     @property
     def target_language_name(self) -> str:

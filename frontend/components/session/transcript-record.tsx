@@ -17,7 +17,7 @@
 
 import { ChevronRight } from "lucide-react"
 
-import { TARGET_LANGUAGE } from "@/lib/session/protocol"
+import { useSessionLanguage } from "./session-language"
 import { cn } from "@/lib/utils"
 
 /** One line of the stored transcript — `transcriptTurnValidator`'s shape. */
@@ -33,6 +33,7 @@ export function TranscriptRecord({
   turns: readonly TranscriptTurn[]
   className?: string
 }) {
+  const language = useSessionLanguage()
   if (turns.length === 0) return null
 
   return (
@@ -57,7 +58,7 @@ export function TranscriptRecord({
               {turn.role === "learner" ? "You" : "Tutor"}
             </span>
             <span
-              lang={TARGET_LANGUAGE}
+              lang={language}
               className="min-w-0 flex-1 leading-relaxed text-foreground"
             >
               {turn.text}

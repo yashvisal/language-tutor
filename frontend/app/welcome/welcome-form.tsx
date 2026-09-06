@@ -46,7 +46,7 @@ export function WelcomeForm() {
       </header>
       <div className="mx-auto w-full max-w-md px-8 py-[clamp(2rem,12vh,6rem)]">
         <h1 className="text-xl tracking-[-0.015em] text-foreground">
-          Where are you with Spanish?
+          Where are you with the language you want to practice?
         </h1>
         <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
           It only steers where the tutor starts — you can change it any time.
@@ -60,8 +60,8 @@ export function WelcomeForm() {
         />
 
         <p className="mt-8 text-sm text-muted-foreground">
-          You have {SIGNUP_GRANT_MINUTES} free minutes. Pausing to study
-          doesn’t use them.
+          You have {SIGNUP_GRANT_MINUTES} free minutes. Pausing to study doesn’t
+          use them.
         </p>
 
         <Button size="lg" onClick={submit} disabled={saving} className="mt-6">

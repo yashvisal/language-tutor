@@ -28,14 +28,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import { AnimatePresence, motion } from "motion/react"
+import { useSessionLanguage } from "./session-language"
 
 import type { Speaker, TranslateFn, Turn } from "@/lib/session/contract"
 import { cn } from "@/lib/utils"
-import {
-  ANCHOR_LANGUAGE,
-  MAX_SPAN_CHARS,
-  TARGET_LANGUAGE,
-} from "@/lib/session/protocol"
+import { ANCHOR_LANGUAGE, MAX_SPAN_CHARS } from "@/lib/session/protocol"
 
 const TURN_ATTR = "data-translate-turn"
 const SPEAKER_ATTR = "data-translate-speaker"
@@ -60,12 +57,8 @@ export function translatableProps(turn: Pick<Turn, "id" | "speaker">) {
   return { [TURN_ATTR]: turn.id, [SPEAKER_ATTR]: turn.speaker }
 }
 
-/**
- * Below this, a selection is a slipped click rather than a question — one or
- * two letters caught while clicking a correction mark. A single short word
- * ("es") is still a legitimate ask, so the floor is characters, not words.
- */
-const MIN_SPAN_CHARS = 2
+/** A single character can be a complete word in the selected language. */
+const MIN_SPAN_CHARS = 1
 
 /** Bar widths for `Shimmer`, cycled. */
 const WIDTHS = ["100%", "58%", "82%", "44%"]
@@ -125,6 +118,7 @@ export function SelectionTranslator({
   /** Called when it closes. Must be referentially stable. */
   onRelease: () => void
 }) {
+  const language = useSessionLanguage()
   const [anchor, setAnchor] = useState<SelectionAnchor | null>(null)
   const [resolved, setResolved] = useState<Resolved | null>(null)
   const cardRef = useRef<HTMLDivElement>(null)
@@ -258,7 +252,7 @@ export function SelectionTranslator({
             {/* Each run declares its language: two languages sit side by side
                 here, and screen readers pronounce by the nearest lang. */}
             <div
-              lang={TARGET_LANGUAGE}
+              lang={language}
               className="line-clamp-2 text-xs text-muted-foreground/70 italic"
             >
               {anchor.text}

@@ -175,6 +175,24 @@ From reviewing the phase-1 layout explorations (aura-stage, split-columns, and t
 
 ---
 
+## Decisions Settled (2026-09-06, returning to launch)
+
+1. **Choose the target language before starting.** Spanish remains the test
+   baseline, but is no longer the only selectable language. A popover in the
+   shared session preflight offers Spanish, French, German, Italian,
+   Portuguese, Japanese, Korean, and Mandarin Chinese. English remains the
+   anchor language. This supersedes the earlier "no language picker" and
+   "Spanish only until monetized" restrictions.
+2. **Language is a session parameter.** The last selection is remembered in
+   the browser, stored with the session plan, and signed into worker dispatch.
+   Voice, STT, corrections, translation, and study prompts use that selection.
+   Historical plans without a language continue to mean Spanish. Deterministic
+   conjugation tables remain Spanish-only; other languages need live quality
+   checks before launch claims imply equal maturity.
+3. **Launch readiness is tracked in `audit-2026-09-06.md`.** The minute meter
+   exists; purchases do not. Five-minute purchase increments still apply,
+   with usage metered in seconds and study holds free.
+
 ## The Conversation Surface
 
 The working mental model for the screen (to be pressure-tested in design exploration, not final):

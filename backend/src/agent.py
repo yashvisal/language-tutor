@@ -343,6 +343,7 @@ def _prewarmed(ctx: JobContext, key: str, build: Callable[[], Any]) -> Any:
 async def tutor(ctx: JobContext) -> None:
     cfg = TutorConfig.from_env()
     meta = JobMetadata.parse(ctx.job.metadata)
+    cfg = cfg.with_session_language(meta.plan.target_language)
     state = SessionState()
     facts = SessionFacts()
     # Assigned once the session exists; the shutdown callback below is

@@ -391,6 +391,7 @@ export interface SessionDispatchMetadata {
   /** Balance in seconds at the moment the token was minted. */
   balance_s: number
   plan: {
+    target_language?: string
     topic: string | null
     scenario: string | null
     tenses: string[]

@@ -18,8 +18,8 @@ import {
   segmentTurn,
 } from "@/components/session/correction-mark"
 import type { Correction, Turn } from "@/lib/session/contract"
+import { useSessionLanguage } from "./session-language"
 import { wordsOf } from "@/lib/session/reducer"
-import { cn } from "@/lib/utils"
 
 export function HeroWords({
   turn,
@@ -41,6 +41,7 @@ export function HeroWords({
   /** The correction is passed through so a hold can name what is being read. */
   onCorrectionOpenChange: (open: boolean, correction: Correction) => void
 }) {
+  const language = useSessionLanguage()
   const segments = useMemo(() => segmentTurn(turn), [turn])
   const wordCount = wordsOf(turn.target).length
   const arriving = live && !reducedMotion ? wordCount - 1 : -1
@@ -49,39 +50,38 @@ export function HeroWords({
   const nodes: ReactNode[] = []
 
   for (const seg of segments) {
-    const words = wordsOf(seg.text)
-    const start = index
-    index += words.length
-    if (words.length === 0) continue
-
-    const wordNodes = words.map((word, i) => (
-      <motion.span
-        key={`${turn.id}-${start + i}`}
-        // Once marks are active the words sit inline so the parent's underline
-        // can run through them (it doesn't reach inline-blocks).
-        className={cn(
-          seg.correction && marksActive ? "inline" : "inline-block"
-        )}
-        initial={
-          start + i === arriving
-            ? { opacity: 0, y: 6, filter: "blur(5px)" }
-            : false
-        }
-        animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-        transition={{
-          duration: reducedMotion ? 0 : 0.35,
-          ease: "easeOut",
-        }}
-      >
-        {word}
-      </motion.span>
-    ))
-
-    const interleaved: ReactNode[] = []
-    wordNodes.forEach((node, i) => {
-      interleaved.push(node)
-      if (i < wordNodes.length - 1) interleaved.push(" ")
-    })
+    // Preserve whitespace at correction boundaries. Inventing a separator
+    // splits Japanese/Chinese text and even corrections inside Latin words.
+    const interleaved = seg.text
+      .split(/(\s+)/u)
+      .filter(Boolean)
+      .map((part, i) => {
+        if (/^\s+$/u.test(part)) return part
+        const wordIndex = index++
+        return (
+          <motion.span
+            key={`${turn.id}-${i}`}
+            // CJK text must wrap naturally; marked text needs an inline underline.
+            className={
+              (seg.correction && marksActive) ||
+              /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(
+                part
+              )
+                ? "inline"
+                : "inline-block"
+            }
+            initial={
+              wordIndex === arriving
+                ? { opacity: 0, y: 6, filter: "blur(5px)" }
+                : false
+            }
+            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+            transition={{ duration: reducedMotion ? 0 : 0.35, ease: "easeOut" }}
+          >
+            {part}
+          </motion.span>
+        )
+      })
 
     nodes.push(
       seg.correction ? (
@@ -97,10 +97,9 @@ export function HeroWords({
         <span key={seg.key}>{interleaved}</span>
       )
     )
-    nodes.push(" ")
   }
 
-  return <>{nodes}</>
+  return <span lang={language}>{nodes}</span>
 }
 
 /**

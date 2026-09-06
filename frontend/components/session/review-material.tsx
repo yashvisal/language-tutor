@@ -18,7 +18,8 @@
  */
 
 import type { ReviewItem, ReviewMaterial } from "@/lib/session/contract"
-import { ANCHOR_LANGUAGE, TARGET_LANGUAGE } from "@/lib/session/protocol"
+import { useSessionLanguage } from "./session-language"
+import { ANCHOR_LANGUAGE } from "@/lib/session/protocol"
 
 /** Whether there is anything in here worth a heading. */
 export function hasReviewMaterial(
@@ -42,6 +43,7 @@ export function ReviewMaterialView({
   focusTenses?: readonly string[]
   className?: string
 }) {
+  const language = useSessionLanguage()
   return (
     <div className={className}>
       <div className="space-y-10">
@@ -62,7 +64,7 @@ export function ReviewMaterialView({
                 <div key={`${table.verb} ${table.tense}`}>
                   <div className="mb-2 flex items-baseline gap-2">
                     <span
-                      lang={TARGET_LANGUAGE}
+                      lang={language}
                       className="text-sm font-medium tracking-[-0.011em]"
                     >
                       {table.verb}
@@ -82,7 +84,7 @@ export function ReviewMaterialView({
                             {row.person}
                           </th>
                           <td
-                            lang={TARGET_LANGUAGE}
+                            lang={language}
                             className="border-t border-border/40 py-1.5 text-foreground"
                           >
                             {row.form}
@@ -120,6 +122,7 @@ function Section({
 
 /** Target left, anchor muted right — the gloss is available, not competing. */
 function PairList({ items }: { items: readonly ReviewItem[] }) {
+  const language = useSessionLanguage()
   return (
     <dl className="text-sm">
       {items.map((item) => (
@@ -128,7 +131,7 @@ function PairList({ items }: { items: readonly ReviewItem[] }) {
           className="flex gap-6 border-t border-border/40 py-1.5 first:border-t-0"
         >
           <dt
-            lang={TARGET_LANGUAGE}
+            lang={language}
             className="flex-1 tracking-[-0.011em] text-foreground"
           >
             {item.target}

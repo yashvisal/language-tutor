@@ -127,6 +127,8 @@ export const CATEGORY_LABELS: Record<CorrectionCategory, string> = {
  * is the wire shape, this is the frontend's.
  */
 export interface SessionPlan {
+  /** Absent on historical plans; defaults to Spanish. */
+  targetLanguage?: string
   /** A curated situation to play out, prompt-ready ("ordering at a restaurant"). */
   scenario: string | null
   /** Free text, when the learner wants a subject rather than a situation. */

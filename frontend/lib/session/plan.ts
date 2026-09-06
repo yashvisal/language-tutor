@@ -80,6 +80,30 @@ export function tensesFor(language: string = TARGET_LANGUAGE): PlanOption[] {
 export const LANGUAGE_NAMES: Record<string, string> = {
   es: "Spanish",
   en: "English",
+  fr: "French",
+  de: "German",
+  it: "Italian",
+  pt: "Portuguese",
+  ja: "Japanese",
+  ko: "Korean",
+  zh: "Mandarin Chinese",
+}
+
+export const TARGET_LANGUAGES = [
+  { code: "es", native: "Español" },
+  { code: "fr", native: "Français" },
+  { code: "de", native: "Deutsch" },
+  { code: "it", native: "Italiano" },
+  { code: "pt", native: "Português" },
+  { code: "ja", native: "日本語" },
+  { code: "ko", native: "한국어" },
+  { code: "zh", native: "中文" },
+] as const
+
+export function targetLanguage(value: unknown): string {
+  return TARGET_LANGUAGES.some(({ code }) => code === value)
+    ? (value as string)
+    : TARGET_LANGUAGE
 }
 
 export const TARGET_LANGUAGE_NAME =
@@ -136,6 +160,7 @@ export const LEVELS: LevelOption[] = [
 export const DEFAULT_LEVEL: LevelValue = LEVEL_VALUES[1]
 
 export const EMPTY_PLAN: SessionPlan = {
+  targetLanguage: TARGET_LANGUAGE,
   scenario: null,
   topic: null,
   tenses: [],
@@ -198,6 +223,7 @@ export function boundPlan(input: unknown): SessionPlan {
   if (!input || typeof input !== "object") return EMPTY_PLAN
   const raw = input as Record<string, unknown>
   return {
+    targetLanguage: targetLanguage(raw.targetLanguage),
     scenario: boundString(raw.scenario, PLAN_LIMITS.scenarioChars),
     topic: boundString(raw.topic, PLAN_LIMITS.topicChars),
     tenses: boundList(
@@ -243,6 +269,7 @@ export function suggestPlan(
   const tenses = tensesFor(language)
   const focus = tenses.length > 0 ? [pick(tenses).value] : []
   return {
+    targetLanguage: targetLanguage(language),
     scenario: pick(SCENARIOS).value,
     topic: null,
     tenses: focus,
@@ -281,6 +308,8 @@ const STORAGE_KEY = "tutor.session-plan.v1"
 const listeners = new Set<() => void>()
 let cachedRaw: string | null = null
 let cachedPlan: SessionPlan = EMPTY_PLAN
+// Keep a navigation handoff working when storage is blocked or full.
+let unsavedPlan: SessionPlan | null = null
 
 function notify() {
   for (const listener of listeners) listener()
@@ -299,6 +328,7 @@ export function subscribeToPlan(listener: () => void): () => void {
 
 /** The learner's last plan, so a second session starts pre-filled. */
 export function planSnapshot(): SessionPlan {
+  if (unsavedPlan !== null) return unsavedPlan
   let raw: string | null = null
   try {
     raw = window.localStorage.getItem(STORAGE_KEY)
@@ -325,9 +355,10 @@ export function savePlan(plan: SessionPlan): void {
   if (typeof window === "undefined") return
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(plan))
+    unsavedPlan = null
   } catch {
-    // Private mode, quota, a disabled store: the plan is a convenience, and
-    // losing it costs the learner three taps next time.
+    // The next route must still use the selected language for this session.
+    unsavedPlan = boundPlan(plan)
   }
   notify()
 }

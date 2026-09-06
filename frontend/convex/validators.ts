@@ -64,6 +64,7 @@ export type LevelMatchesCatalog = Assert<
  * assertion below stands in for generation.
  */
 export const sessionPlanValidator = v.object({
+  targetLanguage: v.optional(v.string()),
   scenario: v.union(v.string(), v.null()),
   topic: v.union(v.string(), v.null()),
   tenses: v.array(v.string()),
@@ -81,7 +82,7 @@ export const sessionPlanValidator = v.object({
 type Filled<T> = { [K in keyof T]-?: Exclude<T[K], undefined> }
 
 export type SessionPlanMatchesContract = Assert<
-  Equals<Filled<Infer<typeof sessionPlanValidator>>, SessionPlan>
+  Equals<Filled<Infer<typeof sessionPlanValidator>>, Filled<SessionPlan>>
 >
 
 /* -------------------------------------------------------------------------- */

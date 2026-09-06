@@ -29,6 +29,7 @@ import { useRouter, useSearchParams } from "next/navigation"
 import { ArrowLeft } from "lucide-react"
 import { RoomAudioRenderer } from "@livekit/components-react"
 
+import { SessionLanguageProvider } from "@/components/session/session-language"
 import { ConversationStage } from "@/components/session/conversation-stage"
 import { OutOfMinutesScreen } from "@/components/session/out-of-minutes"
 import { SessionPreflight } from "@/components/session/session-preflight"
@@ -164,31 +165,33 @@ function Session() {
   }
 
   return (
-    <div className="h-svh">
-      {/* Without this the tutor is inaudible: nothing else attaches remote
+    <SessionLanguageProvider language={live.plan?.targetLanguage}>
+      <div className="h-svh">
+        {/* Without this the tutor is inaudible: nothing else attaches remote
           audio tracks to the page. */}
-      <RoomAudioRenderer room={live.room} />
-      <ConversationStage
-        state={live.state}
-        dispatch={live.dispatch}
-        muted={live.muted}
-        onToggleMute={live.toggleMute}
-        onEnd={live.disconnect}
-        elapsedSeconds={live.elapsedSeconds}
-        remainingSeconds={live.remainingSeconds}
-        outOfMinutes={live.outOfMinutes}
-        translate={live.translate}
-        study={live.study}
-        focusTenses={live.plan?.tenses}
-        renderAura={(auraState) => (
-          <TutorAura
-            state={auraState}
-            audioTrack={live.agentAudioTrack}
-            size="lg"
-            className={STAGE_AURA_CLASS}
-          />
-        )}
-      />
-    </div>
+        <RoomAudioRenderer room={live.room} />
+        <ConversationStage
+          state={live.state}
+          dispatch={live.dispatch}
+          muted={live.muted}
+          onToggleMute={live.toggleMute}
+          onEnd={live.disconnect}
+          elapsedSeconds={live.elapsedSeconds}
+          remainingSeconds={live.remainingSeconds}
+          outOfMinutes={live.outOfMinutes}
+          translate={live.translate}
+          study={live.study}
+          focusTenses={live.plan?.tenses}
+          renderAura={(auraState) => (
+            <TutorAura
+              state={auraState}
+              audioTrack={live.agentAudioTrack}
+              size="lg"
+              className={STAGE_AURA_CLASS}
+            />
+          )}
+        />
+      </div>
+    </SessionLanguageProvider>
   )
 }

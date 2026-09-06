@@ -28,7 +28,7 @@
  *
  * Nothing here is Spanish-specific: the focus example comes from the
  * per-language catalog in `plan.ts`, and the language is named through
- * `TARGET_LANGUAGE_NAME`.
+ * the selected session language.
  */
 
 import {
@@ -42,13 +42,15 @@ import {
 import Link from "next/link"
 import { AnimatePresence, motion, useReducedMotion } from "motion/react"
 
+import { LanguagePicker } from "@/components/language-picker"
 import { Overline } from "@/components/overline"
 import { Button } from "@/components/ui/button"
 import type { SessionPlan } from "@/lib/session/contract"
 import type { StartFailure } from "@/lib/session/livekit"
 import {
   PLAN_LIMITS,
-  TARGET_LANGUAGE_NAME,
+  LANGUAGE_NAMES,
+  targetLanguage,
   focusNotePlaceholder,
 } from "@/lib/session/plan"
 import { cn } from "@/lib/utils"
@@ -112,14 +114,14 @@ export function PlanCards({
       field: "topic",
       question: "What do you want to be ready to talk about?",
       placeholder:
-        "A trip to Oaxaca next month, a call with my grandmother, ordering at a restaurant…",
+        "A trip next month, a call with my grandmother, ordering at a restaurant…",
       maxLength: PLAN_LIMITS.topicChars,
     },
     {
       field: "focusNote",
       question: "Anything you want the tutor to push you on?",
       hint: "Tenses, phrases, a habit you want to break.",
-      placeholder: focusNotePlaceholder(),
+      placeholder: focusNotePlaceholder(targetLanguage(plan.targetLanguage)),
       maxLength: PLAN_LIMITS.focusNoteChars,
     },
     {
@@ -156,6 +158,17 @@ export function PlanCards({
   return (
     <div className={cn("flex flex-col", className)}>
       <div className={bodyClassName}>
+        <div className="mb-6">
+          <LanguagePicker
+            value={targetLanguage(plan.targetLanguage)}
+            disabled={starting}
+            onChange={(language) => {
+              if (language === targetLanguage(plan.targetLanguage)) return
+              // Language-specific focus from a previous plan must not leak.
+              patch({ targetLanguage: language, tenses: [], focusNote: null })
+            }}
+          />
+        </div>
         {/* Answered questions, in the order they were asked. Quiet enough that
             the live question is the only thing with weight on screen, and
             clickable because "wait, I want to change that" is the whole reason
@@ -366,8 +379,9 @@ export function SessionPreflight({
         {above}
         <Overline>Before you start</Overline>
         <p className="mt-3 max-w-sm text-sm leading-relaxed text-muted-foreground">
-          {TARGET_LANGUAGE_NAME} out loud, with corrections when you finish a
-          thought. Three quick questions first — skip any.
+          {LANGUAGE_NAMES[targetLanguage(plan.targetLanguage)]} out loud, with
+          corrections when you finish a thought. Three quick questions first —
+          skip any.
         </p>
 
         <PlanCards
@@ -395,7 +409,7 @@ export function SessionPreflight({
                     {" "}
                     <Link
                       href={error.action.href}
-                      className="underline underline-offset-4 decoration-foreground/30 transition-colors duration-200 hover:decoration-foreground"
+                      className="underline decoration-foreground/30 underline-offset-4 transition-colors duration-200 hover:decoration-foreground"
                     >
                       {error.action.label}
                     </Link>

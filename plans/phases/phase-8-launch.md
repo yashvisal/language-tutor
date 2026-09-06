@@ -1,5 +1,10 @@
 # Phase 8: Launch — Sentry, deployment, billing
 
+**2026-09-06 update:** Read [the current launch audit](../audit-2026-09-06.md)
+before executing this plan. It adds reproduced session-lock failures and
+dependency triage to the launch gates. Language selection is now implemented;
+deploy the compatible Convex schema and worker before releasing the new frontend.
+
 *Status: proposed 2026-08-25, starts after phase 7 is merged. Sequence
 agreed with Yash: phase 7 step 5 → Yash's e2e test → CodeRabbit triage →
 merge → this. Read `product-vision.md` and `phase-7-product-polish.md`

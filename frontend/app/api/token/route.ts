@@ -112,6 +112,7 @@ function buildRoomConfig(
     user_id: userId,
     balance_s: balanceSeconds,
     plan: {
+      target_language: plan.targetLanguage,
       topic: plan.topic,
       scenario: plan.scenario,
       tenses: plan.tenses,

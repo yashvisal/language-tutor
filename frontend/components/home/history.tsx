@@ -45,7 +45,8 @@ import {
   type CorrectionCategory,
 } from "@/lib/session/contract"
 import { SCENARIOS, tensesFor } from "@/lib/session/plan"
-import { TARGET_LANGUAGE } from "@/lib/session/protocol"
+import { SessionLanguageProvider } from "@/components/session/session-language"
+import { LANGUAGE_NAMES, targetLanguage } from "@/lib/session/plan"
 
 /** One finished conversation, as `sessions.history` returns it. */
 type HistoryEntry = NonNullable<
@@ -151,128 +152,132 @@ function SessionDialog({
   const endReason = entry?.endReason ?? record?.endReason ?? null
 
   return (
-    <Dialog open={entry !== null} onOpenChange={onOpenChange}>
-      <DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-md">
-        {entry !== null && (
-          <>
-            <DialogHeader className="px-6 pt-6 pb-4 text-left">
-              <DialogTitle className="text-lg font-semibold tracking-tight">
-                {entry.about?.trim() || titleFor(entry.plan)}
-              </DialogTitle>
-              <DialogDescription className="tabular-nums">
-                {formatDate(entry.startedAt)} ·{" "}
-                {formatClock(entry.secondsTalked)} talked
-              </DialogDescription>
-            </DialogHeader>
+    <SessionLanguageProvider language={entry?.plan.targetLanguage}>
+      <Dialog open={entry !== null} onOpenChange={onOpenChange}>
+        <DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-md">
+          {entry !== null && (
+            <>
+              <DialogHeader className="px-6 pt-6 pb-4 text-left">
+                <DialogTitle className="text-lg font-semibold tracking-tight">
+                  {entry.about?.trim() || titleFor(entry.plan)}
+                </DialogTitle>
+                <DialogDescription className="tabular-nums">
+                  {formatDate(entry.startedAt)} ·{" "}
+                  {formatClock(entry.secondsTalked)} talked
+                </DialogDescription>
+              </DialogHeader>
 
-            <div className="max-h-[60svh] [scrollbar-width:thin] [scrollbar-color:var(--border)_transparent] space-y-6 overflow-y-auto px-6 py-1">
-              {/* What the session was SET UP to be — the line the tutor and
+              <div className="max-h-[60svh] [scrollbar-width:thin] [scrollbar-color:var(--border)_transparent] space-y-6 overflow-y-auto px-6 py-1">
+                {/* What the session was SET UP to be — the line the tutor and
                   the learner agreed at the top of it. The list row shows only
                   what it BECAME (`about`); the goal lives in here, because a
                   row that says both says neither. */}
-              <GoalLine goal={goal} />
+                <GoalLine goal={goal} />
 
-              {/* And why it stopped, where that is worth saying. Absent for an
+                {/* And why it stopped, where that is worth saying. Absent for an
                   ordinary ending, and for every row that predates the field —
                   which is why a missing reason is never read as a clean end. */}
-              <EndReasonNote reason={endReason} />
+                <EndReasonNote reason={endReason} />
 
-              <div>
-                <p className="text-sm font-medium text-foreground">
-                  What you talked about
-                </p>
-                {rows.length === 0 ? (
-                  <p className="mt-2 text-sm text-muted-foreground">
-                    No plan — you just talked.
-                  </p>
-                ) : (
-                  <dl className="mt-2 divide-y divide-foreground/[0.06] dark:divide-white/10">
-                    {rows.map((row) => (
-                      <div
-                        key={row.label}
-                        className="flex items-baseline justify-between gap-4 py-2"
-                      >
-                        <dt className="shrink-0 text-xs text-muted-foreground">
-                          {row.label}
-                        </dt>
-                        <dd className="min-w-0 text-right text-sm text-foreground">
-                          {row.value}
-                        </dd>
-                      </div>
-                    ))}
-                  </dl>
-                )}
-              </div>
-
-              <div>
-                <p className="text-sm font-medium text-foreground">Mistakes</p>
-                {entry.corrections.length === 0 ? (
-                  <p className="mt-2 text-sm text-muted-foreground">
-                    Nothing to fix — clean run.
-                  </p>
-                ) : (
-                  <ul className="mt-2 divide-y divide-foreground/[0.06] dark:divide-white/10">
-                    {entry.corrections.map((correction, index) => (
-                      <li
-                        key={`${correction.id}-${index}`}
-                        className="flex items-start justify-between gap-3 py-2.5"
-                      >
-                        {/* The fix and its reason are one block; the tag sits
-                            beside them so a long sentence never pushes it onto
-                            a line of its own. */}
-                        <div className="min-w-0">
-                          <CorrectionDiff
-                            original={correction.original}
-                            replacement={correction.replacement}
-                          />
-                          {correction.explanation && (
-                            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                              {correction.explanation}
-                            </p>
-                          )}
-                        </div>
-                        <span className="mt-0.5 shrink-0 rounded-full bg-foreground/[0.05] px-2 py-0.5 text-[11px] text-muted-foreground dark:bg-white/10">
-                          {categoryLabel(correction.category)}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-
-              {/* The same two pieces the post-session summary shows, from the
-                  same components: what the learner asked, and what they had to
-                  look up. */}
-              <AsksList asks={record?.asks} />
-              <LookupsList lookups={record?.lookups} />
-
-              {hasReviewMaterial(review) && (
                 <div>
                   <p className="text-sm font-medium text-foreground">
-                    To review
+                    What you talked about
                   </p>
-                  <ReviewMaterialView
-                    material={review}
-                    focusTenses={entry.plan.tenses}
-                    className="mt-3"
-                  />
+                  {rows.length === 0 ? (
+                    <p className="mt-2 text-sm text-muted-foreground">
+                      No plan — you just talked.
+                    </p>
+                  ) : (
+                    <dl className="mt-2 divide-y divide-foreground/[0.06] dark:divide-white/10">
+                      {rows.map((row) => (
+                        <div
+                          key={row.label}
+                          className="flex items-baseline justify-between gap-4 py-2"
+                        >
+                          <dt className="shrink-0 text-xs text-muted-foreground">
+                            {row.label}
+                          </dt>
+                          <dd className="min-w-0 text-right text-sm text-foreground">
+                            {row.value}
+                          </dd>
+                        </div>
+                      ))}
+                    </dl>
+                  )}
                 </div>
-              )}
 
-              {transcript && transcript.length > 0 && (
-                <div className="pb-2">
-                  <TranscriptRecord turns={transcript} />
+                <div>
+                  <p className="text-sm font-medium text-foreground">
+                    Mistakes
+                  </p>
+                  {entry.corrections.length === 0 ? (
+                    <p className="mt-2 text-sm text-muted-foreground">
+                      Nothing to fix — clean run.
+                    </p>
+                  ) : (
+                    <ul className="mt-2 divide-y divide-foreground/[0.06] dark:divide-white/10">
+                      {entry.corrections.map((correction, index) => (
+                        <li
+                          key={`${correction.id}-${index}`}
+                          className="flex items-start justify-between gap-3 py-2.5"
+                        >
+                          {/* The fix and its reason are one block; the tag sits
+                            beside them so a long sentence never pushes it onto
+                            a line of its own. */}
+                          <div className="min-w-0">
+                            <CorrectionDiff
+                              original={correction.original}
+                              replacement={correction.replacement}
+                            />
+                            {correction.explanation && (
+                              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                                {correction.explanation}
+                              </p>
+                            )}
+                          </div>
+                          <span className="mt-0.5 shrink-0 rounded-full bg-foreground/[0.05] px-2 py-0.5 text-[11px] text-muted-foreground dark:bg-white/10">
+                            {categoryLabel(correction.category)}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
-              )}
-            </div>
 
-            <div className="flex items-center justify-end gap-4 border-t border-foreground/[0.06] px-6 py-4 dark:border-white/10">
-              <Button onClick={() => onOpenChange(false)}>Done</Button>
-            </div>
-          </>
-        )}
-      </DialogContent>
-    </Dialog>
+                {/* The same two pieces the post-session summary shows, from the
+                  same components: what the learner asked, and what they had to
+                  look up. */}
+                <AsksList asks={record?.asks} />
+                <LookupsList lookups={record?.lookups} />
+
+                {hasReviewMaterial(review) && (
+                  <div>
+                    <p className="text-sm font-medium text-foreground">
+                      To review
+                    </p>
+                    <ReviewMaterialView
+                      material={review}
+                      focusTenses={entry.plan.tenses}
+                      className="mt-3"
+                    />
+                  </div>
+                )}
+
+                {transcript && transcript.length > 0 && (
+                  <div className="pb-2">
+                    <TranscriptRecord turns={transcript} />
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center justify-end gap-4 border-t border-foreground/[0.06] px-6 py-4 dark:border-white/10">
+                <Button onClick={() => onOpenChange(false)}>Done</Button>
+              </div>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+    </SessionLanguageProvider>
   )
 }
 
@@ -291,12 +296,17 @@ function titleFor(plan: StoredPlan): string {
 
 /** The learner typed it mid-sentence; as a title it wants a capital. */
 function sentenceCase(text: string): string {
-  return text.charAt(0).toLocaleUpperCase(TARGET_LANGUAGE) + text.slice(1)
+  return text.charAt(0).toLocaleUpperCase() + text.slice(1)
 }
 
 /** The plan as the learner declared it, skipping everything they left blank. */
 function planRows(plan: StoredPlan): { label: string; value: string }[] {
-  const rows: { label: string; value: string }[] = []
+  const rows: { label: string; value: string }[] = [
+    {
+      label: "Language",
+      value: LANGUAGE_NAMES[targetLanguage(plan.targetLanguage)]!,
+    },
+  ]
   const topic = plan.topic?.trim()
   if (topic) rows.push({ label: "Topic", value: topic })
   const scenario = plan.scenario?.trim()

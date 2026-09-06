@@ -28,7 +28,8 @@ import type {
   SessionEndReason,
   TranslationLookup,
 } from "@/lib/session/contract"
-import { ANCHOR_LANGUAGE, TARGET_LANGUAGE } from "@/lib/session/protocol"
+import { useSessionLanguage } from "./session-language"
+import { ANCHOR_LANGUAGE } from "@/lib/session/protocol"
 import { cn } from "@/lib/utils"
 
 /**
@@ -54,9 +55,10 @@ export function CorrectionDiff({
   accentClassName?: string
   className?: string
 }) {
+  const language = useSessionLanguage()
   return (
     <p
-      lang={TARGET_LANGUAGE}
+      lang={language}
       className={cn(
         "flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm",
         className
@@ -201,6 +203,7 @@ export function LookupsList({
   lookups: readonly TranslationLookup[] | null | undefined
   className?: string
 }) {
+  const language = useSessionLanguage()
   if (!lookups || lookups.length === 0) return null
   return (
     <RecordSection label="You looked up" className={className}>
@@ -211,7 +214,7 @@ export function LookupsList({
             className="flex gap-6 border-t border-border/40 py-1.5 first:border-t-0"
           >
             <dt
-              lang={TARGET_LANGUAGE}
+              lang={language}
               className="flex-1 tracking-[-0.011em] text-foreground"
             >
               {lookup.source}

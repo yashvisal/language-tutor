@@ -88,45 +88,22 @@ function ownsSegment(turn: Turn, segmentId: string): boolean {
   )
 }
 
-/**
- * Filled pauses the STT transcribes verbatim. Stripped from display only —
- * they are speech, not content. Deliberately English-ish hesitations only:
- * Spanish "este"/"eh" are real words and stay.
- */
-const FILLER = /(?:^|\s)(?:u+m+|u+h+|m+h?m+|h+m+)[,.]?(?=\s|$)/gi
-
-function stripFillers(text: string): string {
-  return text.replace(FILLER, " ").replace(/\s+/g, " ").trim()
+/** Preserve spoken words: apparent fillers such as German "um" can be grammar. */
+function normalizeTranscript(text: string): string {
+  return text.replace(/\s+/g, " ").trim()
 }
 
-/**
- * Each STT segment is transcribed as its own sentence, so a coalesced turn
- * reads "…es bien Ahora trabajo Para crear…" — every fragment restarts the
- * sentence case. When the text so far hasn't ended a sentence, a continuation
- * fragment loses its leading capital (unless it looks like an acronym or
- * proper noun can't be told apart — a capital followed by another capital is
- * left alone).
- */
+/** Preserve STT spelling: capitalization may distinguish nouns or names. */
 function joinTargetFragments(fragments: string[]): string {
-  let out = ""
-  for (const fragment of fragments) {
-    if (!out) {
-      out = fragment
-      continue
-    }
-    let next = fragment
-    if (!/[.?!…]$/.test(out) && /^[A-ZÁÉÍÓÚÑÜ][a-záéíóúñü]/.test(next)) {
-      next = next[0]!.toLowerCase() + next.slice(1)
-    }
-    out = `${out} ${next}`
-  }
-  return out
+  return fragments.join(" ")
 }
 
 /** Rebuild the rendered texts from the segment list. */
 function joined(turn: Turn): Turn {
   const segments = turn.segments ?? []
-  const targets = segments.map((s) => stripFillers(s.target)).filter(Boolean)
+  const targets = segments
+    .map((s) => normalizeTranscript(s.target))
+    .filter(Boolean)
   const anchors = segments.map((s) => s.anchor.trim()).filter(Boolean)
   return {
     ...turn,

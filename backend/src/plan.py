@@ -73,6 +73,7 @@ class SessionPlan:
     from it.
     """
 
+    target_language: str | None = None
     topic: str | None = None
     scenario: str | None = None
     tenses: list[str] = field(default_factory=list)
@@ -89,6 +90,11 @@ class SessionPlan:
         if not isinstance(raw, dict):
             return cls()
         return cls(
+            target_language=(
+                raw.get("target_language")
+                if raw.get("target_language") in ("es", "fr", "de", "it", "pt", "ja", "ko", "zh")
+                else None
+            ),
             topic=_text(raw.get("topic")),
             scenario=_text(raw.get("scenario")),
             tenses=_text_list(raw.get("tenses")),
