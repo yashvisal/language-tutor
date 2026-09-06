@@ -9,9 +9,8 @@ from state import SessionGoal
 TUTOR_INSTRUCTIONS = """\
 You are a warm, curious conversation partner helping someone practice {target}.
 
-Who you are talking to: an adult learner at a regressed / early-intermediate \
-level. They understand far more {target} than they can produce. They reach for \
-phrases, get tenses and structure wrong, and pause while they search for words.
+Who you are talking to: an adult learner.
+{learner_profile}
 
 How to talk:
 - Everything you say is in {target}. There is exactly one exception, below, and \
@@ -19,7 +18,8 @@ it is a single line — never a mode you switch into.
 - Keep your turns short. The learner talking is the point of every minute; you \
 talking is what it costs them. Most turns are one or two sentences ending in \
 something easy to answer. No monologues, no lists, no stacking questions.
-- Speak slowly and plainly. Prefer common words over impressive ones.
+- Match your pace, vocabulary, and scaffolding to their self-reported level.
+Adapt to what they actually say.
 - Give them room. If they pause mid-thought, wait rather than filling the silence.
 - Follow their interests. Ask about what they just said, not a new topic.
 - Stay in character if there is a situation, and on the subject if there is a \
@@ -300,7 +300,7 @@ GOAL_SCHEMA = {
 
 STT_PROMPT = """\
 A one-on-one language tutoring conversation. The learner is practising {target} \
-and is an early-intermediate speaker: expect hesitation, false starts, \
+and may hesitate or make false starts, \
 self-correction, imperfect grammar, and occasional switches into {anchor}. \
 Transcribe exactly what was said, including mistakes — do not fix grammar. Do \
 not transcribe filled pauses such as "um", "uh", or "mm". Write only in \
@@ -309,8 +309,8 @@ not transcribe filled pauses such as "um", "uh", or "mm". Write only in \
 
 ANALYZER_INSTRUCTIONS = """\
 You review a single spoken utterance from a {target} learner and return the \
-corrections worth showing them on screen. The learner is an adult at a \
-regressed / early-intermediate level.
+corrections worth showing them on screen. The learner is an adult.
+{learner_profile}
 
 Return a correction only when it is worth the learner's attention. A good tutor \
 ignores far more than they mention. Aim for zero to three corrections; returning \
@@ -413,8 +413,8 @@ ASK_LIMIT_LINES = [
 
 REVIEW_INSTRUCTIONS = """\
 You prepare the study material for ONE {target} practice session, for an adult \
-learner at a regressed / early-intermediate level: they understand far more \
-than they can produce, and they reach for phrases.
+learner.
+{learner_profile}
 
 You are given what this session is FOR — the goal the learner agreed with their \
 tutor at the start — and, once the conversation is under way, some of what they \
@@ -531,6 +531,28 @@ def goal_block(goal: SessionGoal | None) -> str:
     return GOAL_INSTRUCTIONS.format(lines=_bullets(goal_lines(goal)))
 
 
+def learner_profile(plan: SessionPlan | None) -> str:
+    level = plan.level if plan is not None else None
+    guidance = {
+        "beginner": (
+            "Use slow, short sentences and common vocabulary. "
+            "Offer simple choices and small hints when they struggle."
+        ),
+        "understands more than they can say": (
+            "Use approachable natural speech. Allow time to retrieve words "
+            "and help them turn understanding into complete spoken thoughts."
+        ),
+        "comfortable, wants polish": (
+            "Use natural conversational pace and richer vocabulary. Focus on precision, "
+            "idiomatic phrasing, and nuance; avoid unnecessary beginner scaffolding."
+        ),
+    }.get(level, "No level was specified. Start approachable and adapt to the learner's speech.")
+    return (
+        f"Self-reported level for this language: {level or 'not specified'}. {guidance} "
+        "Treat this as a starting point, not a fixed assessment."
+    )
+
+
 def tutor_instructions(
     cfg: TutorConfig,
     plan: SessionPlan | None = None,
@@ -546,7 +568,9 @@ def tutor_instructions(
     no interruption; it takes effect from the model's next response).
     """
     base = TUTOR_INSTRUCTIONS.format(
-        target=cfg.target_language_name, anchor=cfg.anchor_language_name
+        learner_profile=learner_profile(plan),
+        target=cfg.target_language_name,
+        anchor=cfg.anchor_language_name,
     )
     blocks = [base, plan_block(plan)]
     if plan is not None and plan.scenario:
@@ -620,7 +644,9 @@ def analyzer_instructions(
     weighting corrections towards.
     """
     base = ANALYZER_INSTRUCTIONS.format(
-        target=cfg.target_language_name, anchor=cfg.anchor_language_name
+        learner_profile=learner_profile(plan),
+        target=cfg.target_language_name,
+        anchor=cfg.anchor_language_name,
     )
     language = ANALYZER_LANGUAGE_INSTRUCTIONS.format(
         target=cfg.target_language_name, anchor=cfg.anchor_language_name
@@ -661,14 +687,16 @@ def ask_session_context(lines: list[str]) -> str:
     return ASK_SESSION_CONTEXT.format(lines=_bullets(lines))
 
 
-def review_instructions(cfg: TutorConfig) -> str:
+def review_instructions(cfg: TutorConfig, plan: SessionPlan | None = None) -> str:
     """The Review tab's vocabulary and phrases, from the goal and the transcript.
 
     Tables are NOT generated here: they come out of `conjugation/`, because a
     model that invents a paradigm teaches a wrong ending nobody would catch.
     """
     return REVIEW_INSTRUCTIONS.format(
-        target=cfg.target_language_name, anchor=cfg.anchor_language_name
+        learner_profile=learner_profile(plan),
+        target=cfg.target_language_name,
+        anchor=cfg.anchor_language_name,
     )
 
 

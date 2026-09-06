@@ -6,16 +6,16 @@ The frontend and tutor run locally. Sign-in, the development database, realtime 
 
 ## Walk through the product
 
-1. Sign in, or complete signup and choose your level. Open Home.
-2. Select **Start a conversation**, then open the language popover. Choose a language; optionally fill or skip the topic/focus questions. Start and allow the microphone.
+1. Sign in, or complete signup. Open Home.
+2. Select **Start a conversation**, then open the language popover. Choose Spanish, French, German, Italian, or Portuguese and your level in that language; optionally fill or skip the topic/focus questions. Start and allow the microphone.
 3. Confirm the tutor speaks your selected language. Have a normal conversation and interrupt it once. Check both transcripts, then inspect a correction after your turn settles.
-4. Select settled text to translate it. In Chinese/Japanese, try a single character as well as a phrase. Close the overlay and continue speaking.
+4. Select settled text to translate it. Close the overlay and continue speaking.
 5. Pause. Open Transcript, Review, and Ask. Ask about something from the conversation, then resume. Check that study time does not advance the existing meter.
 6. End the conversation. Check the summary, corrections, and transcript. Give the worker a moment to finish saving the summary, then return home and open the same conversation in History.
-7. Start again with a different language. Confirm the tutor and the new history record use that language, while the earlier record keeps its original language. Reload the preflight and check that the last language is remembered.
+7. Start again with a different language. Choose a fresh level and confirm the tutor and the new history record use that language, while the earlier record keeps its original language. Reload the preflight and check that the last language is remembered.
 8. Try a direct visit to `/session`, denied microphone permission, keyboard-only navigation, and dark mode. Note unclear recovery states or layout issues.
 
-Spanish has deterministic conjugation tables. Other languages currently offer the model-generated vocabulary and phrases without those tables. English remains the explanation language; level is shared across languages for now.
+Spanish has deterministic conjugation tables. Other languages currently offer the model-generated vocabulary and phrases without those tables. English remains the explanation language; level is selected before each session and clears when you change languages.
 
 The existing minute balance still applies. If your account has no minutes, testing needs a development balance refill; there is intentionally no purchase path. Do not use multiple concurrent sessions or test paid behavior yet: the existing session/billing issues are documented in the audit and explicitly deferred.
 

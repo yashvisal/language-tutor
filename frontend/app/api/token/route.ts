@@ -11,7 +11,7 @@ import { api } from "@/convex/_generated/api"
 import { OPEN_SESSION_PREFIX, RATE_LIMIT_PREFIX } from "@/lib/billing"
 import { MissingEnvVarError, requireServerEnv } from "@/lib/env"
 import type { SessionPlan } from "@/lib/session/contract"
-import { boundPlan } from "@/lib/session/plan"
+import { boundPlan, dispatchPlan } from "@/lib/session/plan"
 import {
   ROOM_NAME_PREFIX,
   TUTOR_AGENT_NAME,
@@ -111,16 +111,7 @@ function buildRoomConfig(
   const metadata: SessionDispatchMetadata = {
     user_id: userId,
     balance_s: balanceSeconds,
-    plan: {
-      target_language: plan.targetLanguage,
-      topic: plan.topic,
-      scenario: plan.scenario,
-      tenses: plan.tenses,
-      focus_note: plan.focusNote,
-      note: plan.note,
-      vocab: plan.vocab,
-      level: plan.level,
-    },
+    plan: dispatchPlan(plan),
   }
   return new RoomConfiguration({
     agents: [

@@ -14,7 +14,7 @@
  */
 
 import type { SessionPlan } from "./contract"
-import { TARGET_LANGUAGE } from "./protocol"
+import { TARGET_LANGUAGE, type SessionDispatchMetadata } from "./protocol"
 
 /* -------------------------------------------------------------------------- */
 /*  Catalogs                                                                  */
@@ -95,9 +95,6 @@ export const TARGET_LANGUAGES = [
   { code: "de", native: "Deutsch" },
   { code: "it", native: "Italiano" },
   { code: "pt", native: "Português" },
-  { code: "ja", native: "日本語" },
-  { code: "ko", native: "한국어" },
-  { code: "zh", native: "中文" },
 ] as const
 
 export function targetLanguage(value: unknown): string {
@@ -146,11 +143,7 @@ export interface LevelOption extends PlanOption {
   value: LevelValue
 }
 
-/**
- * Self-declared level. The middle option is the product's reference learner
- * (see the vision doc, decision #4) and is therefore the default — a learner
- * who taps nothing has still told the tutor something true.
- */
+/** Self-reported ability in the selected language; preflight has no default. */
 export const LEVELS: LevelOption[] = [
   { value: LEVEL_VALUES[0], label: "Just starting out" },
   { value: LEVEL_VALUES[1], label: "I understand more than I can say" },
@@ -167,7 +160,7 @@ export const EMPTY_PLAN: SessionPlan = {
   focusNote: null,
   note: null,
   vocab: [],
-  level: DEFAULT_LEVEL,
+  level: null,
 }
 
 /* -------------------------------------------------------------------------- */
@@ -234,7 +227,25 @@ export function boundPlan(input: unknown): SessionPlan {
     focusNote: boundString(raw.focusNote, PLAN_LIMITS.focusNoteChars),
     note: boundString(raw.note, PLAN_LIMITS.noteChars),
     vocab: boundList(raw.vocab, PLAN_LIMITS.maxVocab, PLAN_LIMITS.vocabChars),
-    level: boundString(raw.level, PLAN_LIMITS.levelChars),
+    level: LEVEL_VALUES.includes(raw.level as LevelValue)
+      ? (raw.level as LevelValue)
+      : null,
+  }
+}
+
+/** The single mapping used by the token route to dispatch the selected plan. */
+export function dispatchPlan(
+  plan: SessionPlan
+): SessionDispatchMetadata["plan"] {
+  return {
+    target_language: plan.targetLanguage,
+    topic: plan.topic,
+    scenario: plan.scenario,
+    tenses: plan.tenses,
+    focus_note: plan.focusNote,
+    note: plan.note,
+    vocab: plan.vocab,
+    level: plan.level,
   }
 }
 
@@ -291,7 +302,7 @@ export function suggestPlan(
  * Where the last plan lives until sessions are rows in a database. Versioned in
  * the key so a shape change is a miss, not a parse error.
  */
-const STORAGE_KEY = "tutor.session-plan.v1"
+const STORAGE_KEY = "tutor.session-plan.v2"
 
 /**
  * The stored plan is read as an external store rather than seeded into state
@@ -339,7 +350,7 @@ export function planSnapshot(): SessionPlan {
   cachedRaw = raw
   try {
     const plan = raw ? boundPlan(JSON.parse(raw)) : EMPTY_PLAN
-    cachedPlan = { ...plan, level: plan.level ?? DEFAULT_LEVEL }
+    cachedPlan = plan
   } catch {
     cachedPlan = EMPTY_PLAN
   }

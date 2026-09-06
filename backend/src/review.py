@@ -348,7 +348,7 @@ class ReviewMaterial:
 
         response = await self._get_client().responses.create(
             model=self._cfg.analyzer_model,
-            instructions=review_instructions(self._cfg),
+            instructions=review_instructions(self._cfg, self._plan),
             input="\n\n".join(parts),
             reasoning={"effort": "none"},
             text={

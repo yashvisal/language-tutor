@@ -180,7 +180,7 @@ From reviewing the phase-1 layout explorations (aura-stage, split-columns, and t
 1. **Choose the target language before starting.** Spanish remains the test
    baseline, but is no longer the only selectable language. A popover in the
    shared session preflight offers Spanish, French, German, Italian,
-   Portuguese, Japanese, Korean, and Mandarin Chinese. English remains the
+   and Portuguese. English remains the
    anchor language. This supersedes the earlier "no language picker" and
    "Spanish only until monetized" restrictions.
 2. **Language is a session parameter.** The last selection is remembered in
@@ -402,3 +402,5 @@ That loop is the product primitive. When deciding whether something belongs in t
 > **Does this make the live language-learning conversation meaningfully better?**
 
 If not, it belongs later.
+
+2026-09-06 follow-up: Self-reported level belongs to the session language, selected in preflight, not account settings or signup. All preflight answers reach the tutor prompt; its pace and scaffolding use this level as a starting point and adapt to speech. Korean, Japanese, and Mandarin are excluded from the launch selection.

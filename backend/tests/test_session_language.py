@@ -7,7 +7,7 @@ from plan import JobMetadata
 from prompts import analyzer_instructions, greeting_instructions, tutor_instructions
 
 
-@pytest.mark.parametrize("language", ["es", "fr", "de", "it", "pt", "ja", "ko", "zh"])
+@pytest.mark.parametrize("language", ["es", "fr", "de", "it", "pt"])
 def test_dispatch_language_reaches_session_prompts(language):
     meta = JobMetadata.parse(json.dumps({"plan": {"target_language": language}}))
     defaults = TutorConfig()
@@ -20,9 +20,54 @@ def test_dispatch_language_reaches_session_prompts(language):
     assert cfg.target_language_name in analyzer_instructions(cfg, meta.plan)
 
 
-@pytest.mark.parametrize("language", [None, {}, [], 42, "en", "invalid"])
+@pytest.mark.parametrize("language", [None, {}, [], 42, "en", "invalid", "ja", "ko", "zh"])
 def test_invalid_or_legacy_selection_preserves_worker_default(language):
     meta = JobMetadata.parse(json.dumps({"plan": {"target_language": language}}))
     cfg = TutorConfig(target_lang="fr")
     assert cfg.with_session_language(meta.plan.target_language) is cfg
     assert JobMetadata.parse(None).plan.target_language is None
+
+
+@pytest.mark.parametrize(
+    "level, guidance",
+    [
+        ("beginner", "slow, short sentences"),
+        ("understands more than they can say", "time to retrieve words"),
+        ("comfortable, wants polish", "natural conversational pace"),
+    ],
+)
+def test_preflight_answers_and_level_reach_prompts(level, guidance):
+    from prompts import review_instructions
+    from state import SessionGoal
+
+    wire = {
+        "target_language": "fr",
+        "topic": "travel",
+        "scenario": "a cafe",
+        "tenses": ["past tense"],
+        "focus_note": "word endings",
+        "note": "give me time",
+        "vocab": ["food"],
+        "level": level,
+    }
+    plan = JobMetadata.parse(json.dumps({"plan": wire})).plan
+    cfg = TutorConfig().with_session_language(plan.target_language)
+    for goal in [None, SessionGoal(text="travel conversation", confirmed=True)]:
+        prompt = tutor_instructions(cfg, plan, goal)
+        for answer in [
+            "French",
+            "travel",
+            "a cafe",
+            "past tense",
+            "word endings",
+            "give me time",
+            "food",
+            level,
+            guidance,
+        ]:
+            assert answer in prompt
+        assert "early-intermediate" not in prompt
+    for prompt in [analyzer_instructions(cfg, plan), review_instructions(cfg, plan)]:
+        assert level in prompt
+        assert guidance in prompt
+        assert "early-intermediate" not in prompt

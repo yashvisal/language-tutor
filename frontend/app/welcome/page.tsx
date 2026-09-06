@@ -15,6 +15,6 @@ import { WelcomeForm } from "./welcome-form"
  */
 export default async function WelcomePage() {
   const viewer = await viewerOnServer()
-  if (viewer?.level) redirect("/home")
+  if (viewer?.onboarded) redirect("/home")
   return <WelcomeForm />
 }

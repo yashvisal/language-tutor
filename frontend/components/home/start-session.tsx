@@ -59,9 +59,7 @@ export function StartSession() {
   const [edited, setEdited] = useState<SessionPlan | null>(null)
   const [open, setOpen] = useState(false)
 
-  // The level the learner already declared wins over whatever last session's
-  // stored plan carried — the profile is the answer they gave on purpose.
-  const plan = edited ?? { ...stored, level: viewer?.level ?? stored.level }
+  const plan = edited ?? stored
 
   /**
    * Three states, and the middle one used to be invisible. `undefined` is the

@@ -92,7 +92,7 @@ class SessionPlan:
         return cls(
             target_language=(
                 raw.get("target_language")
-                if raw.get("target_language") in ("es", "fr", "de", "it", "pt", "ja", "ko", "zh")
+                if raw.get("target_language") in ("es", "fr", "de", "it", "pt")
                 else None
             ),
             topic=_text(raw.get("topic")),

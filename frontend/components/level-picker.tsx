@@ -5,33 +5,22 @@ import { useRef, type KeyboardEvent } from "react"
 import { LEVELS, type LevelValue } from "@/lib/session/plan"
 import { cn } from "@/lib/utils"
 
-/**
- * The self-declared level, asked in two places — once during onboarding and
- * again, editable, in settings. One component, two shapes.
- *
- * It implements the ARIA radio-group pattern properly, which the two hand-rolled
- * copies did not: the group is a single tab stop, and the arrow keys move *and*
- * select within it. That is the behaviour a screen-reader user expects from
- * `role="radiogroup"`, and three separate tab stops that only respond to Enter
- * is the thing that reads as broken.
- */
+/** Self-reported level with a single tab stop and arrow-key selection. */
 export type LevelPickerVariant = "stacked" | "inline"
 
-const VARIANTS: Record<
-  LevelPickerVariant,
-  { group: string; option: string }
-> = {
-  /** Onboarding: full-width rows, one question on the screen. */
-  stacked: {
-    group: "flex flex-col gap-2",
-    option: "rounded-md px-4 py-3 text-left text-sm",
-  },
-  /** Settings: chips on a line, one field among others. */
-  inline: {
-    group: "flex flex-wrap gap-1.5",
-    option: "rounded-full px-3 py-1 text-sm",
-  },
-}
+const VARIANTS: Record<LevelPickerVariant, { group: string; option: string }> =
+  {
+    /** Onboarding: full-width rows, one question on the screen. */
+    stacked: {
+      group: "flex flex-col gap-2",
+      option: "rounded-md px-4 py-3 text-left text-sm",
+    },
+    /** Settings: chips on a line, one field among others. */
+    inline: {
+      group: "flex flex-wrap gap-1.5",
+      option: "rounded-full px-3 py-1 text-sm",
+    },
+  }
 
 export function LevelPicker({
   value,

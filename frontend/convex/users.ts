@@ -46,14 +46,9 @@ export async function secondsFor(
  * identity, declared level, and the balance — in seconds, which is what the
  * meter spends, plus the whole minutes every surface actually prints.
  *
- * Three answers, and the callers depend on the difference:
- * - `null` — signed out.
- * - `level: null` — signed in with no `users` row yet, i.e. this account has
- *   never been through `/welcome`. The shell sends them there.
- * - a level — a real learner.
- *
- * Email comes from the Clerk identity rather than the row, so a change in
- * Clerk shows up without a sync job.
+ * A null viewer is signed out. `onboarded` records whether the account row
+ * exists, independently of the legacy profile level. Session levels are
+ * chosen in preflight; they are not a prerequisite for account access.
  */
 export const viewer = query({
   args: {},
@@ -68,8 +63,8 @@ export const viewer = query({
       /** From the Clerk identity, falling back to the row. `null` for an
        * account Clerk has no email for — never `""`. */
       email: v.union(v.string(), v.null()),
-      /** `null` means "signed in, never been through `/welcome`" — the state
-       * the shell redirects on. */
+      /** Account existence, independent of any legacy profile level. */
+      onboarded: v.boolean(),
       level: v.union(levelValidator, v.null()),
       seconds: v.number(),
       minutes: v.number(),
@@ -86,6 +81,7 @@ export const viewer = query({
       // `||`, not `??`: an empty string is an absent email, and rows written
       // before that was true still carry one. The UI never sees "".
       email: identity.email || user?.email || null,
+      onboarded: user !== null,
       level: user?.level ?? null,
       seconds,
       // Derived here rather than in each caller so "23 minutes left" means the

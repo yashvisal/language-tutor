@@ -5,11 +5,9 @@ import { useRouter } from "next/navigation"
 import { useMutation } from "convex/react"
 
 import { Wordmark } from "@/components/app-shell/wordmark"
-import { LevelPicker } from "@/components/level-picker"
 import { Button } from "@/components/ui/button"
 import { api } from "@/convex/_generated/api"
 import { SIGNUP_GRANT_MINUTES } from "@/lib/billing"
-import { DEFAULT_LEVEL } from "@/lib/session/plan"
 
 /**
  * The one onboarding question. The page around this has already decided, on
@@ -20,7 +18,6 @@ export function WelcomeForm() {
   const router = useRouter()
   const ensureUser = useMutation(api.users.ensureUser)
 
-  const [level, setLevel] = useState(DEFAULT_LEVEL)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -28,7 +25,7 @@ export function WelcomeForm() {
     setSaving(true)
     setError(null)
     try {
-      await ensureUser({ level })
+      await ensureUser({})
       router.replace("/home")
     } catch {
       // The mutation is idempotent, so retrying is always safe.
@@ -46,18 +43,11 @@ export function WelcomeForm() {
       </header>
       <div className="mx-auto w-full max-w-md px-8 py-[clamp(2rem,12vh,6rem)]">
         <h1 className="text-xl tracking-[-0.015em] text-foreground">
-          Where are you with the language you want to practice?
+          Ready to start talking?
         </h1>
         <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-          It only steers where the tutor starts — you can change it any time.
+          Choose your language and level before each conversation.
         </p>
-
-        <LevelPicker
-          value={level}
-          onChange={setLevel}
-          variant="stacked"
-          className="mt-8"
-        />
 
         <p className="mt-8 text-sm text-muted-foreground">
           You have {SIGNUP_GRANT_MINUTES} free minutes. Pausing to study doesn’t

@@ -1,34 +1,7 @@
 "use client"
 
-/**
- * The pre-flight: the one thing between a learner and speaking.
- *
- * It is a short conversation, not a form. Three questions, one on screen at a
- * time, each answered by typing — because what the learner types is what the
- * tutor carries into the session. "when to use he comido vs comí" is worth more
- * than any chip could be, and a grid of chips only ever asked the learner to
- * configure a session before they had said anything.
- *
- * So: one prominent question, one text field, `1 / 3` in the footer, Skip and
- * Continue. Answered questions collapse into quiet rows above the current one,
- * which is what makes the card read as a conversation rather than a wizard —
- * and clicking a row goes back to it. Nothing is required: skipping all three
- * is a legitimate plan (free conversation), and the last step's button never
- * disables.
- *
- * The three answers land in `plan.topic`, `plan.focusNote` and `plan.note`.
- * `scenario` and `tenses` stay in the contract — the catalogs and `suggestPlan`
- * still use them — but this screen never sets them, and the level is whatever
- * the learner's profile says.
- *
- * Two hosts: the dashboard's modal (`components/home/start-session.tsx`) and
- * `/session`'s own pre-connect state (`SessionPreflight` below). Both render
- * `PlanCards` — the questions are exported rather than copied so the two can
- * never ask the same thing two ways.
- *
- * Nothing here is Spanish-specific: the focus example comes from the
- * per-language catalog in `plan.ts`, and the language is named through
- * the selected session language.
+/** Shared preflight for Home and /session: language and self-reported level,
+ * followed by three optional questions passed directly into the session plan.
  */
 
 import {
@@ -42,6 +15,7 @@ import {
 import Link from "next/link"
 import { AnimatePresence, motion, useReducedMotion } from "motion/react"
 
+import { SessionLevelPicker } from "@/components/session-level-picker"
 import { LanguagePicker } from "@/components/language-picker"
 import { Overline } from "@/components/overline"
 import { Button } from "@/components/ui/button"
@@ -144,6 +118,7 @@ export function PlanCards({
    * as a half-typed thought.
    */
   const advance = (keep: boolean) => {
+    if (starting || !plan.level) return
     const raw = keep ? plan[current.field] : null
     const next: SessionPlan = { ...plan, [current.field]: raw?.trim() || null }
     onChange(next)
@@ -158,16 +133,33 @@ export function PlanCards({
   return (
     <div className={cn("flex flex-col", className)}>
       <div className={bodyClassName}>
-        <div className="mb-6">
+        <div className="mb-6 flex flex-wrap gap-2">
           <LanguagePicker
             value={targetLanguage(plan.targetLanguage)}
             disabled={starting}
             onChange={(language) => {
               if (language === targetLanguage(plan.targetLanguage)) return
               // Language-specific focus from a previous plan must not leak.
-              patch({ targetLanguage: language, tenses: [], focusNote: null })
+              patch({
+                targetLanguage: language,
+                level: null,
+                tenses: [],
+                focusNote: null,
+              })
             }}
           />
+          <SessionLevelPicker
+            value={plan.level}
+            language={targetLanguage(plan.targetLanguage)}
+            disabled={starting}
+            onChange={(level) => patch({ level })}
+          />
+          {!plan.level && (
+            <p className="w-full text-xs text-muted-foreground">
+              Choose your level to continue. The three questions below are
+              optional.
+            </p>
+          )}
         </div>
         {/* Answered questions, in the order they were asked. Quiet enough that
             the live question is the only thing with weight on screen, and
@@ -256,7 +248,7 @@ export function PlanCards({
               variant="ghost"
               size="sm"
               onClick={() => setStep(step - 1)}
-              disabled={starting}
+              disabled={starting || !plan.level}
               className="text-muted-foreground"
             >
               Back
@@ -271,12 +263,16 @@ export function PlanCards({
             variant="ghost"
             size="sm"
             onClick={() => advance(false)}
-            disabled={starting}
+            disabled={starting || !plan.level}
             className="text-muted-foreground"
           >
             Skip
           </Button>
-          <Button size="lg" onClick={() => advance(true)} disabled={starting}>
+          <Button
+            size="lg"
+            onClick={() => advance(true)}
+            disabled={starting || !plan.level}
+          >
             {last ? (starting ? "Connecting…" : startLabel) : "Continue"}
           </Button>
         </div>
