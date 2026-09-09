@@ -31,9 +31,9 @@ def test_invalid_or_legacy_selection_preserves_worker_default(language):
 @pytest.mark.parametrize(
     "level, guidance",
     [
-        ("beginner", "slow, short sentences"),
-        ("understands more than they can say", "time to retrieve words"),
-        ("comfortable, wants polish", "natural conversational pace"),
+        ("beginner", "Slow, short sentences"),
+        ("understands more than they can say", "time to find words"),
+        ("comfortable, wants polish", "Natural pace"),
     ],
 )
 def test_preflight_answers_and_level_reach_prompts(level, guidance):
@@ -83,5 +83,5 @@ def test_ask_answers_in_the_target_language_at_the_learner_level():
     prompt = ask_instructions(cfg, plan)
     assert "Write in Italian" in prompt
     assert "beginner" in prompt
-    assert "slow, short sentences" in prompt
+    assert "Slow, short sentences" in prompt
     assert "Write in English" not in prompt

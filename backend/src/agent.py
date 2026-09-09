@@ -93,6 +93,24 @@ load_dotenv(".env.local")
 
 logger = logging.getLogger("tutor.agent")
 
+
+def _utf8_console() -> None:
+    """Windows consoles default to cp1252, which cannot encode the Spanish the
+    transcripts are full of; without this every "¿" in a debug line is a
+    logging traceback instead of a log line. Called at import as well as in
+    `__main__`: each job runs in its own process, which imports this module
+    without running the `__main__` block (live, 2026-09-08 — the traceback
+    came from a job process)."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
+_utf8_console()
+
 # The pause surface's tabs, wire value -> how the brief names it. Must match the
 # `tab` union in `frontend/lib/session/protocol.ts`.
 STUDY_TABS = {"transcript": "Transcript", "review": "Review", "ask": "Ask"}
@@ -784,9 +802,18 @@ def _meter_from_first_tutor_audio(
     (audit §4.2).
     """
 
+    requested_at = time.monotonic()
+
     def _on_agent_state(ev: object) -> None:
         if getattr(ev, "new_state", None) != "speaking" or clock.started:
             return
+        # The number behind "it took a while to start" (live, 2026-09-08:
+        # about seven seconds, and the learner spoke first). Logged so the
+        # next run has a figure rather than a feeling.
+        logger.info(
+            "first tutor audio",
+            extra={"after_s": round(time.monotonic() - requested_at, 2)},
+        )
         _spawn(clock.start(), "tutor-clock-start")
 
     session.on("agent_state_changed", _on_agent_state)
@@ -1691,10 +1718,5 @@ async def _register_pause_rpc(
 
 
 if __name__ == "__main__":
-    # Windows consoles default to cp1252, which cannot encode the Spanish the
-    # transcripts are full of; without this every "¿" in a debug line is a
-    # logging traceback instead of a log line.
-    for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8", errors="replace")
+    _utf8_console()
     agents.cli.run_app(server)

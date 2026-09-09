@@ -192,6 +192,15 @@ class CorrectionAnalyzer:
             )
         except asyncio.CancelledError:
             raise
+        except TimeoutError:
+            # One turn with no corrections shown. A line, not a traceback: the
+            # traceback is the same forty frames every time and says nothing
+            # the timeout does not (live, 2026-09-08 — once in a session).
+            logger.warning(
+                "analyzer timed out; no corrections for this turn",
+                extra={"turn_id": turn_id, "timeout_s": REQUEST_TIMEOUT},
+            )
+            return
         except Exception:
             logger.exception("analyzer call failed", extra={"turn_id": turn_id})
             return
