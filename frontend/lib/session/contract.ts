@@ -218,6 +218,7 @@ export type SessionEndReason =
   | "ledger_failure"
   | "tutor_silent"
   | "stale"
+  | "lease_lost"
 
 /**
  * One select-to-translate lookup, as stored. The span the learner highlighted

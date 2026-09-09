@@ -164,15 +164,16 @@ let minted: Promise<TokenSourceResponseObject> | null = null
  * than a constructor argument, since the source is a singleton (one live
  * session per page) and the plan is chosen long after it is created.
  *
- * Every token the route mints OPENS A SESSION ROW, so the source must mint
- * exactly one per start — and `useSession` calls it more often than that:
- * once on mount to warm the connection (`Room.prepareConnection`), which in
- * development's Strict Mode runs twice, and once inside `start()`. The
- * mount-time call can land after the plan is set and before `start()` reads
- * it. So the plan is one-shot AND the result is memoised per start: whoever
- * calls first mints, everyone else in the same start gets the same token (or
- * the same refusal), and a call with no start pending is refused without a
- * request — the hook logs one warning and moves on (live, 2026-09-08).
+ * `useSession` calls the source more than once per start: on mount to warm
+ * the connection (`Room.prepareConnection`), which in development's Strict
+ * Mode runs twice, and inside `start()`. A token opens nothing on the server
+ * any more (the worker opens the row when it joins), so a spare mint is only
+ * a spare request — but the mount-time call can still land after the plan is
+ * set and before `start()` reads it, and two tokens for one start is two
+ * rooms. So the plan is one-shot AND the result is memoised per start:
+ * whoever calls first mints, everyone else in the same start gets the same
+ * token (or the same refusal), and a call with no start pending is refused
+ * without a request — the hook logs one warning and moves on.
  */
 export function setPendingSessionPlan(plan: SessionPlan | null) {
   pendingPlan = plan

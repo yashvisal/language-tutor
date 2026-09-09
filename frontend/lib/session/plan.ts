@@ -231,6 +231,27 @@ export function boundPlan(input: unknown): SessionPlan {
   }
 }
 
+/**
+ * The inverse of `dispatchPlan`: the plan as the worker hands it back when it
+ * opens the session row (`POST /tutor/open`). Untrusted on arrival like every
+ * other worker field, so it goes through `boundPlan`; a payload that is not
+ * an object is the empty plan.
+ */
+export function planFromDispatch(wire: unknown): SessionPlan {
+  if (!wire || typeof wire !== "object") return boundPlan(null)
+  const raw = wire as Record<string, unknown>
+  return boundPlan({
+    targetLanguage: raw.target_language,
+    topic: raw.topic,
+    scenario: raw.scenario,
+    tenses: raw.tenses,
+    focusNote: raw.focus_note,
+    note: raw.note,
+    vocab: raw.vocab,
+    level: raw.level,
+  })
+}
+
 /** The single mapping used by the token route to dispatch the selected plan. */
 export function dispatchPlan(
   plan: SessionPlan

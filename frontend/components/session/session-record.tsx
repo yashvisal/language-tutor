@@ -131,6 +131,7 @@ const END_REASON_NOTES: Partial<Record<SessionEndReason, string>> = {
   // reconciliation cron finished it hours later. Stated as what happened, not
   // as a fault — the seconds were billed either way.
   stale: "The session was left open and closed later.",
+  lease_lost: "Another conversation took this one's place.",
 }
 
 /** The sentence for a stored reason, or null where there is nothing to say. */

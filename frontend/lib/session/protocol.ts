@@ -352,6 +352,21 @@ export const TUTOR_ERROR_MODEL = "model"
 export const TUTOR_ERROR_SILENT = "tutor_silent"
 
 /**
+ * The ledger refused to open this room: the learner already has a live
+ * conversation (another tab, or a worker still holding its lease). The worker
+ * publishes it and leaves; nothing was billed.
+ */
+export const TUTOR_ERROR_OPEN_SESSION = "open_session"
+
+/** The ledger refused to open this room because it has already ended — a
+ * reused token. The worker publishes it and leaves; nothing was billed. */
+export const TUTOR_ERROR_CLOSED = "closed"
+
+/** The ledger refused to open this room because the learner hit the hourly
+ * start limit between the token's pre-check and the worker's join. */
+export const TUTOR_ERROR_RATE_LIMITED = "rate_limited"
+
+/**
  * How long the surface waits for the tutor to JOIN before calling the session
  * failed. Generous next to a healthy dispatch (a second or two) and short
  * enough that a learner never sits in front of a silent stage wondering

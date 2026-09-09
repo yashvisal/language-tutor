@@ -101,6 +101,9 @@ import {
   REVIEW_TIMEOUT_MS,
   TRANSLATE_TIMEOUT_MS,
   TUTOR_ERROR_MODEL,
+  TUTOR_ERROR_CLOSED,
+  TUTOR_ERROR_OPEN_SESSION,
+  TUTOR_ERROR_RATE_LIMITED,
   TUTOR_ERROR_SILENT,
 } from "./protocol"
 import type {
@@ -330,7 +333,19 @@ export type LiveConnectionState = "idle" | "connecting" | "live"
  * it through `session_over`, and the learner gets a summary with the
  * unexpected-end line on it rather than a failed card.
  */
-export type TutorFailure = "no_show" | "silent"
+/**
+ * Why the stage has no tutor. `no_show`: none joined in time. `silent`: one
+ * joined and never spoke. `open_session` and `closed`: one joined, asked the
+ * ledger for the room, was refused (another conversation is live for this
+ * learner; or this room already ended) and left. Nothing was billed in any
+ * of them: the meter starts at the first tutor audio frame.
+ */
+export type TutorFailure =
+  | "no_show"
+  | "silent"
+  | "open_session"
+  | "closed"
+  | "rate_limited"
 
 export interface LiveSession {
   state: SessionState
@@ -382,6 +397,22 @@ export interface LiveSession {
   study: StudySession
   /** The plan this room was started with, for the surface that renders it. */
   plan: SessionPlan | null
+}
+
+/** The worker's `tutor.error` code, as a failure the stage can name. */
+function failureFromError(code: string | undefined): TutorFailure | null {
+  switch (code) {
+    case TUTOR_ERROR_SILENT:
+      return "silent"
+    case TUTOR_ERROR_OPEN_SESSION:
+      return "open_session"
+    case TUTOR_ERROR_CLOSED:
+      return "closed"
+    case TUTOR_ERROR_RATE_LIMITED:
+      return "rate_limited"
+    default:
+      return null
+  }
 }
 
 export function useLiveSession(): LiveSession {
@@ -682,9 +713,8 @@ export function useLiveSession(): LiveSession {
    */
   useEffect(() => {
     const onAttributes = (changed: Record<string, string>) => {
-      if (changed[ATTR_ERROR] === TUTOR_ERROR_SILENT) {
-        setLatchedFailure("silent")
-      }
+      const failure = failureFromError(changed[ATTR_ERROR])
+      if (failure !== null) setLatchedFailure(failure)
     }
     room.on(RoomEvent.ParticipantAttributesChanged, onAttributes)
     return () => {
@@ -693,10 +723,9 @@ export function useLiveSession(): LiveSession {
   }, [room])
 
   const failure: TutorFailure | null =
-    latchedFailure ??
-    (agent.attributes?.[ATTR_ERROR] === TUTOR_ERROR_SILENT ? "silent" : null)
+    latchedFailure ?? failureFromError(agent.attributes?.[ATTR_ERROR])
 
-  /** So the row is closed once, not once per re-run of the effect below. */
+  /** So the room is ended once, not once per re-run of the effect below. */
   const failureHandled = useRef(false)
   useEffect(() => {
     if (failure === null || failureHandled.current) return
@@ -706,18 +735,10 @@ export function useLiveSession(): LiveSession {
     // showing an end-of-session screen for a session with no seconds in it.
     ended.current = true
     intentional.current = true
-    // The row still has to close. It is the one-open-session reservation, and
-    // the worker that would normally close it is exactly the thing that is
-    // missing — so without this, Try again meets a 409 for fifteen minutes.
-    const name = roomName.current
-    if (name) {
-      void recordFinish({
-        room: name,
-        outcome: { corrections: [], secondsTalked: null, endedByClock: false },
-      }).catch(() => {})
-    }
+    // Nothing to close: a tutor that never joined never opened the row, and
+    // one the ledger refused was never given it. Try again is a fresh token.
     endRoom()
-  }, [failure, recordFinish, endRoom])
+  }, [failure, endRoom])
 
   /* -- connect / disconnect ---------------------------------------------- */
 

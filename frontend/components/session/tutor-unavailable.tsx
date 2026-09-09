@@ -37,12 +37,24 @@ export function TutorUnavailableCard({
   return (
     <div className={cn(CARD_CLASS, className)}>
       <h2 className="text-base font-medium text-foreground">
-        The tutor didn&rsquo;t join.
+        {reason === "open_session"
+          ? "You already have a conversation open."
+          : reason === "closed"
+            ? "That conversation has ended."
+            : reason === "rate_limited"
+              ? "That’s a lot of conversations for one hour."
+              : "The tutor didn’t join."}
       </h2>
       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
         {reason === "silent"
           ? "It connected but never spoke. Nothing was charged — the clock starts when the tutor does."
-          : "Nothing was charged. Try again — this usually clears on the next attempt."}
+          : reason === "open_session"
+            ? "End it in the other tab, or wait a few minutes for it to close. Nothing was charged here."
+            : reason === "closed"
+              ? "Start a new one. Nothing was charged here."
+              : reason === "rate_limited"
+                ? "Give it a little while and try again. Nothing was charged."
+                : "Nothing was charged. Try again — this usually clears on the next attempt."}
       </p>
       <div className="mt-5 flex items-center gap-3">
         <Button size="lg" onClick={onRetry}>
