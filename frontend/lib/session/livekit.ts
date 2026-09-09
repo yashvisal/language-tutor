@@ -155,10 +155,21 @@ let pendingPlan: SessionPlan | null = null
  * because the token is minted inside that call: a module-level handoff rather
  * than a constructor argument, since the source is a singleton (one live
  * session per page) and the plan is chosen long after it is created.
+ *
+ * One-shot: the fetch below consumes it. `useSession` also calls the source
+ * once on mount to warm the connection (`Room.prepareConnection`), and every
+ * token this route mints opens a session row — so a warm-up token would open
+ * a row nobody joins, and the real start a second later would be refused as
+ * "already open in another tab" (live, 2026-09-08). With no plan pending the
+ * source refuses instead, and the hook logs one warning and moves on.
  */
 export function setPendingSessionPlan(plan: SessionPlan | null) {
   pendingPlan = plan
 }
+
+/** What the warm-up gets. Never shown: `start()` always sets a plan first. */
+export const NO_SESSION_REQUESTED_MESSAGE =
+  "No session requested; not minting a token for the connection warm-up."
 
 /**
  * The TokenSource every session surface should use.
@@ -174,6 +185,9 @@ export function setPendingSessionPlan(plan: SessionPlan | null) {
  * speaks, so the route stays a conforming token endpoint with one extra field.
  */
 export const tutorTokenSource = TokenSource.literal(async () => {
+  const plan = pendingPlan
+  if (plan === null) throw new Error(NO_SESSION_REQUESTED_MESSAGE)
+  pendingPlan = null
   const response = await fetch(TOKEN_ENDPOINT, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -181,7 +195,7 @@ export const tutorTokenSource = TokenSource.literal(async () => {
     // `lesson-<slug>-<timestamp>-<nonce>` room per session, and agent
     // dispatch is the server's business (a client-side `agent_name` would be
     // ignored there anyway).
-    body: JSON.stringify({ session_plan: pendingPlan }),
+    body: JSON.stringify({ session_plan: plan }),
   })
   // Not a failure: the learner is out of minutes, and the surface has a screen
   // for that. Everything else is a fault worth showing as one.

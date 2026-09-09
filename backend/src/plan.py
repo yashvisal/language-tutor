@@ -24,6 +24,8 @@ import json
 import logging
 from dataclasses import dataclass, field
 
+from config import SESSION_LANGUAGES
+
 logger = logging.getLogger("tutor.plan")
 
 # The budget a session falls back to when the metadata carries no balance —
@@ -91,8 +93,9 @@ class SessionPlan:
             return cls()
         return cls(
             target_language=(
-                raw.get("target_language")
-                if raw.get("target_language") in ("es", "fr", "de", "it", "pt")
+                raw["target_language"]
+                if isinstance(raw.get("target_language"), str)
+                and raw["target_language"] in SESSION_LANGUAGES
                 else None
             ),
             topic=_text(raw.get("topic")),

@@ -68,7 +68,11 @@ test("every offered language is accepted; legacy and hostile inputs default safe
 test("coalescing transcript segments preserves German noun capitalization", async () => {
   const { sessionReducer, INITIAL_SESSION_STATE } =
     await import("../lib/session/reducer")
-  const first = sessionReducer(INITIAL_SESSION_STATE, {
+  const german = sessionReducer(INITIAL_SESSION_STATE, {
+    type: "session.language",
+    language: "de",
+  })
+  const first = sessionReducer(german, {
     type: "transcript.delta",
     segmentId: "a",
     speaker: "learner",
@@ -88,7 +92,11 @@ test("coalescing transcript segments preserves German noun capitalization", asyn
 test("German um remains in the transcript rather than being stripped as a filler", async () => {
   const { sessionReducer, INITIAL_SESSION_STATE } =
     await import("../lib/session/reducer")
-  const next = sessionReducer(INITIAL_SESSION_STATE, {
+  const german = sessionReducer(INITIAL_SESSION_STATE, {
+    type: "session.language",
+    language: "de",
+  })
+  const next = sessionReducer(german, {
     type: "transcript.delta",
     segmentId: "a",
     speaker: "learner",
@@ -96,6 +104,34 @@ test("German um remains in the transcript rather than being stripped as a filler
     text: "Wir treffen uns um acht Uhr.",
   })
   expect(next.current?.target).toBe("Wir treffen uns um acht Uhr.")
+})
+
+test("Spanish fragments join in sentence case and drop English fillers", async () => {
+  const { sessionReducer, INITIAL_SESSION_STATE } =
+    await import("../lib/session/reducer")
+  const spanish = sessionReducer(INITIAL_SESSION_STATE, {
+    type: "session.language",
+    language: "es",
+  })
+  const first = sessionReducer(spanish, {
+    type: "transcript.delta",
+    segmentId: "a",
+    speaker: "learner",
+    language: "target",
+    text: "Ahora trabajo, um,",
+  })
+  const next = sessionReducer(first, {
+    type: "transcript.delta",
+    segmentId: "b",
+    speaker: "learner",
+    language: "target",
+    text: "Para crear cosas.",
+  })
+  expect(next.current?.target).toBe("Ahora trabajo, para crear cosas.")
+  // The language survives the reset that precedes a new room.
+  expect(
+    sessionReducer(next, { type: "session.reset" }).language
+  ).toBe("es")
 })
 
 test("every preflight answer reaches dispatch, including each self-reported level", () => {
@@ -139,5 +175,4 @@ test("onboarding no longer requires an account-wide language level", async () =>
   await learner.mutation(api.users.ensureUser, {})
   const viewer = await learner.query(api.users.viewer, {})
   expect(viewer?.onboarded).toBe(true)
-  expect(viewer?.level).toBeNull()
 })

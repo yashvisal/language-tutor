@@ -90,7 +90,7 @@ import {
   tutorTokenSource,
   type StartFailure,
 } from "./livekit"
-import { EMPTY_PLAN } from "./plan"
+import { EMPTY_PLAN, targetLanguage } from "./plan"
 import {
   AGENT_JOIN_TIMEOUT_MS,
   ASK_TIMEOUT_MS,
@@ -740,6 +740,10 @@ export function useLiveSession(): LiveSession {
       setPendingSessionPlan(sessionPlan)
       plan.current = sessionPlan
       setActivePlan(sessionPlan)
+      dispatch({
+        type: "session.language",
+        language: targetLanguage(sessionPlan.targetLanguage),
+      })
       ended.current = false
       intentional.current = false
       wasLive.current = false

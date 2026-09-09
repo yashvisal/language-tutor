@@ -33,13 +33,13 @@ export default defineSchema({
      */
     email: v.optional(v.string()),
     /**
-     * Self-declared, from `LEVELS` in `lib/session/plan.ts` — the validator is
-     * built from that same catalog. Optional because "a row with no level" is
-     * exactly the state `/welcome` exists to fill.
+     * Legacy, no longer written (2026-09-06): language and level are chosen
+     * per session in the preflight and stored on `sessions.plan`. Rows created
+     * before that still carry them; nothing reads them.
      */
     level: v.optional(levelValidator),
-    targetLang: v.string(),
-    anchorLang: v.string(),
+    targetLang: v.optional(v.string()),
+    anchorLang: v.optional(v.string()),
     createdAt: v.number(),
     // Clerk owns identity; this row is looked up by its subject claim on every
     // authenticated query, so the index is not optional.

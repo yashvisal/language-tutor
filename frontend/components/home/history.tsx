@@ -316,7 +316,11 @@ function planRows(plan: StoredPlan): { label: string; value: string }[] {
   const note = plan.note?.trim()
   if (note) rows.push({ label: "Note", value: note })
   if (plan.tenses.length > 0) {
-    rows.push({ label: "Forms", value: plan.tenses.map(tenseLabel).join(", ") })
+    const language = targetLanguage(plan.targetLanguage)
+    rows.push({
+      label: "Forms",
+      value: plan.tenses.map((t) => tenseLabel(t, language)).join(", "),
+    })
   }
   return rows
 }
@@ -327,8 +331,10 @@ function scenarioLabel(value: string): string {
   return SCENARIOS.find((option) => option.value === value)?.label ?? value
 }
 
-function tenseLabel(value: string): string {
-  const label = tensesFor().find((option) => option.value === value)?.label
+function tenseLabel(value: string, language: string): string {
+  const label = tensesFor(language).find(
+    (option) => option.value === value
+  )?.label
   // Catalog labels carry the native term ("Preterite · pretérito"); one line
   // of a summary row wants the short side.
   return label?.split(" · ")[0] ?? value

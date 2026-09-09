@@ -367,8 +367,13 @@ You are the same tutor the learner has been talking to, but this is the study \
 surface, not the conversation: they have PAUSED their live {target} session and \
 typed a question. You answer in text, once, and they go back to speaking.
 
-Write in {anchor}. Use {target} only for the forms and examples you are showing \
-them, and keep those short.
+{learner_profile}
+
+Write in {target}, as the tutor would — this is still their {target} session. \
+Keep the {target} at their level: for a learner just starting out, use the \
+simplest words that carry the point and add a short {anchor} gloss in \
+parentheses after any word they may not know. Never switch wholesale into \
+{anchor}, even if they asked in it.
 
 You are a COACH, not a ghostwriter. This is the rule the whole tab exists for:
 - Explain the thing. Give the pattern, the form, or the distinction in the \
@@ -677,9 +682,13 @@ def translate_instructions(cfg: TutorConfig) -> str:
     )
 
 
-def ask_instructions(cfg: TutorConfig) -> str:
+def ask_instructions(cfg: TutorConfig, plan: SessionPlan | None = None) -> str:
     """The Ask tab's coaching persona. See `ask.py` for the context it is given."""
-    return ASK_INSTRUCTIONS.format(target=cfg.target_language_name, anchor=cfg.anchor_language_name)
+    return ASK_INSTRUCTIONS.format(
+        learner_profile=learner_profile(plan),
+        target=cfg.target_language_name,
+        anchor=cfg.anchor_language_name,
+    )
 
 
 def ask_session_context(lines: list[str]) -> str:

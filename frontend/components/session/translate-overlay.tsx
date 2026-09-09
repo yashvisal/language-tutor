@@ -57,8 +57,13 @@ export function translatableProps(turn: Pick<Turn, "id" | "speaker">) {
   return { [TURN_ATTR]: turn.id, [SPEAKER_ATTR]: turn.speaker }
 }
 
-/** A single character can be a complete word in the selected language. */
-const MIN_SPAN_CHARS = 1
+/**
+ * Below this, a selection is a slipped click rather than a question — one or
+ * two letters caught while clicking a correction mark. A single short word
+ * ("es", "je", "da") is still a legitimate ask, so the floor is characters,
+ * not words.
+ */
+const MIN_SPAN_CHARS = 2
 
 /** Bar widths for `Shimmer`, cycled. */
 const WIDTHS = ["100%", "58%", "82%", "44%"]

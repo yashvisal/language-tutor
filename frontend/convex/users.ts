@@ -10,12 +10,8 @@ import {
 } from "./_generated/server"
 import { internal } from "./_generated/api"
 import type { Doc } from "./_generated/dataModel"
-import { ledgerKindValidator, levelValidator } from "./validators"
+import { ledgerKindValidator } from "./validators"
 import { minutesFromSeconds, SIGNUP_GRANT_SECONDS } from "../lib/billing"
-
-/** Spanish only until the loop is monetized — see the vision doc. */
-const TARGET_LANG = "es"
-const ANCHOR_LANG = "en"
 
 /** The one lookup every authenticated function starts from. Exported for the
  * HTTP actions, which are handed a Clerk id rather than an identity. */
@@ -63,9 +59,9 @@ export const viewer = query({
       /** From the Clerk identity, falling back to the row. `null` for an
        * account Clerk has no email for — never `""`. */
       email: v.union(v.string(), v.null()),
-      /** Account existence, independent of any legacy profile level. */
+      /** Whether the account row exists — `/welcome` creates it. Language and
+       * level are chosen per session in the preflight, not stored here. */
       onboarded: v.boolean(),
-      level: v.union(levelValidator, v.null()),
       seconds: v.number(),
       minutes: v.number(),
     })
@@ -82,7 +78,6 @@ export const viewer = query({
       // before that was true still carry one. The UI never sees "".
       email: identity.email || user?.email || null,
       onboarded: user !== null,
-      level: user?.level ?? null,
       seconds,
       // Derived here rather than in each caller so "23 minutes left" means the
       // same thing on the dashboard, in the header and on the pre-flight.
@@ -137,37 +132,29 @@ export const ledger = query({
 /**
  * Creates the learner's row and hands them their free minutes. Called from
  * `/welcome`, but written to survive being called from anywhere, any number of
- * times: the row is created once, the level is updated when passed, and the
- * signup grant is keyed on `signup:<clerkId>` so a double-submit, a retry or a
- * second visit to `/welcome` cannot mint a second one.
+ * times: the row is created once, and the signup grant is keyed on
+ * `signup:<clerkId>` so a double-submit, a retry or a second visit to
+ * `/welcome` cannot mint a second one.
  */
 export const ensureUser = mutation({
-  args: { level: v.optional(levelValidator) },
+  args: {},
   returns: v.null(),
-  handler: async (ctx, args) => {
+  handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity()
     if (identity === null) throw new Error("Not signed in")
 
     const clerkId = identity.subject
     const existing = await userByClerkId(ctx, clerkId)
 
-    let userId
-    if (existing === null) {
-      userId = await ctx.db.insert("users", {
-        clerkId,
-        // Absent, not empty: see the schema note on `users.email`.
-        email: identity.email || undefined,
-        level: args.level,
-        targetLang: TARGET_LANG,
-        anchorLang: ANCHOR_LANG,
-        createdAt: Date.now(),
-      })
-    } else {
-      userId = existing._id
-      if (args.level !== undefined && args.level !== existing.level) {
-        await ctx.db.patch(userId, { level: args.level })
-      }
-    }
+    const userId =
+      existing === null
+        ? await ctx.db.insert("users", {
+            clerkId,
+            // Absent, not empty: see the schema note on `users.email`.
+            email: identity.email || undefined,
+            createdAt: Date.now(),
+          })
+        : existing._id
 
     // The grant is separate from row creation on purpose: an account that
     // somehow got a row without one (an early tester, a partial write) still
@@ -187,22 +174,6 @@ export const ensureUser = mutation({
       })
     }
 
-    return null
-  },
-})
-
-/** The only editable field on the account page. */
-export const setLevel = mutation({
-  args: { level: levelValidator },
-  returns: v.null(),
-  handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity()
-    if (identity === null) throw new Error("Not signed in")
-
-    const user = await userByClerkId(ctx, identity.subject)
-    if (user === null) throw new Error("No account yet")
-
-    await ctx.db.patch(user._id, { level: args.level })
     return null
   },
 })

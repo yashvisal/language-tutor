@@ -219,6 +219,11 @@ def _env_speed(name: str, default: float) -> float:
     return clamped
 
 
+# The languages a session may be dispatched in — the same set the frontend
+# offers (`TARGET_LANGUAGES` in `frontend/lib/session/plan.ts`). Anything else
+# on the wire is ignored and the worker's configured default stands.
+SESSION_LANGUAGES: frozenset[str] = frozenset({"es", "fr", "de", "it", "pt"})
+
 # ISO-639-1 -> display name, used only to render prompts. Extend as needed; an
 # unknown code falls back to the code itself rather than failing.
 _LANGUAGE_NAMES = {

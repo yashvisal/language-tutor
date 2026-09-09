@@ -12,6 +12,7 @@ import {
   OPEN_SESSION_PREFIX,
   OPEN_SESSION_WINDOW_MS,
   RATE_LIMIT_PREFIX,
+  SIGNUP_GRANT_SECONDS,
   START_WINDOW_MS,
 } from "../lib/billing"
 
@@ -53,7 +54,7 @@ const PLAN: SessionPlanArg = {
   level: null,
 }
 
-const GRANT = 600
+const GRANT = SIGNUP_GRANT_SECONDS
 
 /** A learner with a row and a signup grant — the state `/welcome` leaves. */
 async function makeLearner(
@@ -206,7 +207,7 @@ describe("sessions.start", () => {
  * The hourly start limit (audit B12).
  *
  * The grant is per Clerk id and signup is instant, so the only thing between
- * a script and N accounts x ten free minutes is how fast one account can mint
+ * a script and N accounts x five free minutes is how fast one account can mint
  * rooms. These tests are written as the two populations the number has to
  * separate: a learner who really does start a dozen conversations, and one
  * who is not a learner.

@@ -28,6 +28,7 @@ import type {
   SessionEvent,
   Turn,
 } from "./contract"
+import { TARGET_LANGUAGE } from "./protocol"
 
 /**
  * Lifecycle of the hero segment. `analyzing` is the gap between the learner
@@ -53,6 +54,9 @@ export interface SessionState {
   /** Every reason the session is currently held; empty means running. */
   holds: PauseReason[]
   agentState: AgentState
+  /** ISO-639-1 code of the conversation's target language; joining is
+   * language-aware. Set by `session.language` before the first segment. */
+  language: string
 }
 
 export const INITIAL_SESSION_STATE: SessionState = {
@@ -62,6 +66,7 @@ export const INITIAL_SESSION_STATE: SessionState = {
   committed: false,
   holds: [],
   agentState: "idle",
+  language: TARGET_LANGUAGE,
 }
 
 /**
@@ -88,26 +93,68 @@ function ownsSegment(turn: Turn, segmentId: string): boolean {
   )
 }
 
-/** Preserve spoken words: apparent fillers such as German "um" can be grammar. */
-function normalizeTranscript(text: string): string {
-  return text.replace(/\s+/g, " ").trim()
+/**
+ * Filled pauses the STT transcribes verbatim, stripped from display only —
+ * they are speech, not content. English-ish hesitations only, and only for
+ * languages where none of them is a word: "um" is German ("at", "around") and
+ * Portuguese ("a", "one"), so those languages keep every token. Spanish
+ * "este"/"eh" are real words everywhere and are never matched.
+ */
+const FILLER = /(?:^|\s)(?:u+m+|u+h+|m+h?m+|h+m+)[,.]?(?=\s|$)/gi
+const FILLERS_STRIPPED_IN = new Set(["es", "fr", "it"])
+
+/**
+ * Languages that capitalize ordinary nouns mid-sentence. A continuation
+ * fragment's leading capital cannot be told from a noun there, so the
+ * sentence-case join below leaves it alone.
+ */
+const CAPITALIZES_NOUNS = new Set(["de"])
+
+function normalizeTranscript(text: string, language: string): string {
+  const stripped = FILLERS_STRIPPED_IN.has(language)
+    ? text.replace(FILLER, " ")
+    : text
+  return stripped.replace(/\s+/g, " ").trim()
 }
 
-/** Preserve STT spelling: capitalization may distinguish nouns or names. */
-function joinTargetFragments(fragments: string[]): string {
-  return fragments.join(" ")
+/**
+ * Each STT segment is transcribed as its own sentence, so a coalesced turn
+ * reads "…es bien Ahora trabajo Para crear…" — every fragment restarts the
+ * sentence case. When the text so far hasn't ended a sentence, a continuation
+ * fragment loses its leading capital (unless it looks like an acronym or
+ * proper noun can't be told apart — a capital followed by another capital is
+ * left alone, and languages that capitalize nouns are left alone entirely).
+ */
+function joinTargetFragments(fragments: string[], language: string): string {
+  let out = ""
+  for (const fragment of fragments) {
+    if (!out) {
+      out = fragment
+      continue
+    }
+    let next = fragment
+    if (
+      !CAPITALIZES_NOUNS.has(language) &&
+      !/[.?!…]$/.test(out) &&
+      /^\p{Lu}\p{Ll}/u.test(next)
+    ) {
+      next = next[0]!.toLocaleLowerCase(language) + next.slice(1)
+    }
+    out = `${out} ${next}`
+  }
+  return out
 }
 
 /** Rebuild the rendered texts from the segment list. */
-function joined(turn: Turn): Turn {
+function joined(turn: Turn, language: string): Turn {
   const segments = turn.segments ?? []
   const targets = segments
-    .map((s) => normalizeTranscript(s.target))
+    .map((s) => normalizeTranscript(s.target, language))
     .filter(Boolean)
   const anchors = segments.map((s) => s.anchor.trim()).filter(Boolean)
   return {
     ...turn,
-    target: joinTargetFragments(targets),
+    target: joinTargetFragments(targets, language),
     anchor: anchors.join(" "),
   }
 }
@@ -137,7 +184,8 @@ function withSegmentText(
   turn: Turn,
   segmentId: string,
   language: LanguageRole,
-  text: string
+  text: string,
+  targetLanguage: string
 ): Turn {
   const segments = (
     turn.segments ?? [{ id: turn.id, target: turn.target, anchor: turn.anchor }]
@@ -148,7 +196,7 @@ function withSegmentText(
         : { ...s, anchor: text }
       : s
   )
-  return joined({ ...turn, segments })
+  return joined({ ...turn, segments }, targetLanguage)
 }
 
 /** Coalesce a new segment into the current turn, or open a new turn with it. */
@@ -171,29 +219,35 @@ function openSegment(
   const finished =
     speaker === "learner" ? state.committed : state.phase === "settled"
   if (state.current && state.current.speaker === speaker && !finished) {
-    const current = joined({
-      ...state.current,
-      segments: [
-        ...(state.current.segments ?? [
-          {
-            id: state.current.id,
-            target: state.current.target,
-            anchor: state.current.anchor,
-          },
-        ]),
-        segment,
-      ],
-    })
+    const current = joined(
+      {
+        ...state.current,
+        segments: [
+          ...(state.current.segments ?? [
+            {
+              id: state.current.id,
+              target: state.current.target,
+              anchor: state.current.anchor,
+            },
+          ]),
+          segment,
+        ],
+      },
+      state.language
+    )
     return { ...state, current, phase: "live" }
   }
 
-  const opened: Turn = joined({
-    id: segmentId,
-    speaker,
-    target: "",
-    anchor: "",
-    segments: [segment],
-  })
+  const opened: Turn = joined(
+    {
+      id: segmentId,
+      speaker,
+      target: "",
+      anchor: "",
+      segments: [segment],
+    },
+    state.language
+  )
   return {
     ...state,
     turns: state.current ? [...state.turns, state.current] : state.turns,
@@ -214,7 +268,13 @@ export function sessionReducer(
         state.turns.some((t) => ownsSegment(t, event.segmentId))
       if (known) {
         return patchOwning(state, event.segmentId, (t) =>
-          withSegmentText(t, event.segmentId, event.language, event.text)
+          withSegmentText(
+          t,
+          event.segmentId,
+          event.language,
+          event.text,
+          state.language
+        )
         )
       }
       // Only the target stream opens/advances turns; an anchor delta for a
@@ -225,7 +285,13 @@ export function sessionReducer(
       // advanced" signal the live pipeline gives us.
       const next = openSegment(state, event.segmentId, event.speaker, "")
       return patchOwning(next, event.segmentId, (t) =>
-        withSegmentText(t, event.segmentId, event.language, event.text)
+        withSegmentText(
+          t,
+          event.segmentId,
+          event.language,
+          event.text,
+          state.language
+        )
       )
     }
 
@@ -243,7 +309,13 @@ export function sessionReducer(
           : openSegment(state, event.segmentId, event.speaker, "")
 
       const next = patchOwning(base, event.segmentId, (t) =>
-        withSegmentText(t, event.segmentId, event.language, event.text)
+        withSegmentText(
+          t,
+          event.segmentId,
+          event.language,
+          event.text,
+          state.language
+        )
       )
       // Only a target final on the CURRENT turn moves the phase. Mid-turn this
       // fires per segment — the next fragment's delta flips it back to "live",
@@ -325,9 +397,19 @@ export function sessionReducer(
         ? { ...state, holds: state.holds.filter((r) => r !== event.reason) }
         : state
 
+    case "session.language":
+      return state.language === event.language
+        ? state
+        : { ...state, language: event.language }
+
     case "session.reset":
       // Holds survive a reset: a learner reading a correction is still reading.
-      return { ...INITIAL_SESSION_STATE, holds: state.holds }
+      // So does the language: it was set for the room about to open.
+      return {
+        ...INITIAL_SESSION_STATE,
+        holds: state.holds,
+        language: state.language,
+      }
   }
 }
 

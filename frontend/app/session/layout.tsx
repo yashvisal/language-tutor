@@ -8,8 +8,8 @@ import { viewerOnServer } from "@/lib/viewer-server"
  * `/session` owns the whole viewport, so it deliberately sits outside the app
  * shell's route group — and it therefore sat outside the level check that
  * group's layout performs. An account that never saw `/welcome` could open
- * `/session`, be dispatched a tutor with `DEFAULT_LEVEL`, and be billed for a
- * conversation pitched at a level it never declared (audit §4.4).
+ * `/session` and be billed before its account row and free grant existed
+ * (audit §4.4).
  *
  * A server layout rather than a rule in `proxy.ts`: middleware knows the Clerk
  * session and nothing about the Convex row, so the decision cannot be made

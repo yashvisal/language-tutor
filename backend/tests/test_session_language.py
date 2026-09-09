@@ -71,3 +71,17 @@ def test_preflight_answers_and_level_reach_prompts(level, guidance):
         assert level in prompt
         assert guidance in prompt
         assert "early-intermediate" not in prompt
+
+
+def test_ask_answers_in_the_target_language_at_the_learner_level():
+    from prompts import ask_instructions
+
+    plan = JobMetadata.parse(
+        json.dumps({"plan": {"target_language": "it", "level": "beginner"}})
+    ).plan
+    cfg = TutorConfig().with_session_language(plan.target_language)
+    prompt = ask_instructions(cfg, plan)
+    assert "Write in Italian" in prompt
+    assert "beginner" in prompt
+    assert "slow, short sentences" in prompt
+    assert "Write in English" not in prompt

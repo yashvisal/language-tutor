@@ -50,8 +50,9 @@ export function HeroWords({
   const nodes: ReactNode[] = []
 
   for (const seg of segments) {
-    // Preserve whitespace at correction boundaries. Inventing a separator
-    // splits Japanese/Chinese text and even corrections inside Latin words.
+    // Split on the text's own whitespace and keep it: a correction span can
+    // start or end inside a word, and inventing a separator there would put a
+    // space inside the word.
     const interleaved = seg.text
       .split(/(\s+)/u)
       .filter(Boolean)
@@ -61,14 +62,10 @@ export function HeroWords({
         return (
           <motion.span
             key={`${turn.id}-${i}`}
-            // CJK text must wrap naturally; marked text needs an inline underline.
+            // Once marks are active the words sit inline so the parent's
+            // underline can run through them (it doesn't reach inline-blocks).
             className={
-              (seg.correction && marksActive) ||
-              /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(
-                part
-              )
-                ? "inline"
-                : "inline-block"
+              seg.correction && marksActive ? "inline" : "inline-block"
             }
             initial={
               wordIndex === arriving

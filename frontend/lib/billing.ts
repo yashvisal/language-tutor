@@ -13,7 +13,7 @@
  */
 
 /** How many free seconds a new account starts with. */
-export const SIGNUP_GRANT_SECONDS = 600
+export const SIGNUP_GRANT_SECONDS = 300
 
 /** The same grant as the learner is told it: whole minutes. */
 export const SIGNUP_GRANT_MINUTES = SIGNUP_GRANT_SECONDS / 60

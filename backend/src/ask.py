@@ -100,7 +100,7 @@ class AskCoach:
         self._cfg = cfg
         self._plan = plan
         self._facts = facts
-        self._instructions = ask_instructions(cfg)
+        self._instructions = ask_instructions(cfg, plan)
         self._client: openai.AsyncOpenAI | None = None
         self._warm_task: asyncio.Task[None] | None = None
         self._usage = usage

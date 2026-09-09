@@ -150,8 +150,6 @@ export const LEVELS: LevelOption[] = [
   { value: LEVEL_VALUES[2], label: "Comfortable, want polish" },
 ]
 
-export const DEFAULT_LEVEL: LevelValue = LEVEL_VALUES[1]
-
 export const EMPTY_PLAN: SessionPlan = {
   targetLanguage: TARGET_LANGUAGE,
   scenario: null,
@@ -246,51 +244,6 @@ export function dispatchPlan(
     note: plan.note,
     vocab: plan.vocab,
     level: plan.level,
-  }
-}
-
-/* -------------------------------------------------------------------------- */
-/*  Suggestion                                                                */
-/* -------------------------------------------------------------------------- */
-
-const SUGGESTED_VOCAB = [
-  "food and ordering",
-  "travel",
-  "work and study",
-  "family",
-  "weekend plans",
-  "feelings",
-  "the neighborhood",
-]
-
-function pick<T>(items: readonly T[]): T {
-  return items[Math.floor(Math.random() * items.length)]!
-}
-
-/**
- * A complete, sensible plan in one tap — the fastest path from "I have fifteen
- * minutes" to speaking. Deliberately random rather than adaptive: there is no
- * learner model yet, and pretending otherwise would be a lie. Keeps whatever
- * level the learner already declared.
- */
-export function suggestPlan(
-  level: string | null = DEFAULT_LEVEL,
-  language: string = TARGET_LANGUAGE
-): SessionPlan {
-  const tenses = tensesFor(language)
-  const focus = tenses.length > 0 ? [pick(tenses).value] : []
-  return {
-    targetLanguage: targetLanguage(language),
-    scenario: pick(SCENARIOS).value,
-    topic: null,
-    tenses: focus,
-    // A suggestion fills the choices, never the open notes: inventing a
-    // sentence the learner did not say and handing it to the tutor as
-    // "what they asked about" would be a lie.
-    focusNote: null,
-    note: null,
-    vocab: [pick(SUGGESTED_VOCAB)],
-    level: level ?? DEFAULT_LEVEL,
   }
 }
 

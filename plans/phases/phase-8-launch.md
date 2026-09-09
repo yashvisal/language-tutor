@@ -91,4 +91,4 @@ merge → this. Read `product-vision.md` and `phase-7-product-polish.md`
 (a) the payment rail; (b) Sentry sampling and whether to capture the
 learner's Clerk id (recommend: yes, ids only, never transcript text); (c)
 whether the first public link is a closed beta (recommend yes — the
-free-minute exposure is ~$0.90 per account).
+free-minute exposure is ~$0.45 per account at five free minutes).

@@ -15,8 +15,7 @@ import {
 import Link from "next/link"
 import { AnimatePresence, motion, useReducedMotion } from "motion/react"
 
-import { SessionLevelPicker } from "@/components/session-level-picker"
-import { LanguagePicker } from "@/components/language-picker"
+import { LanguagePicker, LevelPicker } from "@/components/session/plan-pickers"
 import { Overline } from "@/components/overline"
 import { Button } from "@/components/ui/button"
 import type { SessionPlan } from "@/lib/session/contract"
@@ -133,13 +132,15 @@ export function PlanCards({
   return (
     <div className={cn("flex flex-col", className)}>
       <div className={bodyClassName}>
-        <div className="mb-6 flex flex-wrap gap-2">
+        {/* Language and level, in the account menu's dropdown. The level
+            resets with the language: "comfortable" in Spanish says nothing
+            about French, and the focus note may name a Spanish form. */}
+        <div className="mb-6 flex flex-wrap items-center gap-2">
           <LanguagePicker
             value={targetLanguage(plan.targetLanguage)}
             disabled={starting}
             onChange={(language) => {
               if (language === targetLanguage(plan.targetLanguage)) return
-              // Language-specific focus from a previous plan must not leak.
               patch({
                 targetLanguage: language,
                 level: null,
@@ -148,7 +149,7 @@ export function PlanCards({
               })
             }}
           />
-          <SessionLevelPicker
+          <LevelPicker
             value={plan.level}
             language={targetLanguage(plan.targetLanguage)}
             disabled={starting}
@@ -156,8 +157,7 @@ export function PlanCards({
           />
           {!plan.level && (
             <p className="w-full text-xs text-muted-foreground">
-              Choose your level to continue. The three questions below are
-              optional.
+              Pick your level to continue. The questions below are optional.
             </p>
           )}
         </div>
@@ -248,7 +248,7 @@ export function PlanCards({
               variant="ghost"
               size="sm"
               onClick={() => setStep(step - 1)}
-              disabled={starting || !plan.level}
+              disabled={starting}
               className="text-muted-foreground"
             >
               Back

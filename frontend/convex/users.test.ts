@@ -5,6 +5,7 @@ import { internal } from "./_generated/api"
 import type { Id } from "./_generated/dataModel"
 import schema from "./schema"
 import type { sessionPlanValidator } from "./validators"
+import { SIGNUP_GRANT_SECONDS } from "../lib/billing"
 
 /**
  * Account deletion, tested as the promise it keeps.
@@ -57,7 +58,7 @@ async function makeLearner(
       await ctx.db.insert("creditLedger", {
         userId,
         kind: "signup_grant",
-        seconds: 600,
+        seconds: SIGNUP_GRANT_SECONDS,
         ref: `${clerkId}:${i}`,
         createdAt: Date.now(),
       })

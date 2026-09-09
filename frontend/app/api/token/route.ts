@@ -58,7 +58,7 @@ import {
  * - **429** `{ error, code: "rate_limited" }` — this learner has started more
  *   than `MAX_STARTS_PER_HOUR` conversations in the last hour. The free grant
  *   is per Clerk id, so this is what stands between a script and N accounts x
- *   ten free minutes (audit B12).
+ *   five free minutes (audit B12).
  */
 
 /** Token lifetime. Only needs to outlive connect + any reconnect attempt, but

@@ -476,7 +476,18 @@ export interface SessionResetEvent {
   type: "session.reset"
 }
 
+/**
+ * The target language of the conversation about to start. Transcript joining
+ * is language-aware (German capitalizes nouns; "um" is a word in German and
+ * Portuguese), so the reducer has to be told before the first segment lands.
+ */
+export interface SessionLanguageEvent {
+  type: "session.language"
+  language: string
+}
+
 export type SessionEvent =
+  | SessionLanguageEvent
   | TranscriptDeltaEvent
   | TranscriptFinalEvent
   | AnalysisCompleteEvent

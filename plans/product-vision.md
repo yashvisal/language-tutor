@@ -192,6 +192,14 @@ From reviewing the phase-1 layout explorations (aura-stage, split-columns, and t
 3. **Launch readiness is tracked in `audit-2026-09-06.md`.** The minute meter
    exists; purchases do not. Five-minute purchase increments still apply,
    with usage metered in seconds and study holds free.
+4. **Five free minutes at signup, not ten** (Yash, 2026-09-06). One constant,
+   `SIGNUP_GRANT_SECONDS` in `frontend/lib/billing.ts`; every surface that
+   promises the grant reads it.
+5. **Ask answers in the target language** (Yash, 2026-09-06). The pause
+   surface is still the tutor: Ask writes in the session's language, pitched
+   to the self-reported level, with a short English gloss for a beginner's
+   unknown words. Correction *explanations* stay in English (the anchor
+   language) — they are read, not practised.
 
 ## The Conversation Surface
 
