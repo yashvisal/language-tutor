@@ -112,7 +112,12 @@ curl -s https://<your-subdomain>.clerk.accounts.dev/.well-known/jwks.json   | no
 ```
 
 Then `npx convex env set CLERK_JWT_KEY "$(cat key.pem)"` — it is multi-line, so
-keep the quotes. Rotating the instance's signing key means setting this again:
+keep the quotes. **Check it landed whole:** `npx convex env get CLERK_JWT_KEY`
+must print all nine lines, footer included. On Windows the dev deployment once
+held only the first line, `-----BEGIN PUBLIC KEY-----`, and every worker token
+was refused as "JWT signature is invalid" (live, 2026-09-08); the Convex
+dashboard's environment-variable editor takes a multi-line paste reliably.
+Rotating the instance's signing key means setting this again:
 because verification is offline there is no JWKS cache to expire on its own, and
 until the var is updated every worker token is refused.
 
