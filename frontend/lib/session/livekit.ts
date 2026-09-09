@@ -42,10 +42,10 @@ export function isOutOfMinutes(error: unknown): boolean {
  * prints it above Start. Written here rather than at the fetch so the wording
  * is one string, and so it is obvious it is prose and not an error code.
  *
- * The route returns it while `sessions.start` sees a row with no `endedAt`
- * younger than fifteen minutes: almost always a second tab, occasionally a
- * conversation whose tab died (which the reconciliation cron closes, and which
- * "wait a moment" is the honest advice for).
+ * The route returns it while `sessions.startCheck` sees a row whose lease is
+ * still running: almost always a second tab, occasionally a conversation whose
+ * worker just died (the lease runs out in three minutes, which is what "wait a
+ * moment" is the honest advice for).
  */
 export const OPEN_SESSION_MESSAGE =
   "You already have a conversation open in another tab. End it there, or wait a moment."
@@ -54,7 +54,7 @@ export const OPEN_SESSION_MESSAGE =
  * What a 429 from the token route says out loud.
  *
  * Same shape as the 409 above — prose, not a code, because there is no screen
- * and nothing to buy — but a different fact: `sessions.start` refuses once a
+ * and nothing to buy — but a different fact: the ledger refuses once a
  * learner has started `MAX_STARTS_PER_HOUR` conversations inside an hour. The
  * limit exists to stop a script burning free grants (audit B12), so the
  * sentence has to be readable by the one legitimate learner who ever sees it:
@@ -209,7 +209,7 @@ async function mint(plan: SessionPlan): Promise<TokenSourceResponseObject> {
   // for that. Everything else is a fault worth showing as one.
   if (response.status === 402) throw new Error(OUT_OF_MINUTES_MESSAGE)
   // Also not a fault: the learner has a conversation running somewhere else,
-  // and both would spend the same balance (see `sessions.start`). Nothing to
+  // and both would spend the same balance (see `sessions.open`). Nothing to
   // retry until they end it, so this is prose rather than a status code.
   if (response.status === 409) throw new Error(OPEN_SESSION_MESSAGE)
   // Nor is this: the learner has started too many conversations in the last

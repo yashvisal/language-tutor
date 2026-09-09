@@ -121,14 +121,9 @@ export const MAX_STARTS_PER_HOUR = 12
 /** The window those starts are counted over. */
 export const START_WINDOW_MS = 60 * 60 * 1000
 
-/**
- * Prefix on the error `sessions.start` throws when the limit is hit, so the
- * token route can answer 429 rather than 500 — the same trick, and for the
- * same reason, as `OPEN_SESSION_PREFIX` above: a Convex mutation failure
- * reaches the route as text and a marker is the only thing in it that survives.
- *
- * Ordering matters and is tested: the open-session check runs FIRST. A second
- * tab is a thing the learner can act on ("end it there"), and it must keep
- * saying so even for a learner who is also near the hourly limit.
+/*
+ * Ordering matters and is tested: the open-session check runs FIRST, in both
+ * `sessions.startCheck` and `sessions.open`. A second tab is a thing the
+ * learner can act on ("end it there"), and it must keep saying so even for a
+ * learner who is also near the hourly limit.
  */
-export const RATE_LIMIT_PREFIX = "rate-limit:"

@@ -189,9 +189,7 @@ export default defineSchema({
     .index("by_user", ["userId"])
     // History reads one learner's recent sessions newest-first; `by_user`
     // alone would make it collect a lifetime of rows to show thirty. It is
-    // also the one-open-session guard's read: `sessions.start` refuses while
-    // this learner's newest row has no `endedAt` and is younger than fifteen
-    // minutes.
+    // also the hourly start limit's read in `sessions.open`.
     .index("by_user_startedAt", ["userId", "startedAt"])
     // The reconciliation cron's read (`convex/crons.ts`): every row still open
     // and older than two hours. `endedAt` is the first field so `eq(undefined)`

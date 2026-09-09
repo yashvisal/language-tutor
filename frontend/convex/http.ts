@@ -21,7 +21,7 @@ import {
  * ## Transport
  *
  * Base URL: the Convex **site** URL (`CONVEX_SITE_URL` on the worker), not the
- * cloud/API URL. All three routes are `POST`, all take and return
+ * cloud/API URL. All four routes are `POST`, all take and return
  * `application/json`, all require:
  *
  *     Authorization: Bearer <a Clerk M2M JWT>
@@ -124,12 +124,11 @@ import {
  * `sessions.finish` already closed still gets its explanation.
  *
  * `final: true` sets `sessions.endedAt` if it is not already set, and never
- * overwrites one. It exists because `endedAt` is otherwise written only by the
- * client's `sessions.finish`, which a killed worker or a closed tab never
- * reaches — and an open row is what the one-open-session guard refuses on, so
- * a crash would lock the learner out of their own account for fifteen minutes.
- * Send it exactly once, at teardown; sending it on a periodic report would end
- * a conversation that is still happening.
+ * overwrites one. It is the only writer of `endedAt` besides the cron: the
+ * browser's `sessions.finish` writes the outcome and nothing else, so the
+ * worker's last word is what closes the row. A periodic report (no `final`)
+ * renews the lease instead. Send it exactly once, at teardown; sending it on
+ * a periodic report would end a conversation that is still happening.
  *
  * `seconds` is the **room's** cumulative billed seconds, not the job's: at job
  * start the worker reads `secondsBilled` from `/tutor/balance` and reports

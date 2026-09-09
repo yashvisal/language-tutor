@@ -6,7 +6,7 @@
  * REMOUNTED the page — a new `useSession`, a new Room — while the old one was
  * still minting its token. The token arrived (a session row opened) for a
  * Room nobody rendered, and the fresh mount showed the pre-flight again:
- * "another form", and a 15-minute "already open in another tab" behind it
+ * "another form", and an "already open in another tab" behind it
  * (live, 2026-09-08).
  *
  * So the flag is in memory instead: set by the dashboard immediately before
