@@ -132,6 +132,24 @@ class SessionPlan:
         """
         return self.scenario or self.topic
 
+    def to_wire(self) -> dict[str, object]:
+        """The plan as the frontend dispatched it, for `POST /tutor/open`.
+
+        The row the worker opens carries the plan from here on, so it goes
+        back over the wire in the dispatch shape (snake_case) and Convex
+        bounds it again on arrival.
+        """
+        return {
+            "target_language": self.target_language,
+            "topic": self.topic,
+            "scenario": self.scenario,
+            "tenses": list(self.tenses),
+            "focus_note": self.focus_note,
+            "note": self.note,
+            "vocab": list(self.vocab),
+            "level": self.level,
+        }
+
     def log_fields(self) -> dict[str, object]:
         # Prefixed: these land in a LogRecord's namespace alongside the
         # worker's own fields.

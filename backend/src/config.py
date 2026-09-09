@@ -91,6 +91,14 @@ ATTR_GOAL = "tutor.goal"
 ATTR_ERROR = "tutor.error"
 ERROR_MODEL = "model"
 ERROR_TUTOR_SILENT = "tutor_silent"
+# The ledger refused to open this room, so the worker left without a session:
+# the learner already has a live conversation elsewhere; this room's row has
+# already ended (a reused token); or the hourly start limit is hit. Nothing
+# was billed. Same strings as `sessions.open`'s refusal codes and the
+# frontend's `TUTOR_ERROR_*` in `lib/session/protocol.ts`.
+ERROR_OPEN_SESSION = "open_session"
+ERROR_CLOSED = "closed"
+ERROR_RATE_LIMITED = "rate_limited"
 ERROR_NONE = ""
 
 # Value convention for boolean participant attributes.

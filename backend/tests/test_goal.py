@@ -569,6 +569,9 @@ def test_every_ending_path_has_a_reason_on_the_wire() -> None:
         "model_error",
         "ledger_failure",
         "tutor_silent",
+        # The lease renewal refused: another room took this learner's lease
+        # while this job could not reach the ledger (`agent._renew_lease`).
+        "lease_lost",
     }
 
 

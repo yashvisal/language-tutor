@@ -46,7 +46,7 @@ from livekit.plugins import openai
 
 from analyzer import CorrectionAnalyzer, recent_context
 from ask import AskCoach, register_ask_rpc
-from billing import BillingClient
+from billing import LEASE_RENEW_S, BillingClient
 from clock import SessionClock, report_seconds_billed
 from config import (
     AGENT_NAME,
@@ -63,8 +63,11 @@ from config import (
     ATTR_SESSION_OVER,
     ATTR_TRUE,
     ATTR_TURN_SEQ,
+    ERROR_CLOSED,
     ERROR_MODEL,
     ERROR_NONE,
+    ERROR_OPEN_SESSION,
+    ERROR_RATE_LIMITED,
     ERROR_TUTOR_SILENT,
     RPC_PAUSE,
     RPC_RESUME,
@@ -375,6 +378,10 @@ async def tutor(ctx: JobContext) -> None:
     if budget_s is None:
         await billing.aclose()
         return
+    # The lease is held from here until teardown, running or held.
+    renew_task = (
+        _spawn(_renew_lease(ctx, billing), "tutor-lease-renew") if billing.enabled else None
+    )
 
     session: AgentSession = AgentSession(
         llm=cfg.build_realtime_model(),
@@ -462,6 +469,8 @@ async def tutor(ctx: JobContext) -> None:
     async def _shutdown() -> None:
         # Every step is guarded and independent: one failing teardown must not
         # strand the ones behind it.
+        if renew_task is not None:
+            renew_task.cancel()
         if clock is not None:
             try:
                 await clock.aclose()
@@ -611,51 +620,83 @@ async def _open_ledger(
     meta: JobMetadata,
     billing: BillingClient,
 ) -> int | None:
-    """Open the money seam, or refuse the job. Returns the clock's budget.
+    """Take the lease on the room, or refuse the job. Returns the clock's budget.
 
     Fail-closed (audit B10). Metering used to fail *open*: one unset variable
     and `BillingClient.enabled` was False, every ledger call returned silently,
     and every learner talked for free with nothing to notice it. So a job that
-    carries a learner id and cannot reach the ledger is now refused —
+    carries a learner id and cannot reach the ledger is refused —
     `TUTOR_ALLOW_UNMETERED=1` is the local-development escape hatch, and it says
-    so on every session.
+    so on every session. A job with NO learner id needs the same flag: without
+    it there is no telling a CLI run from a production dispatch that lost its
+    metadata (audit 2026-09-06, L4).
 
-    A job with no learner id is a different thing entirely: that is the worker
-    run straight from the CLI, with no token route in front of it, and it keeps
-    running on the dispatched budget exactly as before.
+    The successful path is `POST /tutor/open` (2026-09-08): it inserts the
+    `sessions` row — the token route no longer does — and holds it for three
+    minutes, renewed by `_renew_lease` for as long as the job runs. It is also
+    where the budget comes from: the balance it answers is fresher than the
+    one the token route signed into dispatch metadata, and `seconds_billed`
+    seeds the room-cumulative total (audit B3). And it mints the job's M2M
+    token, being the job's first ledger call. A refusal — another conversation
+    is live for this learner, this room already ended, the hourly limit — is
+    said to the learner in one code and the job leaves; nothing was billed.
 
-    The successful path is also where the budget comes from: the balance read
-    here is fresher than the one the token route signed into dispatch metadata,
-    and `seconds_billed` seeds the room-cumulative total (audit B3). It is also
-    what mints the job's M2M token, since it is the job's first ledger call.
-
-    This read is deliberately outside the debit failure ceiling
+    This call is deliberately outside the debit failure ceiling
     (`billing.MAX_CONSECUTIVE_DEBIT_FAILURES`): a failure here already refuses
     the whole job, which is a stronger answer than counting toward five.
     """
     if not meta.user_id:
-        logger.info(
-            "no learner on this job: running unmetered against the dispatched balance",
-            extra={"balance_s": meta.balance_s},
+        # A job with no learner id is the worker run straight from the CLI —
+        # or a production dispatch that lost its metadata. Only the explicit
+        # development flag tells the two apart, so only it runs (audit
+        # 2026-09-06, L4: this used to return the default budget first).
+        if cfg.allow_unmetered:
+            logger.warning(
+                "no learner on this job: TUTOR_ALLOW_UNMETERED=1, running unmetered "
+                "against the dispatched balance. Nothing will be billed.",
+                extra={"balance_s": meta.balance_s},
+            )
+            return meta.balance_s
+        logger.error(
+            "refusing this job: no learner id on the dispatch. A web dispatch always "
+            "carries one; set TUTOR_ALLOW_UNMETERED=1 to run a manual job locally.",
+            extra={"room": ctx.room.name, "job_id": ctx.job.id},
         )
-        return meta.balance_s
+        ctx.shutdown(reason="no learner on the dispatch: refusing to run unmetered")
+        return None
 
     if not billing.enabled:
         reason = "CONVEX_SITE_URL or CLERK_WORKER_MACHINE_SECRET_KEY is not set"
     else:
-        read = await billing.balance()
-        if read is not None:
-            billing.set_billed_before(read.seconds_billed)
+        opened = await billing.open(meta.plan.to_wire())
+        if opened is not None and opened.ok:
+            billing.set_billed_before(opened.seconds_billed)
             logger.info(
                 "ledger open",
                 extra={
-                    "balance_s": read.balance_seconds,
-                    "billed_before_s": read.seconds_billed,
+                    "balance_s": opened.balance_seconds,
+                    "billed_before_s": opened.seconds_billed,
                     "dispatched_balance_s": meta.balance_s,
                 },
             )
-            return read.balance_seconds
-        reason = "the balance read failed"
+            return opened.balance_seconds
+        if opened is not None:
+            # The ledger answered, and the answer is no: this learner has a
+            # live conversation elsewhere, this room already ended, or the
+            # hourly limit is hit. Not a fault and not retried — said to the
+            # learner in one code, then leave. Nothing was billed.
+            code = {
+                "open_session": ERROR_OPEN_SESSION,
+                "closed": ERROR_CLOSED,
+                "rate_limited": ERROR_RATE_LIMITED,
+            }.get(opened.code, ERROR_OPEN_SESSION)
+            logger.warning(
+                "the ledger refused this room; leaving",
+                extra={"code": opened.code, "room": ctx.room.name, "job_id": ctx.job.id},
+            )
+            await _say_and_leave(ctx, code)
+            return None
+        reason = "the ledger open failed"
 
     if cfg.allow_unmetered:
         logger.warning(
@@ -675,6 +716,50 @@ async def _open_ledger(
     )
     ctx.shutdown(reason="ledger unreachable: refusing to run an unmetered paid session")
     return None
+
+
+async def _say_and_leave(ctx: JobContext, code: str) -> None:
+    """Publish one error code to the room, then shut the job down.
+
+    Used before the session exists, so the room may not be connected yet:
+    connecting is what lets the attribute reach the learner, and a short
+    pause lets it land before the participant leaves with it.
+    """
+    try:
+        await ctx.connect()
+    except Exception:
+        logger.warning("could not connect to publish the refusal", exc_info=True)
+    await _publish_error(ctx.room, code)
+    await asyncio.sleep(0.5)
+    ctx.shutdown(reason=f"the ledger refused this room: {code}")
+
+
+async def _renew_lease(ctx: JobContext, billing: BillingClient) -> None:
+    """Keep the room's lease alive for as long as this job runs.
+
+    Every `LEASE_RENEW_S`, held or not: the ledger's lease is what stops a
+    second conversation for the same learner, and a learner reading a
+    correction for ten minutes is still in a conversation. A call that does
+    not land is a missed renewal, not an ending — the lease has slack for
+    two. A call that lands and says no is different: the lease lapsed and
+    another room took it, so this job is metering a room it no longer owns.
+    It ends, and its final debit says why.
+    """
+    while True:
+        await asyncio.sleep(LEASE_RENEW_S)
+        result = await billing.renew()
+        if result is None:
+            logger.warning("lease renewal did not land", extra={"room": ctx.room.name})
+            continue
+        if result.ok:
+            continue
+        logger.error(
+            "lease lost: the ledger refused the renewal; ending the session",
+            extra={"code": result.code, "room": ctx.room.name, "job_id": ctx.job.id},
+        )
+        billing.set_end_reason("lease_lost")
+        ctx.shutdown(reason=f"lease lost: {result.code}")
+        return
 
 
 def _meter_from_first_tutor_audio(

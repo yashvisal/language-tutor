@@ -31,6 +31,7 @@ from billing import (  # noqa: E402
     BALANCE_PATH,
     CLERK_API_URL_DEFAULT,
     DEBIT_PATH,
+    LEASE_RENEW_S,
     MAX_ABOUT_CHARS,
     MAX_BODY_BYTES,
     MAX_CONSECUTIVE_DEBIT_FAILURES,
@@ -40,6 +41,7 @@ from billing import (  # noqa: E402
     MAX_TRANSCRIPT_TURNS,
     MAX_TURN_CHARS,
     MINT_PATH,
+    OPEN_PATH,
     SUMMARY_PATH,
     TOKEN_TTL_S,
     BillingClient,
@@ -87,6 +89,80 @@ def make(
     )
     client._post_json = ledger  # type: ignore[method-assign]
     return client
+
+
+# --- the lease --------------------------------------------------------------
+
+
+PLAN_WIRE = {
+    "target_language": "fr",
+    "topic": "travel",
+    "scenario": None,
+    "tenses": ["past tense"],
+    "focus_note": None,
+    "note": None,
+    "vocab": [],
+    "level": "beginner",
+}
+
+
+async def test_open_sends_the_room_the_learner_the_job_and_the_plan() -> None:
+    ledger = FakeLedger([{"ok": True, "balanceSeconds": 540, "secondsBilled": 30}])
+    client = make(ledger)
+    result = await client.open(PLAN_WIRE)
+    assert result is not None and result.ok
+    assert (result.balance_seconds, result.seconds_billed) == (540, 30)
+    assert ledger.calls == [
+        (OPEN_PATH, {"room": "room_xyz", "userId": "user_abc", "jobId": "JOB_1", "plan": PLAN_WIRE})
+    ]
+
+
+async def test_renew_is_the_same_call_with_the_same_plan() -> None:
+    ledger = FakeLedger(
+        [
+            {"ok": True, "balanceSeconds": 540, "secondsBilled": 0},
+            {"ok": True, "balanceSeconds": 480, "secondsBilled": 60},
+        ]
+    )
+    client = make(ledger)
+    await client.open(PLAN_WIRE)
+    renewed = await client.renew()
+    assert renewed is not None and renewed.ok and renewed.balance_seconds == 480
+    assert [path for path, _ in ledger.calls] == [OPEN_PATH, OPEN_PATH]
+    assert ledger.calls[1][1]["plan"] == PLAN_WIRE
+
+
+async def test_a_refusal_is_an_answer_with_its_code_not_none() -> None:
+    ledger = FakeLedger([{"ok": False, "code": "open_session"}])
+    result = await make(ledger).open(PLAN_WIRE)
+    assert result is not None and not result.ok and result.code == "open_session"
+
+
+async def test_a_call_that_does_not_land_or_answers_junk_is_none() -> None:
+    for answer in (None, {"balanceSeconds": 100}, {"ok": "yes"}, {"ok": True}, "nope"):
+        ledger = FakeLedger([answer])
+        assert await make(ledger).open(PLAN_WIRE) is None
+
+
+async def test_no_learner_no_open() -> None:
+    ledger = FakeLedger()
+    assert await make(ledger, user_id=None).open(PLAN_WIRE) is None
+    assert ledger.calls == []
+
+
+def test_the_renewal_cadence_fits_the_ledger_lease() -> None:
+    # The ledger's lease is three minutes (`LEASE_TTL_MS`); two renewals must
+    # fit inside it with room to miss one.
+    assert LEASE_RENEW_S * 2 < 3 * 60
+
+
+def test_the_plan_goes_back_over_the_wire_in_dispatch_shape() -> None:
+    import json
+
+    from plan import JobMetadata
+
+    plan = JobMetadata.parse(json.dumps({"plan": PLAN_WIRE})).plan
+    assert plan.to_wire() == PLAN_WIRE
 
 
 # --- the gate -------------------------------------------------------------

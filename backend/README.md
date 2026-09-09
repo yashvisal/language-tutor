@@ -117,7 +117,7 @@ Design rules worth keeping:
 | `src/state.py`     | Pause state (+ what it interrupted), the `SessionGoal`, rolling session facts |
 | `src/plan.py`      | Dispatch metadata: the balance, the user, and the session plan  |
 | `src/clock.py`     | The authoritative session clock + the seconds-billed seam       |
-| `src/billing.py`   | The Convex ledger's client: `/tutor/debit`, `/tutor/balance`, `/tutor/summary` |
+| `src/billing.py`   | The Convex ledger's client: `/tutor/open`, `/tutor/debit`, `/tutor/balance`, `/tutor/summary` |
 | `src/summary.py`   | The after-session record: the `about` line, the transcript, the Review snapshot |
 | `src/usage.py`     | Per-session token/dollar accounting: the log line and `estCostUsd` |
 
@@ -570,14 +570,26 @@ held — a learner studying a correction is not spending minutes (decision
 ### The ledger seam
 
 `src/billing.py` is the only thing in the worker that talks to Convex, over
-three authenticated calls against `$CONVEX_SITE_URL`:
+four authenticated calls against `$CONVEX_SITE_URL`:
 
 | Call | Body | Answer |
 | --- | --- | --- |
 | *auth, every call* | `Authorization: Bearer <Clerk M2M JWT>` | 401 → one re-mint, one retry |
+| `POST /tutor/open` | `{"room", "userId", "jobId", "plan"}` | `{"ok": true, "balanceSeconds", "secondsBilled"}` or `{"ok": false, "code"}` |
 | `POST /tutor/debit` | `{"room", "userId", "jobId", "seconds", "seq"}` | `{"balanceSeconds"}` |
 | `POST /tutor/balance` | `{"userId", "room"}` (room optional) | `{"balanceSeconds", "secondsBilled"}` |
 | `POST /tutor/summary` | `{"room", "userId", "jobId", "about"?, "transcript"?, "review"?, "corrections"?, "goal"?, "turns"?, "anchorRatio"?, "asks"?, "lookups"?, "estCostUsd"?}` | `{"ok": true}` |
+
+`/tutor/open` is the lease. The job calls it once at start — before the model
+session exists — and then every `LEASE_RENEW_S` (60 s) for as long as it runs,
+held or not. `ok` means the job holds the room for the next three minutes;
+`code` is `open_session` (this learner has a live conversation elsewhere),
+`closed` (this room already ended — a reused token) or `rate_limited`, and the
+job publishes it as a `tutor.error` and shuts down without a session, nothing
+billed. A refused *renewal* means the lease lapsed and another room took it:
+the job ends with reason `lease_lost`. The token route writes nothing; this is
+where the `sessions` row comes from. A job dispatched with no `userId` refuses
+to run unless `TUTOR_ALLOW_UNMETERED=1` (audit 2026-09-06, L4).
 
 Convex keys the debit on `ref = <room>:<jobId>:<seq>` and answers a replay with
 the same body. `secondsBilled` is the **room's** already-billed high-water mark
@@ -654,10 +666,11 @@ never tracks what it has already billed. Debits are serialized behind one lock
 - **at teardown**, where `report_seconds_billed()` logs `session seconds billed`
   and retries once — and this one alone carries `"final": true`, which is what
   tells Convex to set the session's `endedAt`. The periodic and zero-hold
-  debits must NOT: they leave the row open so a purchase can resume the same
-  conversation. A crashed worker's final debit is what lets the learner start a
-  new conversation immediately instead of waiting out the one-open-session
-  window.
+  debits must NOT: they leave the row open (and renew its lease) so a purchase
+  can resume the same conversation. A worker that dies without its final
+  debit stops renewing, and the learner can start again once the lease runs
+  out — three minutes — with the reconciliation cron closing the row behind
+  it.
 
 ### Why the session ended
 

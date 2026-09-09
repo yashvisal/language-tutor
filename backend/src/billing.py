@@ -3,6 +3,17 @@
 Three authenticated HTTP calls, all against `CONVEX_SITE_URL`, all bearing a
 Clerk machine-to-machine JWT the worker mints once per job (see "auth" below):
 
+- `POST /tutor/open` — "this job holds this ROOM for the next three minutes".
+  Called once at job start, before the model session exists, and then every
+  `LEASE_RENEW_S` for as long as the job runs — held or not, because a learner
+  reading a correction for ten minutes is still in a conversation. It is the
+  one-open-session lease (audit 2026-09-06, L1/L2): the token route signs a
+  token and writes nothing, the row is opened HERE when the worker joins, and
+  nothing the browser sends can release it. The first call answers the
+  balance (the clock's budget) and the room's already-billed total; a refusal
+  (`open_session`, `closed`, `rate_limited`) means leave — the worker
+  publishes the code and shuts down, nothing billed. A refused RENEWAL means
+  the lease lapsed and another room took it: end with reason `lease_lost`.
 - `POST /tutor/debit` — "this ROOM has used N cumulative active seconds so
   far". The action is idempotent per `ref = <room>:<jobId>:<seq>` and debits
   only the delta above the room's high-water mark, so the worker never has to
@@ -100,9 +111,15 @@ logger = logging.getLogger("tutor.billing")
 REQUEST_TIMEOUT_S = 5.0
 CONNECT_TIMEOUT_S = 2.0
 
+OPEN_PATH = "/tutor/open"
 DEBIT_PATH = "/tutor/debit"
 BALANCE_PATH = "/tutor/balance"
 SUMMARY_PATH = "/tutor/summary"
+
+# How often the job renews its lease on the room, in seconds. The ledger's
+# lease is three minutes (`LEASE_TTL_MS` in `frontend/lib/billing.ts`): two
+# missed renewals plus slack. Sized together; change both or neither.
+LEASE_RENEW_S = 60
 
 # Clerk's machine-to-machine token endpoint, and the shape of the one request
 # the worker makes against it. Overridable only for tests and for a Clerk
@@ -192,6 +209,7 @@ END_REASONS = (
     "model_error",
     "ledger_failure",
     "tutor_silent",
+    "lease_lost",
 )
 DEFAULT_END_REASON = "ended"
 
@@ -211,6 +229,22 @@ class BalanceRead:
 
     balance_seconds: int
     seconds_billed: int
+
+
+@dataclass(frozen=True)
+class OpenResult:
+    """What `/tutor/open` answers.
+
+    `ok` means the job holds the room until the lease runs out, and the two
+    numbers are the same pair `BalanceRead` carries. Not `ok` means leave:
+    `code` is `open_session`, `closed` or `rate_limited`, and it goes to the
+    learner verbatim as a `tutor.error`.
+    """
+
+    ok: bool
+    code: str = ""
+    balance_seconds: int = 0
+    seconds_billed: int = 0
 
 
 class BillingClient:
@@ -271,6 +305,8 @@ class BillingClient:
         self._unacked_zero_s: int | None = None
         self._lock = asyncio.Lock()
         self._session: aiohttp.ClientSession | None = None
+        # The plan `open` sent, re-sent by every `renew`.
+        self._plan_wire: dict[str, object] = {}
 
     @property
     def enabled(self) -> bool:
@@ -535,6 +571,45 @@ class BillingClient:
             },
         )
         return True
+
+    async def open(self, plan: dict[str, object]) -> OpenResult | None:
+        """Take the lease on this room, and learn the budget.
+
+        The plan is the dispatch metadata's, handed back so the row carries
+        it. Kept for `renew`, which sends the same body: the ledger treats an
+        open on a room this job already holds as a renewal.
+
+        `None` means the call did not happen or did not land — the caller
+        decides whether that refuses the job. A refusal is a real answer, not
+        `None`: the ledger said no, and that is not something to retry.
+        """
+        self._plan_wire = dict(plan)
+        return await self.renew()
+
+    async def renew(self) -> OpenResult | None:
+        """Extend the lease. Same call as `open`; see there."""
+        if not self.enabled:
+            return None
+        payload = {
+            "room": self._room,
+            "userId": self._user_id,
+            "jobId": self._job_id,
+            "plan": self._plan_wire,
+        }
+        body = await self._post_json(OPEN_PATH, payload)
+        if not isinstance(body, dict) or not isinstance(body.get("ok"), bool):
+            return None
+        if not body["ok"]:
+            code = body.get("code")
+            return OpenResult(ok=False, code=code if isinstance(code, str) else "")
+        balance_seconds = _int_field(body, "balanceSeconds")
+        if balance_seconds is None:
+            return None
+        return OpenResult(
+            ok=True,
+            balance_seconds=balance_seconds,
+            seconds_billed=_int_field(body, "secondsBilled") or 0,
+        )
 
     async def balance(self) -> BalanceRead | None:
         """Re-read the learner's balance and this room's billed total.
