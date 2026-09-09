@@ -738,11 +738,18 @@ const HISTORY_LIMIT = 30
  * The learner's finished conversations, newest first — what `/home` lists
  * under History and what its modal reads.
  *
- * Only sessions with an `endedAt`: a row exists from the moment the worker
- * joins, and a conversation that is happening right now is not history. The
- * seconds are the worker's billed total where there is one and the outcome's
- * meter reading otherwise, so a row finished before the meter reported to the
- * ledger still prints an honest number.
+ * A row is history once EITHER half has called it finished: the worker's
+ * final debit (`endedAt`), or the browser's `finish` (`outcome`). The browser
+ * cannot close the row — that is the lease's business — but it does know the
+ * learner pressed End, and the worker's close trails it by its reconnect
+ * grace plus teardown (26 s live, 2026-09-08). A conversation the learner
+ * just ended must not be missing from the page they land on; it is listed
+ * from what the browser wrote and fills in when the worker's record lands.
+ * A row with neither is a conversation happening right now, and not history.
+ *
+ * The seconds are the worker's billed total where there is one and the
+ * outcome's meter reading otherwise, so a row the worker has not closed yet
+ * still prints an honest number.
  *
  * The whole corrections array travels with the list rather than behind a
  * per-session query: it is at most 200 short strings, the modal needs it the
@@ -791,13 +798,28 @@ export const history = query({
     // `by_user_startedAt` and dropped the unfinished ones in JS, which meant a
     // learner with a run of abandoned rows — a crashed tab, a killed worker —
     // watched real conversations fall off their own history page.
-    const rows = await ctx.db
+    const finished = await ctx.db
       .query("sessions")
       .withIndex("by_user_endedAt", (q) =>
         q.eq("userId", user._id).gte("endedAt", 0)
       )
       .order("desc")
       .take(HISTORY_LIMIT * 2)
+    // The rows the learner has ended and the worker has not yet closed. Open
+    // rows are few (one, normally), so the whole set is read and the ones
+    // with an outcome kept; they are the newest conversations by definition
+    // and go first.
+    const ending = (
+      await ctx.db
+        .query("sessions")
+        .withIndex("by_user_endedAt", (q) =>
+          q.eq("userId", user._id).eq("endedAt", undefined)
+        )
+        .collect()
+    )
+      .filter((row) => row.outcome !== undefined)
+      .sort((a, b) => b.startedAt - a.startedAt)
+    const rows = [...ending, ...finished]
 
     // A start that failed — the tutor never joined, the client closed the row
     // so "Try again" would not meet the one-open-session guard — is a finished
@@ -815,7 +837,12 @@ export const history = query({
       id: row._id,
       room: row.room,
       startedAt: row.startedAt,
-      endedAt: row.endedAt ?? row.startedAt,
+      // For a row the worker has not closed yet, the learner's end is the
+      // nearest honest timestamp: `finish` does not record one, and
+      // `startedAt` plus the outcome's seconds is what the clock can prove.
+      endedAt:
+        row.endedAt ??
+        row.startedAt + (row.outcome?.secondsTalked ?? 0) * 1000,
       // The worker's number first: it is what was charged, and the browser
       // cannot write it (audit 2026-09-06, L9). The outcome's reading is the
       // fallback for a row from before the meter reported to the ledger.
@@ -915,6 +942,74 @@ export const byRoom = query({
       lookups: session.lookups ?? null,
       estCostUsd: session.estCostUsd ?? null,
     }
+  },
+})
+
+/* -------------------------------------------------------------------------- */
+/*  The books                                                                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * What the sessions cost to run against what they billed, per UTC day —
+ * the reconciliation the launch audit asks for (L8) before pack prices are
+ * final. Operator-run: `npx convex run sessions:costReport '{"days": 30}'`.
+ *
+ * `estCostUsd` is the worker's estimate of MODEL spend for a session
+ * (`usage.py`); LiveKit, hosting and card fees are not in it. A session with
+ * no estimate (a worker that died before its summary) counts toward
+ * `sessions` and `billedSeconds` but adds nothing to the cost, and says so in
+ * `unpriced`, so a day's number is never quietly low.
+ */
+export const costReport = internalQuery({
+  args: { days: v.optional(v.number()) },
+  returns: v.array(
+    v.object({
+      day: v.string(),
+      sessions: v.number(),
+      unpriced: v.number(),
+      billedSeconds: v.number(),
+      estCostUsd: v.number(),
+      /** Cost per billed minute, or `null` for a day with nothing billed. */
+      usdPerBilledMinute: v.union(v.number(), v.null()),
+    })
+  ),
+  handler: async (ctx, args) => {
+    const days = Math.max(1, Math.floor(args.days ?? 30))
+    const since = Date.now() - days * 24 * 60 * 60 * 1000
+    const rows = await ctx.db
+      .query("sessions")
+      .withIndex("by_endedAt_startedAt", (q) => q.gte("endedAt", since))
+      .collect()
+    const byDay = new Map<
+      string,
+      { sessions: number; unpriced: number; billedSeconds: number; estCostUsd: number }
+    >()
+    for (const row of rows) {
+      const day = new Date(row.endedAt!).toISOString().slice(0, 10)
+      const bucket = byDay.get(day) ?? {
+        sessions: 0,
+        unpriced: 0,
+        billedSeconds: 0,
+        estCostUsd: 0,
+      }
+      bucket.sessions += 1
+      bucket.billedSeconds += row.secondsBilled ?? 0
+      if (row.estCostUsd === undefined) bucket.unpriced += 1
+      else bucket.estCostUsd += row.estCostUsd
+      byDay.set(day, bucket)
+    }
+    return [...byDay.entries()]
+      .sort(([a], [b]) => (a < b ? 1 : -1))
+      .map(([day, bucket]) => ({
+        day,
+        ...bucket,
+        estCostUsd: Math.round(bucket.estCostUsd * 10000) / 10000,
+        usdPerBilledMinute:
+          bucket.billedSeconds > 0
+            ? Math.round((bucket.estCostUsd / (bucket.billedSeconds / 60)) * 10000) /
+              10000
+            : null,
+      }))
   },
 })
 

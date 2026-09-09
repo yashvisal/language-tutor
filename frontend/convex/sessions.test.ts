@@ -1243,6 +1243,54 @@ describe("sessions.byRoom", () => {
 })
 
 describe("sessions.history", () => {
+  test("a conversation the learner just ended is listed before the worker closes it", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+    const now = Date.now()
+    await t.run(async (ctx) => {
+      // Ended by the learner, not yet closed by the worker: the row the home
+      // page must show the moment they land on it.
+      await ctx.db.insert("sessions", {
+        userId,
+        room: "room-ending",
+        plan: PLAN,
+        startedAt: now - 300_000,
+        leaseUntil: now + 100_000,
+        secondsBilled: 180,
+        outcome: { corrections: [], secondsTalked: 221, endedByClock: false },
+        corrections: 0,
+      })
+      // Still being talked in: nothing from either half. Not history.
+      await ctx.db.insert("sessions", {
+        userId,
+        room: "room-live",
+        plan: PLAN,
+        startedAt: now - 60_000,
+        leaseUntil: now + 100_000,
+        secondsBilled: 30,
+      })
+      // Closed by the worker earlier tonight.
+      await ctx.db.insert("sessions", {
+        userId,
+        room: "room-done",
+        plan: PLAN,
+        startedAt: now - 3_600_000,
+        endedAt: now - 3_400_000,
+        secondsBilled: 200,
+        about: "earlier",
+      })
+    })
+
+    const rows = await t
+      .withIdentity({ subject: "user_owner" })
+      .query(api.sessions.history, {})
+    expect(rows.map((row) => row.room)).toEqual(["room-ending", "room-done"])
+    // The worker's number, where it has one, over the browser's.
+    expect(rows[0].secondsTalked).toBe(180)
+    // No close yet, so the nearest honest end: start plus what was talked.
+    expect(rows[0].endedAt).toBe(now - 300_000 + 221_000)
+  })
+
   test("pages finished rows even behind a run of abandoned ones", async () => {
     const t = setup()
     const userId = await makeLearner(t, "user_owner")
@@ -1333,6 +1381,52 @@ describe("sessions.history", () => {
         .withIdentity({ subject: "user_other" })
         .query(api.sessions.history, {})
     ).toEqual([])
+  })
+})
+
+describe("sessions.costReport", () => {
+  test("totals model cost against billed minutes per day, and counts the unpriced", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+    const day = Date.UTC(2026, 8, 8, 6, 0, 0)
+    await t.run(async (ctx) => {
+      await ctx.db.insert("sessions", {
+        userId,
+        room: "room-a",
+        plan: PLAN,
+        startedAt: day,
+        endedAt: day + 221_000,
+        secondsBilled: 221,
+        estCostUsd: 0.4176,
+      })
+      await ctx.db.insert("sessions", {
+        userId,
+        room: "room-b",
+        plan: PLAN,
+        startedAt: day + 3_600_000,
+        endedAt: day + 3_700_000,
+        secondsBilled: 79,
+      })
+      await ctx.db.insert("sessions", {
+        userId,
+        room: "room-open",
+        plan: PLAN,
+        startedAt: day + 7_200_000,
+        secondsBilled: 10,
+      })
+    })
+
+    const report = await t.query(internal.sessions.costReport, { days: 36500 })
+    expect(report).toEqual([
+      {
+        day: "2026-09-08",
+        sessions: 2,
+        unpriced: 1,
+        billedSeconds: 300,
+        estCostUsd: 0.4176,
+        usdPerBilledMinute: 0.0835,
+      },
+    ])
   })
 })
 
@@ -1497,15 +1591,18 @@ describe("sessions.finish", () => {
     })
   })
 
-  test("the row reaches History only once the worker closes it", async () => {
+  test("the row reaches History the moment the learner ends it, and the worker's close fills it in", async () => {
     const t = setup()
     await makeLearner(t, "user_owner")
     const as = t.withIdentity({ subject: "user_owner" })
     await openRoom(t, "user_owner", room)
 
     await as.mutation(api.sessions.finish, { room, outcome: OUTCOME })
-    // History lists finished rows, and this one is not finished yet.
-    expect(await as.query(api.sessions.history, {})).toEqual([])
+    // Listed from what the browser wrote: the learner is looking at the home
+    // page now, and the worker's close is a reconnect grace away.
+    const early = await as.query(api.sessions.history, {})
+    expect(early).toHaveLength(1)
+    expect(early[0].secondsTalked).toBe(OUTCOME.secondsTalked)
 
     await t.mutation(internal.sessions.debit, {
       room,
