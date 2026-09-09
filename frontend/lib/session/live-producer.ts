@@ -764,6 +764,9 @@ export function useLiveSession(): LiveSession {
             setRefused(true)
             return
           }
+          // The raw failure goes to the console — it is the only record of
+          // why a start died, and the sentence below deliberately hides it.
+          console.error("session start failed:", err)
           // A DOMException name and a raw status code are not English; the
           // learner gets the sentence with the fix in it (audit §4.3).
           setError(describeStartError(err))

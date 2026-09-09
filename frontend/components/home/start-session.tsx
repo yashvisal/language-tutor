@@ -12,8 +12,8 @@
  *
  * The plan picker lives in a modal behind the button: a learner arriving at
  * `/home` is not here to fill in a form, and the questions are optional
- * anyway. Start persists the plan and hands off to `/session?start=1`, which
- * connects immediately.
+ * anyway. Start persists the plan, flags the hand-off (`lib/session/handoff`)
+ * and navigates to `/session`, which connects immediately.
  */
 
 import { useState, useSyncExternalStore } from "react"
@@ -39,6 +39,7 @@ import {
 import { api } from "@/convex/_generated/api"
 import { LOW_BALANCE_SECONDS, formatClock } from "@/lib/billing"
 import type { SessionPlan } from "@/lib/session/contract"
+import { requestStart } from "@/lib/session/handoff"
 import {
   planSnapshot,
   savePlan,
@@ -167,7 +168,8 @@ export function StartSession() {
             footerClassName="px-6 py-4"
             onStart={(finalPlan) => {
               savePlan(finalPlan)
-              router.push("/session?start=1")
+              requestStart()
+              router.push("/session")
             }}
           />
         </DialogContent>

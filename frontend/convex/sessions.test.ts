@@ -677,6 +677,73 @@ describe("sessions.reconcileStale", () => {
   })
 })
 
+describe("sessions.abandonUnjoined", () => {
+  test("closes an open row the worker never touched, and only that", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+    const startedAt = Date.now() - 60_000
+    const [unjoined, billed, closed] = await t.run(async (ctx) => [
+      await ctx.db.insert("sessions", {
+        userId,
+        room: "room-unjoined",
+        plan: PLAN,
+        startedAt,
+      }),
+      await ctx.db.insert("sessions", {
+        userId,
+        room: "room-billed",
+        plan: PLAN,
+        startedAt,
+        secondsBilled: 30,
+      }),
+      await ctx.db.insert("sessions", {
+        userId,
+        room: "room-closed",
+        plan: PLAN,
+        startedAt,
+        endedAt: startedAt + 5_000,
+      }),
+    ])
+
+    expect(
+      await t.mutation(internal.sessions.abandonUnjoined, {
+        room: "room-unjoined",
+      })
+    ).toBe(true)
+    expect(
+      await t.mutation(internal.sessions.abandonUnjoined, {
+        room: "room-billed",
+      })
+    ).toBe(false)
+    expect(
+      await t.mutation(internal.sessions.abandonUnjoined, {
+        room: "room-closed",
+      })
+    ).toBe(false)
+    expect(
+      await t.mutation(internal.sessions.abandonUnjoined, {
+        room: "room-missing",
+      })
+    ).toBe(false)
+
+    const rows = await t.run(async (ctx) => ({
+      unjoined: await ctx.db.get(unjoined),
+      billed: await ctx.db.get(billed),
+      closed: await ctx.db.get(closed),
+    }))
+    // Nobody talked: the row ends when it began, and says it was swept.
+    expect(rows.unjoined!.endedAt).toBe(startedAt)
+    expect(rows.unjoined!.endReason).toBe("stale")
+    expect(rows.billed!.endedAt).toBeUndefined()
+    expect(rows.closed!.endedAt).toBe(startedAt + 5_000)
+
+    // And the learner can start again at once.
+    await t
+      .withIdentity({ subject: "user_owner" })
+      .mutation(api.sessions.start, { room: "room-next", plan: PLAN })
+  })
+})
+
 /* -------------------------------------------------------------------------- */
 /*  The after-session record                                                  */
 /* -------------------------------------------------------------------------- */

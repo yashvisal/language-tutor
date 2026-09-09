@@ -11,21 +11,15 @@
  * declares a plan, the connection lifecycle, and the summary the session ends
  * into. Three states, in the order a learner meets them: plan, talk, look back.
  *
- * `/home` is the same pre-flight inside the app shell, so it hands off with
- * `?start=1`: the plan is already persisted, and this page connects straight
- * away instead of asking the same questions a second time. Without the flag
- * (a direct visit, a bookmark) the page still opens on its own pre-flight.
+ * `/home` is the same pre-flight inside the app shell, so it hands off with an
+ * in-memory flag (`lib/session/handoff`): the plan is already persisted, and
+ * this page connects straight away instead of asking the same questions a
+ * second time. Without the flag (a direct visit, a bookmark, a reload) the
+ * page still opens on its own pre-flight.
  */
 
-import {
-  Suspense,
-  useEffect,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react"
+import { useEffect, useRef, useState, useSyncExternalStore } from "react"
 import Link from "next/link"
-import { useRouter, useSearchParams } from "next/navigation"
 import { ArrowLeft } from "lucide-react"
 import { RoomAudioRenderer } from "@livekit/components-react"
 
@@ -37,6 +31,7 @@ import { SessionSummary } from "@/components/session/session-summary"
 import { TutorUnavailableScreen } from "@/components/session/tutor-unavailable"
 import { STAGE_AURA_CLASS, TutorAura } from "@/components/session/tutor-aura"
 import type { SessionPlan } from "@/lib/session/contract"
+import { startRequested, takeStartRequest } from "@/lib/session/handoff"
 import { useLiveSession } from "@/lib/session/live-producer"
 import {
   planSnapshot,
@@ -46,19 +41,16 @@ import {
 } from "@/lib/session/plan"
 
 export default function SessionPage() {
-  // `useSearchParams` needs a boundary to fall back to during prerender.
-  return (
-    <Suspense fallback={null}>
-      <Session />
-    </Suspense>
-  )
-}
-
-function Session() {
   const live = useLiveSession()
   const { connect } = live
-  const router = useRouter()
-  const autostart = useSearchParams().get("start") === "1"
+  /**
+   * The hand-off from `/home`, as a render-time fact: true from the first
+   * paint so the learner sees the stage warming up rather than the form they
+   * just filled in, and false again the moment the start has settled into a
+   * connection state, an error, or a refusal. Read without spending — the
+   * effect below spends it, once.
+   */
+  const [handoff, setHandoff] = useState(startRequested)
 
   /**
    * The plan. The last session's is the starting point (an external store, so
@@ -82,14 +74,21 @@ function Session() {
    */
   const handedOff = useRef(false)
   useEffect(() => {
-    if (!autostart || handedOff.current) return
+    if (handedOff.current || !takeStartRequest()) return
     handedOff.current = true
     connect(planSnapshot())
-    // And the flag is spent: it survives in the address bar otherwise, so a
-    // reload — or a shared link — would silently open a second billed session.
-    // The ref only guards this mount.
-    router.replace("/session")
-  }, [autostart, connect, router])
+  }, [connect])
+
+  // The hand-off screen ends when the start has an answer of any kind. Set
+  // during render rather than in an effect: it is derived from `live`, and
+  // React re-renders immediately without painting the stale frame.
+  const settled =
+    live.connection !== "idle" ||
+    live.error !== null ||
+    live.outOfMinutes ||
+    live.tutorFailed !== null ||
+    live.outcome !== null
+  if (handoff && settled) setHandoff(false)
 
   // The summary outlives the room, so it wins over the connection state: a
   // session ended by the clock disconnects us, and dropping straight back to
@@ -126,7 +125,7 @@ function Session() {
   // Handed off from the dashboard, or already dialling: the learner chose to
   // start, so the only honest screen is the stage warming up — not the form
   // they just filled in flashing past on its way to the conversation.
-  if (autostart || live.connection === "connecting") {
+  if (handoff || live.connection === "connecting") {
     return (
       <div className="flex h-svh flex-col items-center justify-center gap-6 bg-background">
         <TutorAura state="connecting" className={STAGE_AURA_CLASS} />

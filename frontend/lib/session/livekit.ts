@@ -1,4 +1,8 @@
-import { MediaDeviceFailure, TokenSource } from "livekit-client"
+import {
+  MediaDeviceFailure,
+  TokenSource,
+  type TokenSourceResponseObject,
+} from "livekit-client"
 
 import type { SessionPlan } from "./contract"
 import { TOKEN_ENDPOINT } from "./protocol"
@@ -149,6 +153,10 @@ function deviceFailure(error: unknown): MediaDeviceFailure | undefined {
 }
 
 let pendingPlan: SessionPlan | null = null
+/** The token minted for the start in progress — the promise, so that every
+ * caller in that start shares one request and one answer, including a
+ * refusal. Cleared when the next start hands over its plan. */
+let minted: Promise<TokenSourceResponseObject> | null = null
 
 /**
  * Hand the next token request its plan. Called immediately before `start()`,
@@ -156,38 +164,37 @@ let pendingPlan: SessionPlan | null = null
  * than a constructor argument, since the source is a singleton (one live
  * session per page) and the plan is chosen long after it is created.
  *
- * One-shot: the fetch below consumes it. `useSession` also calls the source
- * once on mount to warm the connection (`Room.prepareConnection`), and every
- * token this route mints opens a session row — so a warm-up token would open
- * a row nobody joins, and the real start a second later would be refused as
- * "already open in another tab" (live, 2026-09-08). With no plan pending the
- * source refuses instead, and the hook logs one warning and moves on.
+ * Every token the route mints OPENS A SESSION ROW, so the source must mint
+ * exactly one per start — and `useSession` calls it more often than that:
+ * once on mount to warm the connection (`Room.prepareConnection`), which in
+ * development's Strict Mode runs twice, and once inside `start()`. The
+ * mount-time call can land after the plan is set and before `start()` reads
+ * it. So the plan is one-shot AND the result is memoised per start: whoever
+ * calls first mints, everyone else in the same start gets the same token (or
+ * the same refusal), and a call with no start pending is refused without a
+ * request — the hook logs one warning and moves on (live, 2026-09-08).
  */
 export function setPendingSessionPlan(plan: SessionPlan | null) {
   pendingPlan = plan
+  minted = null
 }
 
 /** What the warm-up gets. Never shown: `start()` always sets a plan first. */
 export const NO_SESSION_REQUESTED_MESSAGE =
   "No session requested; not minting a token for the connection warm-up."
 
-/**
- * The TokenSource every session surface should use.
- *
- * Not `TokenSource.endpoint`: that helper serializes a fixed `TokenSourceRequest`
- * protobuf and throws on any option it doesn't know, so there is no seam for the
- * session plan — the one thing this product's token request has to carry.
- * `TokenSource.literal` takes a function instead, and (unlike `.custom`) is a
- * *fixed* source, so it is called afresh on every connect rather than serving a
- * cached token minted for a previous session's plan.
- *
- * The body is otherwise the standardized endpoint format the route already
- * speaks, so the route stays a conforming token endpoint with one extra field.
- */
 export const tutorTokenSource = TokenSource.literal(async () => {
-  const plan = pendingPlan
-  if (plan === null) throw new Error(NO_SESSION_REQUESTED_MESSAGE)
-  pendingPlan = null
+  if (minted === null) {
+    const plan = pendingPlan
+    if (plan === null) throw new Error(NO_SESSION_REQUESTED_MESSAGE)
+    pendingPlan = null
+    minted = mint(plan)
+  }
+  return minted
+})
+
+/** One token request, and everything the route can say about it. */
+async function mint(plan: SessionPlan): Promise<TokenSourceResponseObject> {
   const response = await fetch(TOKEN_ENDPOINT, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -221,4 +228,4 @@ export const tutorTokenSource = TokenSource.literal(async () => {
     throw new Error("Token endpoint returned an unusable response")
   }
   return { serverUrl: server_url, participantToken: participant_token }
-})
+}

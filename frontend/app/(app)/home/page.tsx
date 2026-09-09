@@ -23,7 +23,7 @@ export default async function HomePage() {
   return (
     <div className="mx-auto w-full max-w-3xl px-6 py-12 sm:py-16">
       <h1 className="text-2xl font-semibold tracking-tight text-foreground">
-        {firstName ? `Hola, ${firstName}.` : "Welcome back."}
+        {firstName ? `Welcome back, ${firstName}.` : "Welcome back."}
       </h1>
       <p className="mt-2 text-sm text-muted-foreground">
         Your next conversation, out loud — for as long as you like. Pausing to

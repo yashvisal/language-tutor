@@ -859,6 +859,40 @@ const RECONCILE_BATCH = 100
  * rule the worker's reason follows: whoever was actually there when it
  * stopped said it first, and this mutation was not there.
  */
+/**
+ * Close a row whose room nobody ever joined — a token was minted (which opens
+ * the row) and the client then failed to connect: a denied microphone, a
+ * closed tab, a remount. No worker ran, so nothing else will close it, and
+ * until it closes `start` refuses this learner for `OPEN_SESSION_WINDOW_MS`.
+ *
+ * Operator-run for now (`npx convex run sessions:abandonUnjoined`); the
+ * server-owned lease in the launch audit (L1/L2) makes this automatic.
+ * Refuses a row the worker touched: that one has money on it and belongs to
+ * the worker's teardown or the cron.
+ */
+export const abandonUnjoined = internalMutation({
+  args: { room: v.string() },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const session = await ctx.db
+      .query("sessions")
+      .withIndex("by_room", (q) => q.eq("room", args.room))
+      .unique()
+    if (
+      session === null ||
+      session.endedAt !== undefined ||
+      session.secondsBilled !== undefined
+    ) {
+      return false
+    }
+    await ctx.db.patch(session._id, {
+      endedAt: session.startedAt,
+      endReason: session.endReason ?? "stale",
+    })
+    return true
+  },
+})
+
 export const reconcileStale = internalMutation({
   args: {},
   returns: v.number(),
