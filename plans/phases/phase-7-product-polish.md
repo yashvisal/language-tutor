@@ -49,16 +49,26 @@ triage → merge → `phase-8-launch.md` (Sentry, deployment, billing).
 ## Contracts fixed in step 1 (so later steps build on one shape)
 
 - The token route mints the room; the client never names one.
-- One open session per learner: `sessions.start` refuses while the caller
-  has a row with no `endedAt` younger than 15 minutes; the route returns
-  409 and the client says so.
+- One open session per learner — **revised 2026-09-08 (Yash), the session
+  lease.** The token route signs a token and writes nothing. The `sessions`
+  row is opened by the WORKER when it joins (`POST /tutor/open` →
+  `sessions.open`, one atomic mutation), carries a three-minute lease
+  (`LEASE_TTL_MS`) that the worker renews every 60 s held or not, and is
+  closed by the worker's final debit or by the cron once the lease has run
+  out. `open` refuses a second live room for the same learner
+  (`open_session`), a room that already ended (`closed`), and the hourly
+  limit (`rate_limited`); the worker publishes the code and leaves. The
+  browser's `finish` writes the outcome only — it cannot release the lease.
+  The token route's 409/429 are a read-only pre-check for the right
+  sentence. This replaces the 15-minute `OPEN_SESSION_WINDOW_MS` and the
+  age-based reconciliation (audit 2026-09-06, L1/L2).
 - Debit ref = `<room>:<jobId>:<seq>`. The worker's reported seconds are
   **room-cumulative**: at job start it reads the room's `secondsBilled`
   from Convex and reports `billedBefore + active`, so a redispatched job
   neither double-bills nor bills zero.
 - The worker debits every 60 active seconds, at the zero hold, and at
-  teardown. A Convex cron closes rows with no `endedAt` and no debit for
-  two hours.
+  teardown. A Convex cron (every five minutes) closes open rows whose lease
+  has expired; rows from before the lease close by age (two hours).
 - `secondsBilled` is a high-water mark: a report below it bills nothing
   and moves nothing (never "set"). A redispatched job whose `billed_before`
   read landed before the old job's teardown debit under-bills by at most
@@ -83,7 +93,9 @@ triage → merge → `phase-8-launch.md` (Sentry, deployment, billing).
 - The clock accrues from the first tutor audio frame, and holds when the
   learner's participant leaves the room (a short grace, then shutdown).
 - A worker with a `user_id` and no reachable ledger refuses the job unless
-  `TUTOR_ALLOW_UNMETERED=1` (local development only).
+  `TUTOR_ALLOW_UNMETERED=1` (local development only). So does a worker with
+  NO `user_id` (2026-09-08; audit L4): a manual job needs the flag, a web
+  dispatch always carries the id.
 
 ### Worker → Convex auth is Clerk M2M (Yash, 2026-08-25), its own commit after step 2
 

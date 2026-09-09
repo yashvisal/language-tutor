@@ -75,7 +75,8 @@ named `convex` must carry the claims `aud: convex` and `email`; without them
 Convex rejects every token as having no matching auth provider.
 
 Three more live there, and together they are how the worker proves who it is on
-`POST /tutor/debit`, `POST /tutor/balance` and `POST /tutor/summary` — the seam
+`POST /tutor/open`, `POST /tutor/debit`, `POST /tutor/balance` and
+`POST /tutor/summary` — the seam
 the agent worker meters seconds and records conversations through. There is no
 shared secret any more (`TUTOR_DEBIT_SECRET` is gone from both halves); the
 bearer is a **Clerk machine-to-machine JWT**, verified offline.
@@ -155,27 +156,40 @@ Verify with the dashboard's **Send test event** after setting it.
 
 Three pieces, and they only work together:
 
-**`POST /api/token`** is the only gate. It authenticates with Clerk, reads the
+**`POST /api/token`** is the front door. It authenticates with Clerk, reads the
 balance, refuses a zero one with **402**, a learner who already has a
-conversation open with **409**, and a learner who has started more than
+conversation live with **409**, and a learner who has started more than
 `MAX_STARTS_PER_HOUR` (12) conversations in the last rolling hour with **429**
 `{ code: "rate_limited" }` — the free grant is per Clerk id, and without that
-ceiling a script mints rooms until the grants run out (audit B12). The limit is
-counted in `sessions.start` off the `by_user_startedAt` index, after the
-open-session check, so a second tab still hears "already open". Its half of the
-fix that is not code is at Clerk: bot protection and required email
-verification on the production instance. It mints the room and the participant
-identity itself (the request body is read for `session_plan` and nothing else),
-signs
-the learner's Clerk id and balance into the agent's dispatch metadata, and only
-then writes the `sessions` row the worker will debit against.
+ceiling a script mints rooms until the grants run out (audit B12). Both of
+those are a READ (`sessions.startCheck`), so the learner hears the right
+sentence before a room is dialled; the check that holds is the worker's. Its
+half of the fix that is not code is at Clerk: bot protection and required
+email verification on the production instance. It mints the room and the
+participant identity itself (the request body is read for `session_plan` and
+nothing else), signs the learner's Clerk id, balance and plan into the agent's
+dispatch metadata, and returns. **It writes nothing**: a token nobody uses
+opens nothing.
 
-**`convex/http.ts`** is the worker's three routes — `POST /tutor/debit`,
-`POST /tutor/balance` and `POST /tutor/summary`, all behind the Clerk M2M
-token check in `convex/m2m.ts`, all machine-to-machine with no CORS. (The
-fourth route in that file, `POST /clerk/webhook`, is not part of this seam: its
-caller is Clerk, its transport is a Svix signature, and it spends nothing —
-see "Account deletion" above.)
+**`sessions.open`** is the gate. The worker calls it (`POST /tutor/open`) when
+it joins the room, before the model session exists, and it is one atomic
+mutation: refused if this learner has another row whose lease is still
+running (`open_session`), if this room's row has already ended (`closed` — a
+reused token), or if the hourly limit is hit (`rate_limited`); otherwise the
+`sessions` row is inserted with a three-minute lease (`LEASE_TTL_MS`). The
+worker renews it every 60 s (`LEASE_RENEW_S`) for as long as it runs — held
+or not — and every periodic debit renews it too. A refused first call is
+published to the learner as a `tutor.error` and the worker leaves; a refused
+renewal ends the session with reason `lease_lost`. Nothing the browser sends
+can release the lease: the client's `sessions.finish` writes the outcome and
+nothing else (audit 2026-09-06, L1/L2).
+
+**`convex/http.ts`** is the worker's four routes — `POST /tutor/open`,
+`POST /tutor/debit`, `POST /tutor/balance` and `POST /tutor/summary`, all
+behind the Clerk M2M token check in `convex/m2m.ts`, all machine-to-machine
+with no CORS. (The fifth route in that file, `POST /clerk/webhook`, is not
+part of this seam: its caller is Clerk, its transport is a Svix signature, and
+it spends nothing — see "Account deletion" above.)
 **The comment block at the top of that file is the wire contract**: exact paths,
 field names, types, bounds and status codes, written for whoever is on the
 Python side. Read it before changing either half. `http.ts` itself keeps only
@@ -188,9 +202,9 @@ In short: the worker reports the room's _cumulative_ billed seconds under the
 ref `<room>:<jobId>:<seq>`; `sessions.debit` writes only the delta against
 `sessions.secondsBilled`. That is what makes a retry, a duplicate delivery, an
 out-of-order report and a redispatched job all safe. The teardown report also
-carries `final: true`, which closes the `sessions` row if the client never got
-to `sessions.finish` — a crashed worker or a killed tab must not leave the
-learner locked out by the one-open-session guard.
+carries `final: true`, which closes the `sessions` row — the only writer of
+`endedAt` besides the reconciliation cron, which closes an open row once its
+lease has run out (every five minutes, `convex/crons.ts`).
 
 ## The after-session record
 
@@ -273,12 +287,13 @@ pnpm build
 
 `pnpm test` covers the money seam and the after-session record
 (`convex/sessions.test.ts`) and the wire that guards them
-(`convex/wire.test.ts` — the `400` paths of all three routes, field by field:
+(`convex/wire.test.ts` — the `400` paths of all four routes, field by field:
 seconds and seq bounds, a truthy-string `final`, an unknown end reason, an
 unknown transcript role, the goal shape and source, the review keys,
 `anchorRatio` / `turns` / `asks` / `lookups` / `estCostUsd` bounds, and an
-optional `room` on balance). `sessions.test.ts` covers room ownership, the
-one-open-session guard, ref idempotency, the high-water delta, the
+optional `room` on balance, the open body's plan). `sessions.test.ts` covers
+room ownership, the lease (acquire, renew, refuse, expire), the token route's
+pre-check, ref idempotency, the high-water delta, the
 reconciliation cron (including the `stale` reason it writes and never
 overwrites), and — for
 `recordSummary` / `byRoom` / `history` — clamping, cross-learner refusal,
