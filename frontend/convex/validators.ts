@@ -298,6 +298,10 @@ export const SESSION_END_REASONS = [
   // before the field existed. "We swept this up two hours later" is a
   // different fact from "we do not know", and it is the one worth saying.
   "stale",
+  // The worker's word, on its own renewal: the lease it held for this room
+  // was refused — another conversation took over while it was unreachable —
+  // so it ended rather than keep metering a room it no longer owned.
+  "lease_lost",
 ] as const
 
 export const endReasonValidator = v.union(
@@ -308,7 +312,8 @@ export const endReasonValidator = v.union(
   v.literal("model_error"),
   v.literal("ledger_failure"),
   v.literal("tutor_silent"),
-  v.literal("stale")
+  v.literal("stale"),
+  v.literal("lease_lost")
 )
 
 export type EndReasonMatchesContract = Assert<

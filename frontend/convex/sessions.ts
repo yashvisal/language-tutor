@@ -5,6 +5,8 @@ import {
   internalQuery,
   mutation,
   query,
+  type MutationCtx,
+  type QueryCtx,
 } from "./_generated/server"
 import type { Doc } from "./_generated/dataModel"
 import { secondsFor, userByClerkId } from "./users"
@@ -21,59 +23,37 @@ import {
 } from "./validators"
 import {
   DELTA_CAP_PREFIX,
+  LEASE_TTL_MS,
   MAX_DELTA_PER_CALL_S,
   MAX_STARTS_PER_HOUR,
-  OPEN_SESSION_PREFIX,
-  OPEN_SESSION_WINDOW_MS,
-  RATE_LIMIT_PREFIX,
   START_WINDOW_MS,
 } from "../lib/billing"
 
 /**
- * The `sessions` row: one per room, written when the token is minted and
- * settled by the worker's debits.
+ * The `sessions` row: one per room, opened by the worker when it joins and
+ * settled by its debits.
  *
  * `secondsBilled` is the row's real job. It is the CUMULATIVE seconds this room
  * has been charged for, and the debit action treats it as a high-water mark:
  * the worker reports a running total, so every report after the first debits
  * only what is new. That makes a retried report, a duplicated delivery and a
  * session that resumes after a purchase all land on the same number. It is
- * also what a *redispatched* job reads at start (`billedSecondsForRoom`) so
- * its own reports stay room-cumulative rather than restarting at zero.
+ * also what a *redispatched* job reads at start (`open`) so its own reports
+ * stay room-cumulative rather than restarting at zero.
  *
  * The row is three things at once, and it is worth naming them: the debit's
- * high-water mark, the one-open-session reservation (`start`), and — once
+ * high-water mark, the one-open-session lease (`leaseUntil`), and — once
  * `endedAt` is set — the learner's history.
+ *
+ * **The lease is the worker's** (audit 2026-09-06, L1/L2). The token route
+ * only signs a token; a token nobody uses opens nothing. The row is inserted
+ * by `open` when the worker joins, renewed by `open` and every periodic
+ * `debit`, and closed by the final debit or — if the worker died — by the
+ * cron once the lease runs out. The browser's `finish` writes the outcome and
+ * nothing else: closing a tab is a request to end, not proof that spending
+ * stopped.
  */
 
-/**
- * Called by `/api/token` after auth, the balance check, and the mint.
- *
- * Three refusals, all of them money:
- *
- * 1. **Someone else's room.** A row is keyed on the room, and the room owns
- *    the debit's high-water mark. Returning `null` for an existing row without
- *    checking who owns it made a replayed room name a free conversation: the
- *    second worker's clock starts at zero, every report lands under the first
- *    session's mark, and every delta is zero. The route no longer accepts a
- *    room name at all; this is the second lock on the same door.
- * 2. **A conversation already open.** Nothing reserves the balance at mint
- *    time — the route reads it and signs it into dispatch metadata — so two
- *    tabs each budget the whole balance and the ledger goes negative. The
- *    newest row with no `endedAt`, younger than `OPEN_SESSION_WINDOW_MS`, is
- *    that reservation. Thrown with `OPEN_SESSION_PREFIX` so the route can
- *    answer 409 (a state the learner can act on) rather than 500 (a fault).
- * 3. **Too many starts in an hour.** The free grant is per Clerk id and
- *    signup is instant, so without this a script mints rooms until the grants
- *    run out (audit B12). Counted off `by_user_startedAt` — the same index the
- *    guard above reads — so there is no counter to keep in sync and the read
- *    is bounded by `MAX_STARTS_PER_HOUR`, not by how many rows the learner has.
- *
- * The order of 2 and 3 is deliberate: a learner with a second tab open hears
- * "you already have one running", which is a thing they can act on, even if
- * they are also near the hourly limit. Swapping them would answer a real state
- * with a scolding.
- */
 /**
  * The plan a row adopted by a worker report gets: empty, because nobody knows
  * what the learner picked — the token route is where a plan comes from, and by
@@ -89,66 +69,182 @@ const ADOPTED_PLAN = {
   level: null,
 }
 
-export const start = mutation({
-  args: { room: v.string(), plan: sessionPlanValidator },
-  returns: v.null(),
-  handler: async (ctx, args) => {
+/** Whether a row is a live conversation right now. */
+function leased(session: Doc<"sessions">, now: number): boolean {
+  return (
+    session.endedAt === undefined &&
+    session.leaseUntil !== undefined &&
+    session.leaseUntil > now
+  )
+}
+
+/**
+ * This learner's live conversation, if they have one: an open row whose lease
+ * has not run out. Read off `by_user_endedAt` with `endedAt` absent, which is
+ * exactly the open rows; those are few (one, normally) so the lease is
+ * checked in JS rather than on a third index.
+ */
+async function activeSessionFor(
+  ctx: QueryCtx | MutationCtx,
+  userId: Doc<"users">["_id"],
+  now: number
+): Promise<Doc<"sessions"> | null> {
+  const open = await ctx.db
+    .query("sessions")
+    .withIndex("by_user_endedAt", (q) =>
+      q.eq("userId", userId).eq("endedAt", undefined)
+    )
+    .collect()
+  return open.find((row) => leased(row, now)) ?? null
+}
+
+/**
+ * Whether this learner has hit the hourly start limit. The free grant is per
+ * Clerk id and signup is instant, so without this a script mints rooms until
+ * the grants run out (audit B12). `take(MAX_STARTS_PER_HOUR)` rather than a
+ * count: the only question is whether there are at least that many, so the
+ * read stops at the answer and a learner with ten thousand rows costs the
+ * same as one with twelve. Counted on rows, which now means on real joins.
+ */
+async function rateLimited(
+  ctx: QueryCtx | MutationCtx,
+  userId: Doc<"users">["_id"],
+  now: number
+): Promise<boolean> {
+  const recent = await ctx.db
+    .query("sessions")
+    .withIndex("by_user_startedAt", (q) =>
+      q.eq("userId", userId).gte("startedAt", now - START_WINDOW_MS)
+    )
+    .take(MAX_STARTS_PER_HOUR)
+  return recent.length >= MAX_STARTS_PER_HOUR
+}
+
+export const startRefusalValidator = v.union(
+  v.literal("open_session"),
+  v.literal("rate_limited")
+)
+
+/**
+ * The token route's pre-check, so a learner with a second tab open hears
+ * "you already have one running" before a token is minted rather than from a
+ * worker that joined and left. It is a READ: the answer can be stale by the
+ * time the worker opens the row, and `open` is the check that counts.
+ *
+ * The order is deliberate: a learner with a second tab open hears something
+ * they can act on ("end it there"), even if they are also near the hourly
+ * limit. Swapping them would answer a real state with a scolding.
+ */
+export const startCheck = query({
+  args: {},
+  returns: v.union(
+    v.literal("ok"),
+    v.literal("no_account"),
+    startRefusalValidator
+  ),
+  handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity()
     if (identity === null) throw new Error("Not signed in")
-
     const user = await userByClerkId(ctx, identity.subject)
-    if (user === null) throw new Error("No account yet")
+    if (user === null) return "no_account"
+    const now = Date.now()
+    if ((await activeSessionFor(ctx, user._id, now)) !== null) {
+      return "open_session"
+    }
+    if (await rateLimited(ctx, user._id, now)) return "rate_limited"
+    return "ok"
+  },
+})
 
-    // Rooms are minted per session (`lesson-<slug>-<ts>-<nonce>`), so a second
-    // row for the same room would mean a retried token request, not a second
-    // conversation — and two rows would give the debit two high-water marks.
+/**
+ * The worker takes — or renews — the lease on a room. Behind `POST
+ * /tutor/open` in `convex/http.ts`, which has checked the M2M token; there is
+ * no Clerk identity on that path, so this must stay internal.
+ *
+ * Called once when the job starts, before the model session exists, and then
+ * every `LEASE_RENEW_S` for as long as the job runs — held or not, because a
+ * learner reading a correction for ten minutes is still in a conversation.
+ * One mutation, so the acquire is atomic: two workers for two tabs cannot
+ * both be told yes.
+ *
+ * Four answers:
+ * - **This room's row is open** — a renewal, or a redispatch after a crash:
+ *   the lease is extended and the worker gets the room's high-water mark so
+ *   its reports stay room-cumulative.
+ * - **This room's row has ended** — a reused token. Refused (`closed`); the
+ *   worker leaves. A room carries the debit's high-water mark, so re-joining
+ *   one that was billed for N seconds would make every fresh report fall
+ *   below N and debit nothing.
+ * - **No row, but another room is live for this learner** — refused
+ *   (`open_session`); the worker leaves. The refusal is what stands between
+ *   two tabs and a ledger that goes negative.
+ * - **No row, too many starts this hour** — refused (`rate_limited`).
+ * - Otherwise the row is inserted with a fresh lease.
+ *
+ * Ownership is asserted before anything is written, on the same terms as
+ * `debit`: a room this learner does not own is not a room this learner can
+ * hold.
+ */
+export const open = internalMutation({
+  args: {
+    room: v.string(),
+    clerkId: v.string(),
+    /** The LiveKit job. Logged on both sides; not stored. */
+    jobId: v.string(),
+    plan: sessionPlanValidator,
+  },
+  returns: v.union(
+    v.object({
+      ok: v.literal(true),
+      balanceSeconds: v.number(),
+      secondsBilled: v.number(),
+    }),
+    v.object({
+      ok: v.literal(false),
+      code: v.union(startRefusalValidator, v.literal("closed")),
+    })
+  ),
+  handler: async (ctx, args) => {
+    const user = await userByClerkId(ctx, args.clerkId)
+    if (user === null) throw new Error("No such user")
+    const now = Date.now()
+
     const existing = await ctx.db
       .query("sessions")
       .withIndex("by_room", (q) => q.eq("room", args.room))
       .unique()
     if (existing !== null) {
-      if (existing.userId !== user._id) throw new Error("Not your session")
-      return null
+      if (existing.userId !== user._id) throw new Error("Not this learner's room")
+      if (existing.endedAt !== undefined) {
+        return { ok: false as const, code: "closed" as const }
+      }
+      await ctx.db.patch(existing._id, { leaseUntil: now + LEASE_TTL_MS })
+      return {
+        ok: true as const,
+        balanceSeconds: await secondsFor(ctx, user._id),
+        secondsBilled: existing.secondsBilled ?? 0,
+      }
     }
 
-    const newest = await ctx.db
-      .query("sessions")
-      .withIndex("by_user_startedAt", (q) => q.eq("userId", user._id))
-      .order("desc")
-      .first()
-    if (
-      newest !== null &&
-      newest.endedAt === undefined &&
-      Date.now() - newest.startedAt < OPEN_SESSION_WINDOW_MS
-    ) {
-      throw new Error(
-        `${OPEN_SESSION_PREFIX} this learner already has a conversation open`
-      )
+    if ((await activeSessionFor(ctx, user._id, now)) !== null) {
+      return { ok: false as const, code: "open_session" as const }
     }
-
-    // `take(MAX_STARTS_PER_HOUR)` rather than a count: the only question is
-    // whether there are at least that many, so the read stops at the answer
-    // and a learner with ten thousand rows costs the same as one with twelve.
-    const since = Date.now() - START_WINDOW_MS
-    const recent = await ctx.db
-      .query("sessions")
-      .withIndex("by_user_startedAt", (q) =>
-        q.eq("userId", user._id).gte("startedAt", since)
-      )
-      .take(MAX_STARTS_PER_HOUR)
-    if (recent.length >= MAX_STARTS_PER_HOUR) {
-      throw new Error(
-        `${RATE_LIMIT_PREFIX} ${MAX_STARTS_PER_HOUR} sessions started in the last hour`
-      )
+    if (await rateLimited(ctx, user._id, now)) {
+      return { ok: false as const, code: "rate_limited" as const }
     }
 
     await ctx.db.insert("sessions", {
       userId: user._id,
       room: args.room,
       plan: args.plan,
-      startedAt: Date.now(),
+      startedAt: now,
+      leaseUntil: now + LEASE_TTL_MS,
     })
-    return null
+    return {
+      ok: true as const,
+      balanceSeconds: await secondsFor(ctx, user._id),
+      secondsBilled: 0,
+    }
   },
 })
 
@@ -174,17 +270,14 @@ export const start = mutation({
  * learner" is the only thing standing between a leaked secret and charging one
  * account for another's room.
  *
- * **`final` closes the row.** `endedAt` is normally written by `sessions.finish`
- * on the client, which is only reached when the learner ends the conversation
- * themselves — a killed worker or a closed tab leaves the row open, and an open
- * row is the one-open-session reservation. That would lock the learner out of
- * their own account for the whole fifteen-minute window over a crash that was
- * not their fault, and the reconciliation cron does not sweep for two hours.
- * So the worker's teardown report says so, and this closes the row.
+ * **`final` closes the row**, and nothing else does while the worker lives:
+ * the browser's `finish` writes the outcome only, so the one-open-session
+ * lease is released by the half that knows spending stopped. A periodic
+ * report RENEWS the lease instead (`LEASE_TTL_MS` ahead), so a worker that is
+ * debiting is a worker that is alive, and a debit is the renewal for free.
  *
- * It never *overwrites* an `endedAt`: the client's `finish` is still the one
- * that writes the outcome, and whichever of the two arrives first is the more
- * accurate end. This only ever fills in an end that nobody else was going to.
+ * `endedAt` is never overwritten: a redispatched job's teardown after the
+ * cron already closed the row leaves the cron's answer standing.
  *
  * **`reason` says why.** It rides the same final report because the worker is
  * the only half that knows — the browser sees a room close and cannot tell a
@@ -237,16 +330,17 @@ export const debit = internalMutation({
       return { balanceSeconds: await secondsFor(ctx, user._id) }
     }
 
-    // Normally written by `/api/token`. A missing row means the worker is
-    // metering a room the app never recorded (a manual dispatch, a token route
-    // that failed after minting): the seconds were still spoken, so they are
-    // still billed — the row is created here so the high-water mark has a home.
+    // Normally written by `open`. A missing row means the worker is metering
+    // a room it never opened (a manual dispatch, an `open` that failed and
+    // was not honoured): the seconds were still spoken, so they are still
+    // billed — the row is created here so the high-water mark has a home.
     if (session === null) {
       const id = await ctx.db.insert("sessions", {
         userId: user._id,
         room: args.room,
         plan: ADOPTED_PLAN,
         startedAt: Date.now(),
+        leaseUntil: Date.now() + LEASE_TTL_MS,
       })
       session = await ctx.db.get(id)
     }
@@ -277,17 +371,25 @@ export const debit = internalMutation({
       secondsBilled?: number
       endedAt?: number
       endReason?: Infer<typeof endReasonValidator>
+      leaseUntil?: number
     } = {}
     if (reported > billed) patch.secondsBilled = reported
     // Only on the worker's last report. A periodic debit, or the debit at a
     // hold on zero, leaves `endedAt` unset: the clock holding at zero is not
     // the end of the session, and a session still running is not history.
+    // Those renew the lease instead — a worker that debits is alive.
     if (
       args.final === true &&
       session !== null &&
       session.endedAt === undefined
     ) {
       patch.endedAt = Date.now()
+    } else if (
+      args.final !== true &&
+      session !== null &&
+      session.endedAt === undefined
+    ) {
+      patch.leaseUntil = Date.now() + LEASE_TTL_MS
     }
     // The reason travels on the same report but is written on its own
     // condition, because the two facts are not the same fact. `endedAt` may
@@ -358,25 +460,21 @@ function clamp(value: string): string {
 }
 
 /**
- * The client's end-of-session snapshot, written to the row the token minted.
+ * The browser's half of the record: the corrections, the meter reading and
+ * the clock flag as the summary screen saw them, written once when the
+ * learner ends the conversation.
  *
- * Called from the surface rather than the worker because the corrections only
- * ever exist on the client: the analyzer streams them to the browser, and the
- * `SessionOutcome` assembled at the moment of ending is the only complete copy.
- * The worker still owns the meter (`debit` above); this writes what was said.
+ * It does NOT close the row (audit 2026-09-06, L1). `endedAt` used to be
+ * written here, and `start` treated it as proof the conversation was over —
+ * so a client that called this on a running room, then started another,
+ * had two workers spending one balance. Closing a tab is a request to end;
+ * the worker's final debit is the proof, and it closes the row within
+ * seconds of the learner leaving. A row the worker never closes is the
+ * cron's, once its lease runs out.
  *
- * Idempotent and non-destructive. `endedAt` is set only if unset, so a second
- * call — a retry, a summary re-mounted — never moves the end of the session,
- * and a room with no row (or another learner's room) is a silent no-op rather
- * than an error: nothing on the summary screen depends on this succeeding.
- *
- * **The client's outcome always wins.** `recordSummary` can write an outcome
- * too, from the corrections the worker saw, as a backstop for a tab that never
- * reached this mutation — but it only writes one where there is none, and this
- * overwrites whatever is there. The client is the half that knows the exact
- * `secondsTalked` and whether the clock ended the session; the worker is only
- * guessing at both. Whichever order the two arrive in, the record ends up the
- * client's if the client ever spoke.
+ * Silent no-op for a room this learner does not own or the app never
+ * recorded: nothing on the summary screen should break because a record is
+ * missing.
  */
 export const finish = mutation({
   args: { room: v.string(), outcome: sessionOutcomeValidator },
@@ -408,7 +506,6 @@ export const finish = mutation({
       }))
 
     await ctx.db.patch(session._id, {
-      endedAt: session.endedAt ?? Date.now(),
       outcome: { ...args.outcome, corrections },
       corrections: corrections.length,
     })
@@ -641,11 +738,11 @@ const HISTORY_LIMIT = 30
  * The learner's finished conversations, newest first — what `/home` lists
  * under History and what its modal reads.
  *
- * Only sessions with an `endedAt`: a row exists from the moment the token is
- * minted, and a conversation that is happening right now is not history. The
- * seconds are the outcome's meter reading where there is one and the billed
- * total otherwise, so a row finished before `outcome` existed still prints an
- * honest number.
+ * Only sessions with an `endedAt`: a row exists from the moment the worker
+ * joins, and a conversation that is happening right now is not history. The
+ * seconds are the worker's billed total where there is one and the outcome's
+ * meter reading otherwise, so a row finished before the meter reported to the
+ * ledger still prints an honest number.
  *
  * The whole corrections array travels with the list rather than behind a
  * per-session query: it is at most 200 short strings, the modal needs it the
@@ -719,7 +816,10 @@ export const history = query({
       room: row.room,
       startedAt: row.startedAt,
       endedAt: row.endedAt ?? row.startedAt,
-      secondsTalked: row.outcome?.secondsTalked ?? row.secondsBilled ?? 0,
+      // The worker's number first: it is what was charged, and the browser
+      // cannot write it (audit 2026-09-06, L9). The outcome's reading is the
+      // fallback for a row from before the meter reported to the ledger.
+      secondsTalked: row.secondsBilled ?? row.outcome?.secondsTalked ?? 0,
       plan: row.plan,
       corrections: row.outcome?.corrections ?? [],
       about: row.about ?? null,
@@ -822,98 +922,60 @@ export const byRoom = query({
 /*  Reconciliation                                                            */
 /* -------------------------------------------------------------------------- */
 
-/** How long a row may stay open before the cron decides nobody is coming back
- * for it. Comfortably longer than any real conversation and longer again than
- * the worker's idle timeout, so this only ever closes rows that are genuinely
- * abandoned. */
-const STALE_SESSION_MS = 2 * 60 * 60 * 1000
+/**
+ * Rows from before the lease existed carry no `leaseUntil`. They are not
+ * live (nothing renews them), but they are not history either until closed,
+ * so the cron still sweeps them by age: comfortably longer than any real
+ * conversation on the old contract.
+ */
+const LEGACY_STALE_MS = 2 * 60 * 60 * 1000
 
-/** One run's ceiling. A cron that could touch the whole table in a single
- * transaction is a cron that eventually fails to run at all; the backlog is
- * drained an hour at a time. */
+/** Rows closed per run. The read is empty almost every time; a burst of a
+ * hundred abandoned rows is a worker outage, and the next run gets the rest. */
 const RECONCILE_BATCH = 100
 
 /**
- * Closes `sessions` rows nobody ever finished — hourly, from `convex/crons.ts`.
+ * Close open rows whose worker is gone. Every five minutes (`crons.ts`).
  *
- * `endedAt` is written by `sessions.finish`, which runs on the client at the
- * end of a conversation. A killed worker, a closed laptop, a crashed tab: the
- * row stays open forever, the conversation never appears in History (which
- * filters on `endedAt`), and — worse — the one-open-session guard would lock
- * the learner out of their own account for as long as the window allows.
+ * A row's lease is renewed by its worker for as long as the worker runs, so an
+ * open row with an expired lease is a worker that died — or a debit ceiling
+ * that stopped it reporting. The learner has not been blocked since the lease
+ * ran out (`open` checks the lease, not the row); this is about History,
+ * which filters on `endedAt`, and about a row not staying half-written
+ * forever.
  *
- * The end it writes is the honest one available: `startedAt + secondsBilled`,
- * i.e. the last moment the ledger has evidence for. Not `Date.now()`, which
- * would invent hours the learner never talked, and not a guess. A row that was
- * never billed at all ends where it started — a zero-length session, which is
- * exactly what it was.
- *
- * `outcome` is left absent: nobody knows what was said, and History prints
- * `secondsBilled` when there is no outcome, so the row reads honestly.
- *
- * `endReason` is written — `"stale"` — but only onto a row that has none.
- * A row the cron closes used to be indistinguishable on the History card from
- * a row written before the field existed, and the two are not the same fact:
- * "nobody ever closed this and we swept it up two hours later" is an answer,
- * and "we do not know" is the absence of one. Never overwritten, on the same
- * rule the worker's reason follows: whoever was actually there when it
- * stopped said it first, and this mutation was not there.
+ * `endedAt` is the last second the ledger can prove — `startedAt` plus what
+ * was billed — not the moment the cron noticed: that would invent minutes
+ * nobody talked. The reason is `stale` only where nobody said otherwise: the
+ * worker's teardown report writes the reason without writing `endedAt` when
+ * the row is already closed, so a row can reach here explained and still
+ * open — and that explanation is better than this one.
  */
-/**
- * Close a row whose room nobody ever joined — a token was minted (which opens
- * the row) and the client then failed to connect: a denied microphone, a
- * closed tab, a remount. No worker ran, so nothing else will close it, and
- * until it closes `start` refuses this learner for `OPEN_SESSION_WINDOW_MS`.
- *
- * Operator-run for now (`npx convex run sessions:abandonUnjoined`); the
- * server-owned lease in the launch audit (L1/L2) makes this automatic.
- * Refuses a row the worker touched: that one has money on it and belongs to
- * the worker's teardown or the cron.
- */
-export const abandonUnjoined = internalMutation({
-  args: { room: v.string() },
-  returns: v.boolean(),
-  handler: async (ctx, args) => {
-    const session = await ctx.db
-      .query("sessions")
-      .withIndex("by_room", (q) => q.eq("room", args.room))
-      .unique()
-    if (
-      session === null ||
-      session.endedAt !== undefined ||
-      session.secondsBilled !== undefined
-    ) {
-      return false
-    }
-    await ctx.db.patch(session._id, {
-      endedAt: session.startedAt,
-      endReason: session.endReason ?? "stale",
-    })
-    return true
-  },
-})
-
 export const reconcileStale = internalMutation({
   args: {},
   returns: v.number(),
   handler: async (ctx) => {
-    const cutoff = Date.now() - STALE_SESSION_MS
-    const stale = await ctx.db
+    const now = Date.now()
+    const expired = await ctx.db
       .query("sessions")
-      .withIndex("by_endedAt_startedAt", (q) =>
-        q.eq("endedAt", undefined).lt("startedAt", cutoff)
+      .withIndex("by_endedAt_leaseUntil", (q) =>
+        q.eq("endedAt", undefined).lt("leaseUntil", now)
       )
       .take(RECONCILE_BATCH)
+    // `lt(leaseUntil, now)` on an optional field also matches rows with no
+    // lease at all (absent sorts below every number). Those are the legacy
+    // rows, and they close by age, not on sight.
+    const stale = expired.filter(
+      (session) =>
+        session.leaseUntil !== undefined ||
+        now - session.startedAt > LEGACY_STALE_MS
+    )
 
     for (const session of stale) {
       const patch: {
         endedAt: number
         endReason?: Infer<typeof endReasonValidator>
       } = { endedAt: session.startedAt + (session.secondsBilled ?? 0) * 1000 }
-      // Only where nobody said why. The worker's teardown report writes the
-      // reason without writing `endedAt` when the client already closed the
-      // row, so a row can reach here explained and still open — and that
-      // explanation is better than this one.
       if (session.endReason === undefined) patch.endReason = "stale"
       await ctx.db.patch(session._id, patch)
     }

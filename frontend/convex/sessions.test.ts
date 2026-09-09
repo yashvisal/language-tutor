@@ -7,11 +7,9 @@ import schema from "./schema"
 import type { sessionPlanValidator } from "./validators"
 import {
   DELTA_CAP_PREFIX,
+  LEASE_TTL_MS,
   MAX_DELTA_PER_CALL_S,
   MAX_STARTS_PER_HOUR,
-  OPEN_SESSION_PREFIX,
-  OPEN_SESSION_WINDOW_MS,
-  RATE_LIMIT_PREFIX,
   SIGNUP_GRANT_SECONDS,
   START_WINDOW_MS,
 } from "../lib/billing"
@@ -98,106 +96,213 @@ function debitsOf(t: TestConvex, userId: Id<"users">) {
   })
 }
 
-describe("sessions.start", () => {
+/**
+ * The worker joining a room. This is the only thing that opens a session row
+ * now: the token route signs a token and writes nothing, so every test that
+ * used to "start" a session by calling the client's mutation reaches the same
+ * state by pretending a worker turned up. Internal, so there is no identity to
+ * act as — the clerk id is the argument.
+ */
+function openRoom(
+  t: TestConvex,
+  clerkId: string,
+  room: string,
+  jobId = "job_1"
+) {
+  return t.mutation(internal.sessions.open, { room, clerkId, jobId, plan: PLAN })
+}
+
+/** This room's row, read straight out of the database. */
+function roomRow(t: TestConvex, room: string) {
+  return t.run(async (ctx) =>
+    ctx.db
+      .query("sessions")
+      .withIndex("by_room", (q) => q.eq("room", room))
+      .unique()
+  )
+}
+
+/** Move a room's lease, standing in for time passing. */
+async function setLease(t: TestConvex, room: string, leaseUntil: number) {
+  const row = await roomRow(t, room)
+  await t.run(async (ctx) => ctx.db.patch(row!._id, { leaseUntil }))
+  return leaseUntil
+}
+
+/** Close a room's row the way the worker's final debit or the cron does. */
+async function closeRoom(t: TestConvex, room: string, endedAt = Date.now()) {
+  const row = await roomRow(t, room)
+  await t.run(async (ctx) => ctx.db.patch(row!._id, { endedAt }))
+  return endedAt
+}
+
+/**
+ * Taking the lease.
+ *
+ * The row is the worker's now: it is inserted when the worker joins, not when
+ * a token is minted, and the one-open-session guard is a LEASE rather than an
+ * open flag. That changes what has to be true. A refusal is a returned code,
+ * not an exception, because the worker on the other end has to leave politely;
+ * and a row whose lease has run out must not lock a learner out of their own
+ * account, because the worker holding it is dead.
+ */
+describe("sessions.open", () => {
   test("refuses a room another learner already owns", async () => {
     const t = setup()
     await makeLearner(t, "user_owner")
     await makeLearner(t, "user_attacker")
 
     const room = "lesson-owner-1-aaaa"
-    await t
-      .withIdentity({ subject: "user_owner" })
-      .mutation(api.sessions.start, { room, plan: PLAN })
+    await openRoom(t, "user_owner", room)
 
     // The exploit B1 describes: the room carries the debit's high-water mark,
     // so joining a room that has already been billed makes a fresh worker
-    // clock report under the mark and debit nothing. The route no longer lets
-    // a client name a room; this is the lock behind that one.
-    await expect(
-      t
-        .withIdentity({ subject: "user_attacker" })
-        .mutation(api.sessions.start, { room, plan: PLAN })
-    ).rejects.toThrow(/Not your session/)
+    // clock report under the mark and debit nothing. This is the lock behind
+    // the room name.
+    await expect(openRoom(t, "user_attacker", room)).rejects.toThrow(
+      /Not this learner's room/
+    )
   })
 
-  test("a retried token request for the learner's own room is a no-op", async () => {
+  test("refuses a learner who has no account row", async () => {
+    const t = setup()
+    await expect(openRoom(t, "user_nobody", "room-a")).rejects.toThrow(
+      /No such user/
+    )
+  })
+
+  test("opens the row with a lease in the future", async () => {
     const t = setup()
     const userId = await makeLearner(t, "user_owner")
-    const as = t.withIdentity({ subject: "user_owner" })
-    const room = "lesson-owner-1-aaaa"
 
-    await as.mutation(api.sessions.start, { room, plan: PLAN })
-    await as.mutation(api.sessions.start, { room, plan: PLAN })
+    const before = Date.now()
+    expect(await openRoom(t, "user_owner", "room-a")).toEqual({
+      ok: true,
+      balanceSeconds: GRANT,
+      secondsBilled: 0,
+    })
 
-    // One row, not two: two rows would give the debit two high-water marks.
-    expect(await sessionsOf(t, userId)).toHaveLength(1)
+    const [row] = await sessionsOf(t, userId)
+    // The lease is what makes this row a live conversation: the guard below
+    // reads it, and so does the cron.
+    expect(row.leaseUntil).toBeGreaterThanOrEqual(before + LEASE_TTL_MS)
+    expect(row.endedAt).toBeUndefined()
   })
 
-  test("refuses a second conversation while one is open", async () => {
+  test("refuses a second conversation while one is live", async () => {
     const t = setup()
-    await makeLearner(t, "user_owner")
-    const as = t.withIdentity({ subject: "user_owner" })
+    const userId = await makeLearner(t, "user_owner")
 
-    await as.mutation(api.sessions.start, { room: "room-a", plan: PLAN })
+    await openRoom(t, "user_owner", "room-a")
 
     // Two tabs, one balance: each worker budgets the *whole* balance, both
     // debit at teardown, and the ledger goes negative by (N-1) x balance.
-    await expect(
-      as.mutation(api.sessions.start, { room: "room-b", plan: PLAN })
-    ).rejects.toThrow(new RegExp(OPEN_SESSION_PREFIX))
+    expect(await openRoom(t, "user_owner", "room-b")).toEqual({
+      ok: false,
+      code: "open_session",
+    })
+    // Refused means nothing written — the second worker gets no row to meter.
+    expect(await sessionsOf(t, userId)).toHaveLength(1)
   })
 
   test("allows the next conversation once the open one has ended", async () => {
     const t = setup()
     const userId = await makeLearner(t, "user_owner")
-    const as = t.withIdentity({ subject: "user_owner" })
 
-    await as.mutation(api.sessions.start, { room: "room-a", plan: PLAN })
-    await t.run(async (ctx) => {
-      const open = await ctx.db
-        .query("sessions")
-        .withIndex("by_room", (q) => q.eq("room", "room-a"))
-        .unique()
-      await ctx.db.patch(open!._id, { endedAt: Date.now() })
-    })
+    await openRoom(t, "user_owner", "room-a")
+    await closeRoom(t, "room-a")
 
-    await as.mutation(api.sessions.start, { room: "room-b", plan: PLAN })
+    expect((await openRoom(t, "user_owner", "room-b")).ok).toBe(true)
     expect(await sessionsOf(t, userId)).toHaveLength(2)
   })
 
-  test("allows the next conversation once the open one is stale", async () => {
+  test("allows the next conversation once the lease has run out", async () => {
     const t = setup()
     const userId = await makeLearner(t, "user_owner")
 
-    // A row nobody ever closed — a killed worker, a crashed tab. The guard is
-    // a window, not a lock: a learner must not be shut out of their own
-    // account by a crash while the reconciliation cron catches up.
-    await t.run(async (ctx) => {
-      await ctx.db.insert("sessions", {
-        userId,
-        room: "room-stale",
-        plan: PLAN,
-        startedAt: Date.now() - OPEN_SESSION_WINDOW_MS - 1000,
-      })
-    })
+    // A row nobody ever closed — a killed worker, a process that vanished.
+    // The lease is a window, not a lock: a learner must not be shut out of
+    // their own account by a crash while the reconciliation cron catches up.
+    await openRoom(t, "user_owner", "room-a")
+    await setLease(t, "room-a", Date.now() - 1000)
 
-    await t
-      .withIdentity({ subject: "user_owner" })
-      .mutation(api.sessions.start, { room: "room-b", plan: PLAN })
+    expect((await openRoom(t, "user_owner", "room-b")).ok).toBe(true)
     expect(await sessionsOf(t, userId)).toHaveLength(2)
   })
 
-  test("one learner's open session does not block another's", async () => {
+  test("a row from before the lease existed does not block", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+
+    // Nothing renews a legacy row, so nothing would ever release it. It is not
+    // live; the cron closes it by age instead.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("sessions", {
+        userId,
+        room: "room-legacy",
+        plan: PLAN,
+        startedAt: Date.now(),
+      })
+    })
+
+    expect((await openRoom(t, "user_owner", "room-b")).ok).toBe(true)
+    expect(await sessionsOf(t, userId)).toHaveLength(2)
+  })
+
+  test("re-opening the same room renews the lease and hands back its meter", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+    const room = "room-a"
+
+    await openRoom(t, "user_owner", room)
+    await t.mutation(internal.sessions.debit, {
+      room,
+      clerkId: "user_owner",
+      jobId: "job_1",
+      seconds: 90,
+      seq: 1,
+    })
+    const shortened = await setLease(t, room, Date.now() + 1000)
+
+    // A renewal, or a redispatch after a crash: either way the worker needs
+    // the room's high-water mark so its own reports stay room-cumulative
+    // rather than restarting at zero under a mark of 90.
+    expect(await openRoom(t, "user_owner", room, "job_2")).toEqual({
+      ok: true,
+      balanceSeconds: GRANT - 90,
+      secondsBilled: 90,
+    })
+
+    const rows = await sessionsOf(t, userId)
+    // One row, not two: two rows would give the debit two high-water marks.
+    expect(rows).toHaveLength(1)
+    expect(rows[0].leaseUntil).toBeGreaterThan(shortened)
+  })
+
+  test("refuses a room that has already ended", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+
+    await openRoom(t, "user_owner", "room-a")
+    await closeRoom(t, "room-a")
+
+    // A reused token. The room carries the debit's high-water mark, so a
+    // worker re-joining one that was billed for N seconds would report under
+    // the mark for its whole run and bill nothing.
+    expect(await openRoom(t, "user_owner", "room-a", "job_2")).toEqual({
+      ok: false,
+      code: "closed",
+    })
+    expect(await sessionsOf(t, userId)).toHaveLength(1)
+  })
+
+  test("one learner's live session does not block another's", async () => {
     const t = setup()
     await makeLearner(t, "user_a")
     const userB = await makeLearner(t, "user_b")
 
-    await t
-      .withIdentity({ subject: "user_a" })
-      .mutation(api.sessions.start, { room: "room-a", plan: PLAN })
-    await t
-      .withIdentity({ subject: "user_b" })
-      .mutation(api.sessions.start, { room: "room-b", plan: PLAN })
+    await openRoom(t, "user_a", "room-a")
+    expect((await openRoom(t, "user_b", "room-b")).ok).toBe(true)
 
     expect(await sessionsOf(t, userB)).toHaveLength(1)
   })
@@ -215,20 +320,12 @@ describe("sessions.start", () => {
  * Every start here is closed before the next, so what is being tested is the
  * rate limit and never the one-open-session guard sitting in front of it.
  */
-describe("sessions.start rate limit", () => {
-  /** Start a conversation and close it, the way a learner who finishes one and
+describe("sessions.open rate limit", () => {
+  /** Open a conversation and close it, the way a learner who finishes one and
    * begins another leaves the table. */
   async function startAndEnd(t: TestConvex, clerkId: string, room: string) {
-    await t
-      .withIdentity({ subject: clerkId })
-      .mutation(api.sessions.start, { room, plan: PLAN })
-    await t.run(async (ctx) => {
-      const row = await ctx.db
-        .query("sessions")
-        .withIndex("by_room", (q) => q.eq("room", room))
-        .unique()
-      await ctx.db.patch(row!._id, { endedAt: Date.now() })
-    })
+    await openRoom(t, clerkId, room)
+    await closeRoom(t, room)
   }
 
   test("allows the whole hour's allowance and refuses the one after it", async () => {
@@ -243,11 +340,10 @@ describe("sessions.start rate limit", () => {
     // never meet it.
     expect(await sessionsOf(t, userId)).toHaveLength(MAX_STARTS_PER_HOUR)
 
-    await expect(
-      t
-        .withIdentity({ subject: "user_owner" })
-        .mutation(api.sessions.start, { room: "room-over", plan: PLAN })
-    ).rejects.toThrow(new RegExp(RATE_LIMIT_PREFIX))
+    expect(await openRoom(t, "user_owner", "room-over")).toEqual({
+      ok: false,
+      code: "rate_limited",
+    })
     // Refused means nothing written: a refused start must not itself count
     // toward the window, or the limit would never lift.
     expect(await sessionsOf(t, userId)).toHaveLength(MAX_STARTS_PER_HOUR)
@@ -271,9 +367,7 @@ describe("sessions.start rate limit", () => {
       }
     })
 
-    await t
-      .withIdentity({ subject: "user_owner" })
-      .mutation(api.sessions.start, { room: "room-today", plan: PLAN })
+    expect((await openRoom(t, "user_owner", "room-today")).ok).toBe(true)
     expect(await sessionsOf(t, userId)).toHaveLength(MAX_STARTS_PER_HOUR + 1)
   })
 
@@ -288,9 +382,7 @@ describe("sessions.start rate limit", () => {
 
     // The limit is per learner, and it is read off `by_user_startedAt` with
     // the user id fixed — a busy neighbour cannot lock anyone else out.
-    await t
-      .withIdentity({ subject: "user_b" })
-      .mutation(api.sessions.start, { room: "b-0", plan: PLAN })
+    expect((await openRoom(t, "user_b", "b-0")).ok).toBe(true)
     expect(await sessionsOf(t, userB)).toHaveLength(1)
   })
 
@@ -298,17 +390,71 @@ describe("sessions.start rate limit", () => {
     const t = setup()
     await makeLearner(t, "user_owner")
 
-    // The allowance is exactly used up AND the last one is still running.
-    // Both refusals apply; the learner must get the one they can act on.
+    // The allowance is exactly used up AND the last one is still live. Both
+    // refusals apply; the learner must get the one they can act on.
     for (let i = 0; i < MAX_STARTS_PER_HOUR - 1; i++) {
       await startAndEnd(t, "user_owner", `room-${i}`)
     }
-    const as = t.withIdentity({ subject: "user_owner" })
-    await as.mutation(api.sessions.start, { room: "room-open", plan: PLAN })
+    await openRoom(t, "user_owner", "room-open")
 
-    await expect(
-      as.mutation(api.sessions.start, { room: "room-next", plan: PLAN })
-    ).rejects.toThrow(new RegExp(OPEN_SESSION_PREFIX))
+    expect(await openRoom(t, "user_owner", "room-next")).toEqual({
+      ok: false,
+      code: "open_session",
+    })
+  })
+})
+
+/**
+ * The token route's pre-check. It is a READ, and it can be stale by the time a
+ * worker joins — `open` is the check that counts. This exists so a learner
+ * with a second tab hears "you already have one running" before a token is
+ * minted, rather than from a worker that turned up and left again.
+ */
+describe("sessions.startCheck", () => {
+  const check = (t: TestConvex, clerkId: string) =>
+    t.withIdentity({ subject: clerkId }).query(api.sessions.startCheck, {})
+
+  test("says so when the learner has no account row yet", async () => {
+    const t = setup()
+    // Signed in at Clerk, but `users.ensureUser` has not landed. The route
+    // needs to tell those apart from a refusal.
+    expect(await check(t, "user_new")).toBe("no_account")
+  })
+
+  test("is ok for a learner with nothing running", async () => {
+    const t = setup()
+    await makeLearner(t, "user_owner")
+    expect(await check(t, "user_owner")).toBe("ok")
+  })
+
+  test("reports a live conversation", async () => {
+    const t = setup()
+    await makeLearner(t, "user_owner")
+    await openRoom(t, "user_owner", "room-a")
+    expect(await check(t, "user_owner")).toBe("open_session")
+
+    // ...and stops reporting one the moment the lease runs out, so a crash
+    // does not lock the learner out of their own account.
+    await setLease(t, "room-a", Date.now() - 1000)
+    expect(await check(t, "user_owner")).toBe("ok")
+  })
+
+  test("reports the hourly limit", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+    const now = Date.now()
+    await t.run(async (ctx) => {
+      for (let i = 0; i < MAX_STARTS_PER_HOUR; i++) {
+        await ctx.db.insert("sessions", {
+          userId,
+          room: `room-${i}`,
+          plan: PLAN,
+          startedAt: now - 1000,
+          endedAt: now - 500,
+        })
+      }
+    })
+    expect(await check(t, "user_owner")).toBe("rate_limited")
   })
 })
 
@@ -318,9 +464,7 @@ describe("sessions.debit", () => {
   async function started(clerkId = "user_owner") {
     const t = setup()
     const userId = await makeLearner(t, clerkId)
-    await t
-      .withIdentity({ subject: clerkId })
-      .mutation(api.sessions.start, { room, plan: PLAN })
+    await openRoom(t, clerkId, room)
     return { t, userId }
   }
 
@@ -488,16 +632,42 @@ describe("sessions.debit", () => {
     expect(after.secondsBilled).toBe(95)
   })
 
-  test("never overwrites an end the client already wrote", async () => {
+  test("a periodic report renews the lease and a final one does not", async () => {
     const { t, userId } = await started()
-    const endedAt = Date.now() - 5000
-    await t.run(async (ctx) => {
-      const [session] = await ctx.db
-        .query("sessions")
-        .withIndex("by_user", (q) => q.eq("userId", userId))
-        .collect()
-      await ctx.db.patch(session._id, { endedAt })
+    const shortened = await setLease(t, room, Date.now() + 1000)
+
+    // A worker that is debiting is a worker that is alive, so the renewal
+    // comes for free with the report and the cron leaves the row alone.
+    await t.mutation(internal.sessions.debit, {
+      room,
+      clerkId: "user_owner",
+      jobId: "job_1",
+      seconds: 60,
+      seq: 1,
     })
+    const live = (await sessionsOf(t, userId))[0]
+    expect(live.leaseUntil).toBeGreaterThan(shortened)
+    expect(live.endedAt).toBeUndefined()
+
+    // The last report closes the row instead. It leaves the lease where it
+    // was: `endedAt` is what makes a row history, and a closed row is not
+    // live whatever its lease says.
+    await t.mutation(internal.sessions.debit, {
+      room,
+      clerkId: "user_owner",
+      jobId: "job_1",
+      seconds: 90,
+      seq: 2,
+      final: true,
+    })
+    const closed = (await sessionsOf(t, userId))[0]
+    expect(closed.endedAt).toBeTypeOf("number")
+    expect(closed.leaseUntil).toBe(live.leaseUntil)
+  })
+
+  test("never overwrites an end somebody already wrote", async () => {
+    const { t, userId } = await started()
+    const endedAt = await closeRoom(t, room, Date.now() - 5000)
 
     await t.mutation(internal.sessions.debit, {
       room,
@@ -508,16 +678,16 @@ describe("sessions.debit", () => {
       final: true,
     })
 
-    // `sessions.finish` wrote the outcome and the end; the worker's teardown
-    // only ever fills in an end nobody else was going to.
+    // The cron closed this row when its lease ran out; a redispatched job's
+    // teardown is guessing about a session it did not see end.
     expect((await sessionsOf(t, userId))[0].endedAt).toBe(endedAt)
   })
 
   test("a final report frees the learner to start again", async () => {
     const { t, userId } = await started()
 
-    // The crash case: no `sessions.finish`, so without the final debit this
-    // learner would be locked out of their own account for fifteen minutes.
+    // The crash case: the browser's `finish` no longer closes anything, so
+    // without the final debit this learner waits out the whole lease.
     await t.mutation(internal.sessions.debit, {
       room,
       clerkId: "user_owner",
@@ -527,9 +697,7 @@ describe("sessions.debit", () => {
       final: true,
     })
 
-    await t
-      .withIdentity({ subject: "user_owner" })
-      .mutation(api.sessions.start, { room: "room-next", plan: PLAN })
+    expect((await openRoom(t, "user_owner", "room-next")).ok).toBe(true)
     expect(await sessionsOf(t, userId)).toHaveLength(2)
   })
 
@@ -568,7 +736,11 @@ describe("sessions.debit", () => {
     })
 
     expect(result.balanceSeconds).toBe(GRANT - 42)
-    expect(await sessionsOf(t, userId)).toHaveLength(1)
+    const rows = await sessionsOf(t, userId)
+    expect(rows).toHaveLength(1)
+    // The adopted row is a live conversation like any other: something is
+    // metering it, so it holds a lease and the cron will not close it.
+    expect(rows[0].leaseUntil).toBeGreaterThan(Date.now())
   })
 })
 
@@ -576,9 +748,7 @@ describe("sessions.billedSecondsForRoom", () => {
   test("is what a starting job seeds its report base with", async () => {
     const t = setup()
     await makeLearner(t, "user_owner")
-    await t
-      .withIdentity({ subject: "user_owner" })
-      .mutation(api.sessions.start, { room: "room-a", plan: PLAN })
+    await openRoom(t, "user_owner", "room-a")
 
     expect(
       await t.query(internal.sessions.billedSecondsForRoom, { room: "room-a" })
@@ -603,17 +773,20 @@ describe("sessions.billedSecondsForRoom", () => {
 })
 
 describe("sessions.reconcileStale", () => {
-  test("closes an abandoned row at the last second the ledger can prove", async () => {
+  test("closes a row whose lease ran out, at the last second the ledger can prove", async () => {
     const t = setup()
     const userId = await makeLearner(t, "user_owner")
-    const startedAt = Date.now() - 3 * 60 * 60 * 1000
+    const now = Date.now()
+    const startedAt = now - 3 * 60 * 60 * 1000
+    const expired = now - 1000
 
-    const [abandoned, unbilled, recent] = await t.run(async (ctx) => [
+    const [abandoned, unbilled, justDied, live] = await t.run(async (ctx) => [
       await ctx.db.insert("sessions", {
         userId,
         room: "room-abandoned",
         plan: PLAN,
         startedAt,
+        leaseUntil: expired,
         secondsBilled: 120,
       }),
       await ctx.db.insert("sessions", {
@@ -621,33 +794,84 @@ describe("sessions.reconcileStale", () => {
         room: "room-unbilled",
         plan: PLAN,
         startedAt,
+        leaseUntil: expired,
       }),
+      // Age is not the question any more: a worker that died a minute into a
+      // conversation leaves a row that is minutes old and already dead.
+      await ctx.db.insert("sessions", {
+        userId,
+        room: "room-just-died",
+        plan: PLAN,
+        startedAt: now - 60_000,
+        leaseUntil: expired,
+        secondsBilled: 30,
+      }),
+      // ...and neither is age a reason to close one. A long conversation with
+      // a worker still renewing it is a conversation.
       await ctx.db.insert("sessions", {
         userId,
         room: "room-live",
         plan: PLAN,
-        startedAt: Date.now(),
+        startedAt,
+        leaseUntil: now + LEASE_TTL_MS,
       }),
     ])
 
-    expect(await t.mutation(internal.sessions.reconcileStale, {})).toBe(2)
+    expect(await t.mutation(internal.sessions.reconcileStale, {})).toBe(3)
 
     const rows = await t.run(async (ctx) => ({
       abandoned: await ctx.db.get(abandoned),
       unbilled: await ctx.db.get(unbilled),
-      recent: await ctx.db.get(recent),
+      justDied: await ctx.db.get(justDied),
+      live: await ctx.db.get(live),
     }))
     // Not `Date.now()`: that would invent hours nobody talked.
     expect(rows.abandoned!.endedAt).toBe(startedAt + 120_000)
     expect(rows.unbilled!.endedAt).toBe(startedAt)
-    // A conversation that is happening right now is not abandoned.
-    expect(rows.recent!.endedAt).toBeUndefined()
+    expect(rows.justDied!.endedAt).toBe(now - 60_000 + 30_000)
+    expect(rows.live!.endedAt).toBeUndefined()
     // ...and it says so. A row the cron swept up used to be indistinguishable
     // on the History card from a row written before `endReason` existed, and
     // the two are not the same fact.
     expect(rows.abandoned!.endReason).toBe("stale")
     expect(rows.unbilled!.endReason).toBe("stale")
-    expect(rows.recent!.endReason).toBeUndefined()
+    expect(rows.justDied!.endReason).toBe("stale")
+    expect(rows.live!.endReason).toBeUndefined()
+  })
+
+  test("sweeps a row from before the lease existed by age alone", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+    const now = Date.now()
+
+    // A legacy row carries no lease, so "the lease ran out" says nothing
+    // about it. Nothing renews it either, so the only honest test left is
+    // whether it is older than any real conversation.
+    const [young, old] = await t.run(async (ctx) => [
+      await ctx.db.insert("sessions", {
+        userId,
+        room: "room-legacy-young",
+        plan: PLAN,
+        startedAt: now - 60 * 60 * 1000,
+      }),
+      await ctx.db.insert("sessions", {
+        userId,
+        room: "room-legacy-old",
+        plan: PLAN,
+        startedAt: now - 3 * 60 * 60 * 1000,
+        secondsBilled: 60,
+      }),
+    ])
+
+    expect(await t.mutation(internal.sessions.reconcileStale, {})).toBe(1)
+
+    const rows = await t.run(async (ctx) => ({
+      young: await ctx.db.get(young),
+      old: await ctx.db.get(old),
+    }))
+    expect(rows.young!.endedAt).toBeUndefined()
+    expect(rows.old!.endedAt).toBe(now - 3 * 60 * 60 * 1000 + 60_000)
+    expect(rows.old!.endReason).toBe("stale")
   })
 
   test("never overwrites a reason somebody who was there already gave", async () => {
@@ -677,73 +901,6 @@ describe("sessions.reconcileStale", () => {
   })
 })
 
-describe("sessions.abandonUnjoined", () => {
-  test("closes an open row the worker never touched, and only that", async () => {
-    const t = setup()
-    const userId = await makeLearner(t, "user_owner")
-    const startedAt = Date.now() - 60_000
-    const [unjoined, billed, closed] = await t.run(async (ctx) => [
-      await ctx.db.insert("sessions", {
-        userId,
-        room: "room-unjoined",
-        plan: PLAN,
-        startedAt,
-      }),
-      await ctx.db.insert("sessions", {
-        userId,
-        room: "room-billed",
-        plan: PLAN,
-        startedAt,
-        secondsBilled: 30,
-      }),
-      await ctx.db.insert("sessions", {
-        userId,
-        room: "room-closed",
-        plan: PLAN,
-        startedAt,
-        endedAt: startedAt + 5_000,
-      }),
-    ])
-
-    expect(
-      await t.mutation(internal.sessions.abandonUnjoined, {
-        room: "room-unjoined",
-      })
-    ).toBe(true)
-    expect(
-      await t.mutation(internal.sessions.abandonUnjoined, {
-        room: "room-billed",
-      })
-    ).toBe(false)
-    expect(
-      await t.mutation(internal.sessions.abandonUnjoined, {
-        room: "room-closed",
-      })
-    ).toBe(false)
-    expect(
-      await t.mutation(internal.sessions.abandonUnjoined, {
-        room: "room-missing",
-      })
-    ).toBe(false)
-
-    const rows = await t.run(async (ctx) => ({
-      unjoined: await ctx.db.get(unjoined),
-      billed: await ctx.db.get(billed),
-      closed: await ctx.db.get(closed),
-    }))
-    // Nobody talked: the row ends when it began, and says it was swept.
-    expect(rows.unjoined!.endedAt).toBe(startedAt)
-    expect(rows.unjoined!.endReason).toBe("stale")
-    expect(rows.billed!.endedAt).toBeUndefined()
-    expect(rows.closed!.endedAt).toBe(startedAt + 5_000)
-
-    // And the learner can start again at once.
-    await t
-      .withIdentity({ subject: "user_owner" })
-      .mutation(api.sessions.start, { room: "room-next", plan: PLAN })
-  })
-})
-
 /* -------------------------------------------------------------------------- */
 /*  The after-session record                                                  */
 /* -------------------------------------------------------------------------- */
@@ -766,9 +923,7 @@ describe("sessions.recordSummary", () => {
   test("writes the record onto the row the token minted", async () => {
     const t = setup()
     const userId = await makeLearner(t, "user_owner")
-    await t
-      .withIdentity({ subject: "user_owner" })
-      .mutation(api.sessions.start, { room, plan: PLAN })
+    await openRoom(t, "user_owner", room)
 
     await t.mutation(internal.sessions.recordSummary, {
       room,
@@ -887,9 +1042,7 @@ describe("sessions.recordSummary", () => {
     const t = setup()
     const userId = await makeLearner(t, "user_owner")
     await makeLearner(t, "user_other")
-    await t
-      .withIdentity({ subject: "user_owner" })
-      .mutation(api.sessions.start, { room, plan: PLAN })
+    await openRoom(t, "user_owner", room)
 
     // A leaked secret must not let one account's transcript be written into
     // another account's history.
@@ -979,7 +1132,7 @@ describe("sessions.byRoom", () => {
     const t = setup()
     await makeLearner(t, "user_owner")
     const as = t.withIdentity({ subject: "user_owner" })
-    await as.mutation(api.sessions.start, { room, plan: PLAN })
+    await openRoom(t, "user_owner", room)
     await t.mutation(internal.sessions.recordSummary, {
       room,
       clerkId: "user_owner",
@@ -1010,7 +1163,7 @@ describe("sessions.byRoom", () => {
     const t = setup()
     await makeLearner(t, "user_owner")
     const as = t.withIdentity({ subject: "user_owner" })
-    await as.mutation(api.sessions.start, { room, plan: PLAN })
+    await openRoom(t, "user_owner", room)
 
     const record = await as.query(api.sessions.byRoom, { room })
     expect(record).toMatchObject({
@@ -1027,9 +1180,7 @@ describe("sessions.byRoom", () => {
     const t = setup()
     await makeLearner(t, "user_owner")
     await makeLearner(t, "user_other")
-    await t
-      .withIdentity({ subject: "user_owner" })
-      .mutation(api.sessions.start, { room, plan: PLAN })
+    await openRoom(t, "user_owner", room)
     await t.mutation(internal.sessions.recordSummary, {
       room,
       clerkId: "user_owner",
@@ -1055,7 +1206,7 @@ describe("sessions.byRoom", () => {
     const t = setup()
     await makeLearner(t, "user_owner")
     const as = t.withIdentity({ subject: "user_owner" })
-    await as.mutation(api.sessions.start, { room, plan: PLAN })
+    await openRoom(t, "user_owner", room)
 
     // Nothing renders `estCostUsd` — it is what the session COST to run, not
     // what the learner was billed. It rides this query because this is the one
@@ -1206,7 +1357,7 @@ describe("the corrections backstop", () => {
   async function started(t: TestConvex) {
     await makeLearner(t, "user_owner")
     const as = t.withIdentity({ subject: "user_owner" })
-    await as.mutation(api.sessions.start, { room, plan: PLAN })
+    await openRoom(t, "user_owner", room)
     return as
   }
 
@@ -1296,6 +1447,95 @@ describe("the corrections backstop", () => {
     expect(rows[0].corrections).toHaveLength(1)
     expect(rows[0].secondsTalked).toBe(137)
     expect(rows[0].about).toBe("Ordering at a cafe.")
+  })
+})
+
+/**
+ * The browser's half of the record — and only that half.
+ *
+ * `finish` used to write `endedAt`, and `start` read it as proof the
+ * conversation was over: a client that called it on a running room and then
+ * started another had two workers spending one balance (audit 2026-09-06,
+ * L1). Closing a tab is a request to end. The worker's final debit is the
+ * proof, so what is tested here is as much what `finish` no longer does.
+ */
+describe("sessions.finish", () => {
+  const room = "lesson-owner-1-aaaa"
+
+  const OUTCOME = {
+    corrections: [
+      {
+        id: "c1",
+        original: "yo va",
+        replacement: "yo voy",
+        category: "agreement",
+        severity: "error",
+        explanation: "First person of ir is voy.",
+      },
+    ],
+    secondsTalked: 87,
+    endedByClock: true,
+  }
+
+  test("writes the outcome and the count, and leaves the row open", async () => {
+    const t = setup()
+    await makeLearner(t, "user_owner")
+    const as = t.withIdentity({ subject: "user_owner" })
+    await openRoom(t, "user_owner", room)
+
+    await as.mutation(api.sessions.finish, { room, outcome: OUTCOME })
+
+    const row = await roomRow(t, room)
+    expect(row!.outcome?.corrections[0].id).toBe("c1")
+    expect(row!.corrections).toBe(1)
+    // The row is still live: the lease is untouched and nothing has closed it,
+    // so the learner cannot start a second conversation by closing the tab.
+    expect(row!.endedAt).toBeUndefined()
+    expect(await openRoom(t, "user_owner", "room-next")).toEqual({
+      ok: false,
+      code: "open_session",
+    })
+  })
+
+  test("the row reaches History only once the worker closes it", async () => {
+    const t = setup()
+    await makeLearner(t, "user_owner")
+    const as = t.withIdentity({ subject: "user_owner" })
+    await openRoom(t, "user_owner", room)
+
+    await as.mutation(api.sessions.finish, { room, outcome: OUTCOME })
+    // History lists finished rows, and this one is not finished yet.
+    expect(await as.query(api.sessions.history, {})).toEqual([])
+
+    await t.mutation(internal.sessions.debit, {
+      room,
+      clerkId: "user_owner",
+      jobId: "job_1",
+      seconds: 90,
+      seq: 1,
+      final: true,
+    })
+
+    const rows = await as.query(api.sessions.history, {})
+    expect(rows).toHaveLength(1)
+    // The worker's number, not the browser's 87: it is what was charged, and
+    // the browser cannot write it.
+    expect(rows[0].secondsTalked).toBe(90)
+  })
+
+  test("is a silent no-op on a room the learner does not own", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+    await makeLearner(t, "user_other")
+    await openRoom(t, "user_owner", room)
+
+    // Nothing on the summary screen should break because a record is missing
+    // — but nothing of somebody else's should be written either.
+    await t
+      .withIdentity({ subject: "user_other" })
+      .mutation(api.sessions.finish, { room, outcome: OUTCOME })
+
+    expect((await sessionsOf(t, userId))[0].outcome).toBeUndefined()
   })
 })
 
@@ -1462,7 +1702,7 @@ describe("the goal, the counts and the study residue", () => {
     const t = setup()
     await makeLearner(t, "user_owner")
     const as = t.withIdentity({ subject: "user_owner" })
-    await as.mutation(api.sessions.start, { room, plan: PLAN })
+    await openRoom(t, "user_owner", room)
 
     // Nothing written yet: "the worker never measured this" is a state the
     // surfaces must render, and `0` would make it look like a silent session.
@@ -1641,21 +1881,17 @@ describe("why a session ended", () => {
     expect((await rowOf(t))!.endedAt).toBeTypeOf("number")
   })
 
-  test("a session the client already closed still gets its reason", async () => {
+  test("a session that was already closed still gets its reason", async () => {
     const t = setup()
     await makeLearner(t, "user_owner")
-    const as = t.withIdentity({ subject: "user_owner" })
-    await as.mutation(api.sessions.start, { room, plan: PLAN })
+    await openRoom(t, "user_owner", room)
 
-    // The tab ended it first, so `endedAt` is already set. The reason is
-    // written on its own condition precisely so it is not dropped along with
-    // the `endedAt` the worker was not going to write — this is the case
-    // History most needs explained.
-    await as.mutation(api.sessions.finish, {
-      room,
-      outcome: { corrections: [], secondsTalked: 87, endedByClock: false },
-    })
-    const closedAt = (await rowOf(t))!.endedAt
+    // The cron got there first — the worker's lease ran out and the row was
+    // closed without anybody saying why. The reason is written on its own
+    // condition precisely so it is not dropped along with the `endedAt` the
+    // worker is not going to write; this is the case History most needs
+    // explained.
+    const closedAt = await closeRoom(t, room, Date.now() - 5000)
 
     await t.mutation(internal.sessions.debit, {
       room,

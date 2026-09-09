@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { auth } from "@clerk/nextjs/server"
-import { fetchMutation, fetchQuery } from "convex/nextjs"
+import { fetchQuery } from "convex/nextjs"
 import {
   AccessToken,
   RoomAgentDispatch,
@@ -8,7 +8,6 @@ import {
 } from "livekit-server-sdk"
 
 import { api } from "@/convex/_generated/api"
-import { OPEN_SESSION_PREFIX, RATE_LIMIT_PREFIX } from "@/lib/billing"
 import { MissingEnvVarError, requireServerEnv } from "@/lib/env"
 import type { SessionPlan } from "@/lib/session/contract"
 import { boundPlan, dispatchPlan } from "@/lib/session/plan"
@@ -44,17 +43,25 @@ import {
  * - explicit agent dispatch for the `tutor` worker embedded in the token's
  *   room config, so exactly one agent joins the room
  *
- * This is also the money gate, and it is the only one: a token is minted only
- * for a signed-in learner with seconds left and no conversation already open,
- * the balance is signed into the dispatch metadata, and the `sessions` row the
- * worker will debit against is written here.
+ * This is the money gate's front door, not the gate. A token is minted only
+ * for a signed-in learner with seconds left, no conversation already live, and
+ * room under the hourly start limit — but the route WRITES NOTHING. The
+ * `sessions` row the worker debits against is opened by the worker itself
+ * when it joins the room (`POST /tutor/open` → `sessions.open`), which is the
+ * atomic check; the pre-check here (`sessions.startCheck`) exists so the
+ * learner hears the right sentence before a room is dialled. A token nobody
+ * uses therefore opens nothing: the LiveKit hook's connection warm-up fetches
+ * one on mount, and a failed connect leaves no ghost row behind (live,
+ * 2026-09-08). The balance is signed into the dispatch metadata as a hint;
+ * the worker re-reads it when it opens.
  *
- * Three refusals the surface reads as states rather than faults:
+ * Four refusals the surface reads as states rather than faults:
  * - **401** not signed in.
  * - **402** `{ error: "out_of_minutes" }` — no seconds left.
  * - **409** `{ error, code: "open_session" }` — this learner already has a
- *   conversation running (another tab). Two tabs would each budget the *whole*
- *   balance and the ledger would go negative; `sessions.start` is the guard.
+ *   conversation live (another tab). Two tabs would each budget the *whole*
+ *   balance and the ledger would go negative; the worker's `open` is the
+ *   guard that holds, this is the early word.
  * - **429** `{ error, code: "rate_limited" }` — this learner has started more
  *   than `MAX_STARTS_PER_HOUR` conversations in the last hour. The free grant
  *   is per Clerk id, so this is what stands between a script and N accounts x
@@ -188,6 +195,38 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "out_of_minutes" }, { status: 402 })
   }
 
+  // The pre-check: a read, so the learner hears "you already have one
+  // running" now rather than from a worker that joined and left. The check
+  // that holds is the worker's `sessions.open`, which is a mutation.
+  let check: "ok" | "no_account" | "open_session" | "rate_limited"
+  try {
+    check = await fetchQuery(api.sessions.startCheck, {}, { token: convexToken })
+  } catch (error) {
+    console.error("/api/token: could not check for an open session", error)
+    return NextResponse.json(
+      { error: "Could not start the session" },
+      { status: 500 }
+    )
+  }
+  if (check === "no_account") {
+    // A viewer with seconds and no row cannot happen; a viewer with no row has
+    // no seconds and was refused above. Said anyway, because a 500 here would
+    // be read as ours.
+    return NextResponse.json({ error: "out_of_minutes" }, { status: 402 })
+  }
+  if (check === "open_session") {
+    return NextResponse.json(
+      { error: "A conversation is already running", code: "open_session" },
+      { status: 409 }
+    )
+  }
+  if (check === "rate_limited") {
+    return NextResponse.json(
+      { error: "Too many sessions started recently", code: "rate_limited" },
+      { status: 429 }
+    )
+  }
+
   // Minted here, never read off the body: the identity is what LiveKit sees
   // and what the room name is built from, so a client-chosen one is a
   // client-chosen room (see the note at the top of this file).
@@ -197,11 +236,6 @@ export async function POST(request: NextRequest) {
 
   const plan = boundPlan(body.session_plan)
 
-  // Mint first, record second. The other order leaves an orphan `sessions` row
-  // whenever `toJwt` fails — a row with a high-water mark of zero that the
-  // debit fallback would happily adopt — and there is no rollback for it. This
-  // order can only ever *discard* a token nobody received, which costs nothing:
-  // the room is never joined and the agent is never dispatched.
   let participantToken: string
   try {
     const at = new AccessToken(apiKey, apiSecret, {
@@ -225,43 +259,6 @@ export async function POST(request: NextRequest) {
     console.error("/api/token: failed to mint access token", error)
     return NextResponse.json(
       { error: "Failed to generate token" },
-      { status: 500 }
-    )
-  }
-
-  // The row the worker's debits land on, and the one-open-session guard. If
-  // this fails the token above is dropped on the floor unread: a session the
-  // ledger has never heard of is worse than a connect that never happened.
-  try {
-    await fetchMutation(
-      api.sessions.start,
-      { room: roomName, plan },
-      { token: convexToken }
-    )
-  } catch (error) {
-    // `sessions.start` refuses while this learner already has a row with no
-    // `endedAt` younger than 15 minutes. That is a second tab, not a fault:
-    // each one would budget the whole balance and the ledger would go
-    // negative by (N-1) x balance. Distinguished by the message prefix
-    // because a Convex mutation error reaches us as text.
-    if (String(error).includes(OPEN_SESSION_PREFIX)) {
-      return NextResponse.json(
-        { error: "A conversation is already running", code: "open_session" },
-        { status: 409 }
-      )
-    }
-    // The hourly start limit. Also a state rather than a fault, and also
-    // carried by a message prefix: 429 so the client can say "give it a
-    // while" instead of "something went wrong on our side".
-    if (String(error).includes(RATE_LIMIT_PREFIX)) {
-      return NextResponse.json(
-        { error: "Too many sessions started recently", code: "rate_limited" },
-        { status: 429 }
-      )
-    }
-    console.error("/api/token: could not record the session", error)
-    return NextResponse.json(
-      { error: "Could not start the session" },
       { status: 500 }
     )
   }

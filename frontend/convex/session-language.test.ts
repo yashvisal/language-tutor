@@ -1,6 +1,6 @@
 import { convexTest } from "convex-test"
 import { expect, test, vi } from "vitest"
-import { api } from "./_generated/api"
+import { api, internal } from "./_generated/api"
 import schema from "./schema"
 import {
   boundPlan,
@@ -36,7 +36,12 @@ test("language survives normalization and a stored session round trip", async ()
   const learner = t.withIdentity({ subject: "language-test" })
   await learner.mutation(api.users.ensureUser, {})
   const plan = boundPlan({ ...EMPTY_PLAN, targetLanguage: "fr" })
-  await learner.mutation(api.sessions.start, { room: "language-room", plan })
+  await t.mutation(internal.sessions.open, {
+    room: "language-room",
+    clerkId: "language-test",
+    jobId: "job-1",
+    plan,
+  })
   const record = await learner.query(api.sessions.byRoom, {
     room: "language-room",
   })

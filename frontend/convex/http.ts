@@ -5,7 +5,12 @@ import { httpAction } from "./_generated/server"
 import { internal } from "./_generated/api"
 import { DELTA_CAP_PREFIX, MAX_DELTA_PER_CALL_S } from "../lib/billing"
 import { verifyWorkerToken } from "./m2m"
-import { parseBalanceBody, parseDebitBody, parseSummaryBody } from "./wire"
+import {
+  parseBalanceBody,
+  parseDebitBody,
+  parseOpenBody,
+  parseSummaryBody,
+} from "./wire"
 
 /**
  * The worker's seam into the ledger — and the wire contract the Python worker
@@ -50,6 +55,41 @@ import { parseBalanceBody, parseDebitBody, parseSummaryBody } from "./wire"
  * point — the only legitimate caller is the worker, which is not a browser and
  * does not need CORS. If a browser ever needs one of these, it needs a
  * different route with a Clerk identity on it, not a CORS header here.
+ *
+ * ## `POST /tutor/open`
+ *
+ * The lease. Called once when the job starts — before the model session
+ * exists — and then every `LEASE_RENEW_S` (60 s) for as long as the job runs,
+ * held or not. Request:
+ *
+ * ```json
+ * { "room": "lesson-learner-ab12cd34-1756000000000-9f8e7d6c",
+ *   "userId": "user_2abcDEF...",
+ *   "jobId": "AJ_9xKq...",
+ *   "plan": { "target_language": "es", "topic": "…", "scenario": null,
+ *             "tenses": [], "focus_note": null, "note": null,
+ *             "vocab": [], "level": "beginner" } }
+ * ```
+ *
+ * `plan` is the dispatch metadata's plan, handed back so the row can carry
+ * it; absent is the empty plan. Responses, all `200`:
+ *
+ * ```json
+ * { "ok": true, "balanceSeconds": 540, "secondsBilled": 0 }
+ * { "ok": false, "code": "open_session" }
+ * { "ok": false, "code": "closed" }
+ * { "ok": false, "code": "rate_limited" }
+ * ```
+ *
+ * `ok: true` means the worker holds the room for the next three minutes
+ * (`LEASE_TTL_MS`): the row was inserted, or — for this room already open —
+ * its lease was extended and `secondsBilled` is the room's high-water mark
+ * for the job's own reports to build on. `ok: false` means leave: another
+ * conversation is live for this learner (`open_session`), this room already
+ * ended (`closed` — a reused token), or the hourly start limit is hit. The
+ * worker publishes the code on `tutor.error` and shuts down; nothing was
+ * billed. A refused RENEWAL (the lease lapsed and another room took it) ends
+ * the session with reason `lease_lost`.
  *
  * ## `POST /tutor/debit`
  *
@@ -381,6 +421,18 @@ async function readBody(
   return parsed as Record<string, unknown>
 }
 
+const open = httpAction(async (ctx, request) => {
+  if (!(await authorized(request))) return unauthorized()
+
+  const body = await readBody(request)
+  if (body instanceof Response) return body
+
+  const parsed = parseOpenBody(body)
+  if (!parsed.ok) return badRequest(parsed.error)
+
+  return ok(await ctx.runMutation(internal.sessions.open, parsed.value))
+})
+
 const debit = httpAction(async (ctx, request) => {
   if (!(await authorized(request))) return unauthorized()
 
@@ -505,6 +557,7 @@ const clerkWebhook = httpAction(async (ctx, request) => {
 })
 
 const http = httpRouter()
+http.route({ path: "/tutor/open", method: "POST", handler: open })
 http.route({ path: "/tutor/debit", method: "POST", handler: debit })
 http.route({ path: "/tutor/balance", method: "POST", handler: balance })
 http.route({ path: "/tutor/summary", method: "POST", handler: summary })

@@ -74,8 +74,17 @@ export default defineSchema({
     /** The bounded `SessionPlan` the learner started with. */
     plan: sessionPlanValidator,
     startedAt: v.number(),
-    // Absent until the worker reports the session finished.
+    // Absent until the worker's final debit or the reconciliation cron closes
+    // the row. The client's `finish` never writes it (audit 2026-09-06, L1).
     endedAt: v.optional(v.number()),
+    /**
+     * The lease. While this is in the future the row is a live conversation:
+     * `sessions.open` refuses this learner a second one, and the cron leaves
+     * it alone. Written by the worker's `open` and renewed by its `open` and
+     * `debit` calls (`LEASE_TTL_MS` ahead each time); never by the browser.
+     * Absent on rows from before the lease existed, which count as not live.
+     */
+    leaseUntil: v.optional(v.number()),
     /** Cumulative seconds this room has been billed for; the debit action's
      * high-water mark, so a re-reported total debits only the delta. */
     secondsBilled: v.optional(v.number()),
@@ -189,6 +198,8 @@ export default defineSchema({
     // selects exactly the unfinished rows and `startedAt` orders them — the
     // alternative is a full table scan every hour, forever.
     .index("by_endedAt_startedAt", ["endedAt", "startedAt"])
+    /** The cron's read: open rows whose lease has run out. */
+    .index("by_endedAt_leaseUntil", ["endedAt", "leaseUntil"])
     // History's read: one learner's FINISHED rows, newest first.
     // `by_user_startedAt` could not express "finished" at all, so the query
     // over-fetched and filtered in JS — a learner with a run of abandoned rows

@@ -5,23 +5,23 @@ import { internal } from "./_generated/api"
 /**
  * Scheduled work. One job today.
  *
- * A `sessions` row is opened by `/api/token` and closed by `sessions.finish`,
- * which runs on the client. Anything that stops the client from getting there
- * — a killed worker, a closed laptop, a crashed tab, a lost network — leaves
- * the row open forever. Two consequences, and the second is the one that
- * matters: the conversation never shows up in History (which filters on
- * `endedAt`), and the one-open-session guard in `sessions.start` treats the
- * ghost as a live conversation.
+ * A `sessions` row is opened by the worker when it joins the room and closed
+ * by its final debit. Anything that stops the worker from getting there — a
+ * killed process, a lost network — leaves the row open with a lease that
+ * runs out (`LEASE_TTL_MS`, three minutes). An expired lease no longer blocks
+ * the learner (`sessions.open` checks the lease, not the row), but the
+ * conversation would never show up in History, which filters on `endedAt`.
+ * This closes it.
  *
- * Hourly rather than more often because the row only becomes stale after two
- * hours, and hourly rather than less often because an hour is roughly how long
- * a learner will wait before deciding the product is broken.
+ * Every five minutes: the lease is three, so a crashed session reaches
+ * History within about eight, and the read is one index range that is empty
+ * almost every time.
  */
 const crons = cronJobs()
 
-crons.hourly(
-  "close abandoned sessions",
-  { minuteUTC: 7 },
+crons.interval(
+  "close sessions whose lease expired",
+  { minutes: 5 },
   internal.sessions.reconcileStale
 )
 

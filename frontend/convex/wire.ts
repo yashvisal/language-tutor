@@ -21,6 +21,8 @@
  */
 
 import { SESSION_END_REASONS, SUMMARY_LIMITS } from "./validators"
+import { planFromDispatch } from "../lib/session/plan"
+import type { SessionPlan } from "../lib/session/contract"
 
 /* -------------------------------------------------------------------------- */
 /*  Bounds                                                                     */
@@ -117,6 +119,31 @@ function identifiers(
   const jobId = boundedString(body.jobId, MAX_JOB_ID_CHARS)
   if (room === null || userId === null || jobId === null) return null
   return { room, userId, jobId }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  POST /tutor/open                                                           */
+/* -------------------------------------------------------------------------- */
+
+export interface OpenArgs {
+  room: string
+  clerkId: string
+  jobId: string
+  /** The plan the token route signed into dispatch metadata, handed back by
+   * the worker and bounded again here: it is the row's plan from now on. */
+  plan: SessionPlan
+}
+
+export function parseOpenBody(
+  body: Record<string, unknown>
+): WireResult<OpenArgs> {
+  const ids = identifiers(body)
+  if (ids === null) return fail("expected { room, userId, jobId, plan }")
+  // Absent or not an object is the empty plan, not an error: a manual
+  // dispatch has no plan, and a row is still owed. Anything inside it is
+  // bounded field by field.
+  const plan = planFromDispatch(body.plan)
+  return pass({ room: ids.room, clerkId: ids.userId, jobId: ids.jobId, plan })
 }
 
 /* -------------------------------------------------------------------------- */

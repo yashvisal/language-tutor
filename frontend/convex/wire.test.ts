@@ -7,6 +7,7 @@ import {
   MAX_TURNS,
   parseBalanceBody,
   parseDebitBody,
+  parseOpenBody,
   parseSummaryBody,
 } from "./wire"
 
@@ -147,6 +148,64 @@ describe("/tutor/debit", () => {
         })
       ).reason
     ).toBe("stale")
+  })
+})
+
+describe("/tutor/open", () => {
+  test("the three identifiers and the dispatch plan map onto the mutation", () => {
+    const args = value(
+      parseOpenBody({
+        ...IDS,
+        plan: {
+          target_language: "fr",
+          topic: "travel",
+          scenario: null,
+          tenses: ["past tense"],
+          focus_note: "endings",
+          note: null,
+          vocab: ["food"],
+          level: "beginner",
+        },
+      })
+    )
+    expect(args.room).toBe(ROOM)
+    expect(args.clerkId).toBe(USER)
+    expect(args.jobId).toBe(JOB)
+    expect(args.plan).toEqual({
+      targetLanguage: "fr",
+      topic: "travel",
+      scenario: null,
+      tenses: ["past tense"],
+      focusNote: "endings",
+      note: null,
+      vocab: ["food"],
+      level: "beginner",
+    })
+  })
+
+  test("no plan, or a plan that is not an object, is the empty plan", () => {
+    // A manual dispatch carries none, and a row is still owed.
+    expect(value(parseOpenBody({ ...IDS })).plan.targetLanguage).toBe("es")
+    expect(value(parseOpenBody({ ...IDS, plan: "yes" })).plan.level).toBeNull()
+    expect(value(parseOpenBody({ ...IDS, plan: [] })).plan.tenses).toEqual([])
+  })
+
+  test("the plan is bounded field by field, like the token route bounds it", () => {
+    const args = value(
+      parseOpenBody({
+        ...IDS,
+        plan: { target_language: "ja", level: "expert", topic: 42 },
+      })
+    )
+    expect(args.plan.targetLanguage).toBe("es")
+    expect(args.plan.level).toBeNull()
+    expect(args.plan.topic).toBeNull()
+  })
+
+  test("a missing identifier is a rejection", () => {
+    expect(error(parseOpenBody({ room: ROOM, userId: USER }))).toBe(
+      "expected { room, userId, jobId, plan }"
+    )
   })
 })
 

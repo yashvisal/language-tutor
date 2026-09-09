@@ -52,35 +52,32 @@ export const MINUTE_PACKS = [
 ] as const
 
 /* -------------------------------------------------------------------------- */
-/*  The one-open-session guard                                                */
+/*  The session lease                                                         */
 /* -------------------------------------------------------------------------- */
 
 /**
- * How long a `sessions` row with no `endedAt` blocks the same learner from
- * starting another conversation.
+ * How long a `sessions` row counts as a live conversation after the worker
+ * last renewed it.
  *
- * Two tabs would each be dispatched a worker that budgets the *whole* balance
- * (`clock.py`), both would debit at teardown, and the ledger would go negative
- * by (N-1) x balance. Nothing reserves the balance at mint time, so the row
- * itself is the reservation.
+ * The row is the one-open-session reservation: two tabs would each be
+ * dispatched a worker that budgets the *whole* balance (`clock.py`), both
+ * would debit, and the ledger would go negative by (N-1) x balance. The
+ * reservation is owned by the WORKER — it opens the row when it joins the
+ * room (`POST /tutor/open`), renews it every `LEASE_RENEW_S` whether the
+ * clock is running or held, and its final debit closes it. Nothing the
+ * browser sends can release it (audit 2026-09-06, L1).
  *
- * Fifteen minutes rather than forever because `endedAt` is not guaranteed: a
- * killed worker or a closed tab leaves the row open, and a learner locked out
- * of their own account by a crash is a worse bug than the one being fixed.
- * The reconciliation cron (`convex/crons.ts`) closes what is left after two
- * hours; this window is what the learner feels.
+ * Three minutes is two missed renewals plus slack: a killed worker frees the
+ * learner in three minutes instead of fifteen, and a two-hour conversation
+ * is never mistaken for an abandoned one while its worker is alive (L2).
+ * The reconciliation cron closes what has expired.
  */
-export const OPEN_SESSION_WINDOW_MS = 15 * 60 * 1000
+export const LEASE_TTL_MS = 3 * 60 * 1000
 
-/**
- * Prefix on the error `sessions.start` throws when that guard fires.
- *
- * A Convex mutation failure reaches the token route as text, so the only way
- * to tell "you already have one open" (a 409, a state) from "the write failed"
- * (a 500, a fault) is a marker in the message. Kept beside the window it
- * guards so the two never drift.
- */
-export const OPEN_SESSION_PREFIX = "open-session:"
+/** How often the worker renews, in seconds. Here because the ledger's TTL
+ * above is sized from it, and the two must not drift; the worker's copy in
+ * `backend/src/billing.py` is asserted against this by its tests. */
+export const LEASE_RENEW_S = 60
 
 /**
  * The most one debit report may add to a session's `secondsBilled`.
