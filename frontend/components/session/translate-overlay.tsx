@@ -210,6 +210,10 @@ export function SelectionTranslator({
     dismiss()
   }, [open, held, dismiss])
 
+  // Bumped by Try again: the same selection, asked once more. In the effect's
+  // dependencies so a retry re-runs it without pretending the anchor moved.
+  const [attempt, setAttempt] = useState(0)
+
   useEffect(() => {
     if (!anchor) return
     const { key, text, speaker, turnId } = anchor
@@ -226,7 +230,7 @@ export function SelectionTranslator({
     return () => {
       cancelled = true
     }
-  }, [anchor, translate])
+  }, [anchor, translate, attempt])
 
   // Derived rather than stored: a result that isn't this selection's is still
   // in flight. Keeps the loading state out of an effect.
@@ -271,7 +275,17 @@ export function SelectionTranslator({
               </p>
             ) : result?.failed ? (
               <p className="mt-2 text-xs text-muted-foreground/70">
-                Couldn’t translate — try again
+                Couldn’t translate.{" "}
+                {/* The sentence used to say "try again" and offer no way to:
+                    the card is inside the overlay marker, so a click here is
+                    not a dismissal, and the selection is still on screen. */}
+                <button
+                  type="button"
+                  onClick={() => setAttempt((n) => n + 1)}
+                  className="text-foreground underline decoration-foreground/30 underline-offset-4 transition-colors duration-200 outline-none hover:decoration-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+                >
+                  Try again
+                </button>
               </p>
             ) : (
               <Shimmer />
