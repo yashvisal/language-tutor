@@ -944,6 +944,11 @@ def _fit_body(payload: dict) -> dict:
     trimmed from the oldest end, then the corrections. `about` is never
     dropped: it is the one line the summary screen cannot be written without.
     """
+    # An empty list says "there was nothing", and `summary()` never sends one
+    # (each field is added only when it has something) — but the fitter is
+    # the last thing before the wire, and a caller that hands it one must not
+    # get it back. Before the size check, so an under-limit body is clean too.
+    payload = {k: v for k, v in payload.items() if v != []}
     if _body_bytes(payload) <= MAX_BODY_BYTES:
         return payload
     if "review" in payload:

@@ -494,6 +494,11 @@ def test_an_oversized_body_sheds_the_review_then_halves_the_transcript() -> None
     assert len(json.dumps(body).encode("utf-8")) <= MAX_BODY_BYTES
 
 
+def test_an_under_limit_body_still_sheds_empty_lists() -> None:
+    body = _fit_body({"about": "about the thing", "transcript": [], "corrections": []})
+    assert body == {"about": "about the thing"}
+
+
 def test_a_body_that_cannot_fit_keeps_the_about_line_alone() -> None:
     # One turn and one correction, each larger than the whole ceiling: halving
     # cannot rescue either, so both go, and what is left is exactly the line
