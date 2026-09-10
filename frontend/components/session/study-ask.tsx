@@ -107,7 +107,10 @@ export function AskTab({
             rows={2}
             placeholder="Ask a question"
             aria-label="Ask the coach a question"
-            className="w-full resize-none rounded-lg border border-border/60 bg-background/60 py-2 pr-12 pl-3 text-sm leading-6 transition-colors outline-none placeholder:text-muted-foreground focus:border-border"
+            // Grows with the question up to a few lines, then scrolls with a
+            // thin bar: a two-row box with a full scrollbar inside it read as
+            // a bug (live, 2026-09-09).
+            className="max-h-40 w-full resize-none rounded-lg border border-border/60 bg-background/60 py-2 pr-12 pl-3 text-sm leading-6 transition-colors outline-none [field-sizing:content] [scrollbar-width:thin] placeholder:text-muted-foreground focus:border-border"
           />
           <Button
             type="button"
@@ -141,15 +144,21 @@ function Exchange({
           asked after “{anchor}”
         </p>
       )}
-      <p className="text-sm leading-6 tracking-[-0.011em] text-foreground/90">
-        {entry.question}
-      </p>
+      {/* The question sits on the right in a quiet bubble and the answer runs
+          full width as prose: the two used to be the same paragraph twice,
+          and a thread of them was unreadable (live, 2026-09-09). The bubble
+          is the transcript's learner treatment, not a second chat idiom. */}
+      <div className="flex justify-end">
+        <p className="max-w-[85%] rounded-2xl rounded-br-md bg-foreground/[0.05] px-3.5 py-2 text-sm leading-6 tracking-[-0.011em] text-foreground dark:bg-white/[0.08]">
+          {entry.question}
+        </p>
+      </div>
       {entry.answer ? (
-        <p className="mt-2 text-sm leading-6 text-pretty text-foreground">
+        <p className="mt-3 pr-8 text-sm leading-6 text-pretty text-foreground">
           {entry.answer}
         </p>
       ) : entry.failed ? (
-        <p className="mt-2 text-xs text-muted-foreground">
+        <p className="mt-3 text-xs text-muted-foreground">
           Couldn’t answer — ask again
         </p>
       ) : (
