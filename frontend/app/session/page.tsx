@@ -11,38 +11,31 @@
  * declares a plan, the connection lifecycle, and the summary the session ends
  * into. Three states, in the order a learner meets them: plan, talk, look back.
  *
- * `/home` is the same pre-flight inside the app shell, so it hands off with an
- * in-memory flag (`lib/session/handoff`): the plan is already persisted, and
- * this page connects straight away instead of asking the same questions a
- * second time. Without the flag (a direct visit, a bookmark, a reload) the
- * page still opens on its own pre-flight.
+ * The pre-flight is `/home`'s Start dialog, which hands off through
+ * `lib/session/handoff` with the plan it was given, and this page connects
+ * straight away. Without a hand-off — a direct visit, a bookmark, a reload —
+ * there is nothing to start, and the page goes back to `/home` rather than
+ * showing a second copy of the form (Yash, 2026-09-09).
  */
 
-import { useEffect, useRef, useState, useSyncExternalStore } from "react"
-import Link from "next/link"
-import { ArrowLeft } from "lucide-react"
+import { useEffect, useRef, useState } from "react"
+import { useRouter } from "next/navigation"
 import { RoomAudioRenderer } from "@livekit/components-react"
 
 import { SessionLanguageProvider } from "@/components/session/session-language"
 import { ConversationStage } from "@/components/session/conversation-stage"
 import { OutOfMinutesScreen } from "@/components/session/out-of-minutes"
-import { SessionPreflight } from "@/components/session/session-preflight"
 import { SessionSummary } from "@/components/session/session-summary"
+import { StartFailedScreen } from "@/components/session/start-failed"
 import { TutorUnavailableScreen } from "@/components/session/tutor-unavailable"
 import { STAGE_AURA_CLASS, TutorAura } from "@/components/session/tutor-aura"
-import type { SessionPlan } from "@/lib/session/contract"
 import { startRequested, takeStartRequest } from "@/lib/session/handoff"
 import { useLiveSession } from "@/lib/session/live-producer"
-import {
-  planSnapshot,
-  savePlan,
-  serverPlanSnapshot,
-  subscribeToPlan,
-} from "@/lib/session/plan"
 
 export default function SessionPage() {
   const live = useLiveSession()
   const { connect } = live
+  const router = useRouter()
   /**
    * The hand-off from `/home`, as a render-time fact: true from the first
    * paint so the learner sees the stage warming up rather than the form they
@@ -51,19 +44,6 @@ export default function SessionPage() {
    * effect below spends it, once.
    */
   const [handoff, setHandoff] = useState(startRequested)
-
-  /**
-   * The plan. The last session's is the starting point (an external store, so
-   * that a client-only value never contradicts the prerendered markup — see
-   * `plan.ts`); edits layer on top and win from the first keystroke.
-   */
-  const stored = useSyncExternalStore(
-    subscribeToPlan,
-    planSnapshot,
-    serverPlanSnapshot
-  )
-  const [edited, setEdited] = useState<SessionPlan | null>(null)
-  const plan = edited ?? stored
 
   /**
    * The hand-off from `/home`, fired once and then erased. The ref makes it
@@ -92,6 +72,20 @@ export default function SessionPage() {
     live.outcome !== null
   if (handoff && settled) setHandoff(false)
 
+  // Nothing to start and nothing to show: back to the one pre-flight. In an
+  // effect because it navigates; the condition is every branch below being
+  // false, spelled out so a new branch cannot fall through to a redirect.
+  const idle =
+    !handoff &&
+    live.connection === "idle" &&
+    live.error === null &&
+    !live.outOfMinutes &&
+    live.tutorFailed === null &&
+    live.outcome === null
+  useEffect(() => {
+    if (idle) router.replace("/home")
+  }, [idle, router])
+
   // The summary outlives the room, so it wins over the connection state: a
   // session ended by the clock disconnects us, and dropping straight back to
   // the pre-flight would throw away the corrections the learner just earned.
@@ -99,7 +93,11 @@ export default function SessionPage() {
     return (
       <SessionSummary
         outcome={live.outcome}
-        onStartAnother={live.clearOutcome}
+        // The pre-flight is on `/home`; "another" means going there.
+        onStartAnother={() => {
+          live.clearOutcome()
+          router.push("/home")
+        }}
       />
     )
   }
@@ -112,7 +110,10 @@ export default function SessionPage() {
     return (
       <TutorUnavailableScreen
         reason={live.tutorFailed}
-        onRetry={() => live.connect(live.plan ?? plan)}
+        onRetry={() => {
+          if (live.plan) live.connect(live.plan)
+          else router.push("/home")
+        }}
       />
     )
   }
@@ -136,34 +137,20 @@ export default function SessionPage() {
     )
   }
 
-  if (live.connection !== "live") {
+  // The token route refused or the connect died before there was a room:
+  // the sentence with the fix in it, and the same plan to redial.
+  if (live.error !== null) {
+    const plan = live.plan
     return (
-      <SessionPreflight
-        above={
-          // Reached without the hand-off — a bookmark, a reload — so this is
-          // the only screen the learner can see. It needs a way back.
-          <Link
-            href="/home"
-            className="mb-8 inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors duration-200 hover:text-foreground"
-          >
-            <ArrowLeft className="size-3.5" />
-            Back to home
-          </Link>
-        }
-        plan={plan}
-        onChange={setEdited}
-        // Never true here — a connecting session rendered the stage above.
-        connecting={false}
+      <StartFailedScreen
         error={live.error}
-        onStart={(finalPlan) => {
-          // Persisted at the moment of use, so a repeat session opens on the
-          // plan that was actually spoken — not on an abandoned edit.
-          savePlan(finalPlan)
-          live.connect(finalPlan)
-        }}
+        onRetry={plan ? () => live.connect(plan) : null}
       />
     )
   }
+
+  // Idle with nothing to show: the effect above is on its way to `/home`.
+  if (live.connection !== "live") return null
 
   return (
     <SessionLanguageProvider language={live.plan?.targetLanguage}>

@@ -1,7 +1,9 @@
 "use client"
 
-/** Shared preflight for Home and /session: language and self-reported level,
- * followed by three optional questions passed directly into the session plan.
+/** The pre-flight: language and self-reported level, then three optional
+ * questions passed directly into the session plan. Lives in the dashboard's
+ * Start dialog (`components/home/start-session.tsx`) and nowhere else —
+ * `/session` reached without the hand-off goes back to `/home`.
  */
 
 import {
@@ -12,17 +14,13 @@ import {
   type ReactNode,
   useRef,
 } from "react"
-import Link from "next/link"
 import { AnimatePresence, motion, useReducedMotion } from "motion/react"
 
 import { LanguagePicker, LevelPicker } from "@/components/session/plan-pickers"
-import { Overline } from "@/components/overline"
 import { Button } from "@/components/ui/button"
 import type { SessionPlan } from "@/lib/session/contract"
-import type { StartFailure } from "@/lib/session/livekit"
 import {
   PLAN_LIMITS,
-  LANGUAGE_NAMES,
   targetLanguage,
   focusNotePlaceholder,
 } from "@/lib/session/plan"
@@ -337,89 +335,5 @@ function AnswerField({
       style={{ maxHeight: FIELD_MAX_HEIGHT }}
       className="mt-4 block w-full resize-none rounded-xl bg-foreground/[0.04] px-4 py-3 text-[15px] leading-6 text-foreground transition-[box-shadow,background-color] duration-200 outline-none placeholder:text-muted-foreground/70 focus-visible:bg-foreground/[0.06] focus-visible:ring-2 focus-visible:ring-primary/30 dark:bg-white/[0.06] dark:focus-visible:bg-white/[0.08]"
     />
-  )
-}
-
-/**
- * `/session`'s own pre-flight: the same three questions, in a page-width
- * column, reached only without the dashboard hand-off (a bookmark, a reload).
- */
-export function SessionPreflight({
-  plan,
-  onChange,
-  onStart,
-  connecting,
-  error,
-  above,
-  className,
-}: {
-  plan: SessionPlan
-  onChange: (plan: SessionPlan) => void
-  onStart: (plan: SessionPlan) => void
-  connecting: boolean
-  error: StartFailure | null
-  /** Rendered above the first question, inside the same column — `/session`
-   * puts its way back to `/home` here. */
-  above?: ReactNode
-  /** For hosts that already provide their own page frame. */
-  className?: string
-}) {
-  return (
-    <div
-      className={cn(
-        "flex min-h-svh justify-center bg-background px-8 py-[clamp(3rem,12vh,7rem)]",
-        className
-      )}
-    >
-      <div className="w-full max-w-xl">
-        {above}
-        <Overline>Before you start</Overline>
-        <p className="mt-3 max-w-sm text-sm leading-relaxed text-muted-foreground">
-          {LANGUAGE_NAMES[targetLanguage(plan.targetLanguage)]} out loud, with
-          corrections when you finish a thought. Three quick questions first —
-          skip any.
-        </p>
-
-        <PlanCards
-          plan={plan}
-          onChange={onChange}
-          onStart={onStart}
-          starting={connecting}
-          startLabel="Start talking"
-          className="mt-8"
-          footerClassName="mt-8 pt-6"
-          notice={
-            error && (
-              // Ordinary text, ordinary colour. A blocked microphone is not an
-              // error the learner made and not a fault of the app — it is one
-              // sentence with the fix in it, read at the moment they press
-              // Start. 12px destructive under the fold said none of that
-              // (audit §4.3).
-              <p
-                role="alert"
-                className="mt-8 text-sm leading-relaxed text-foreground"
-              >
-                {error.message}
-                {error.action && (
-                  <>
-                    {" "}
-                    <Link
-                      href={error.action.href}
-                      className="underline decoration-foreground/30 underline-offset-4 transition-colors duration-200 hover:decoration-foreground"
-                    >
-                      {error.action.label}
-                    </Link>
-                  </>
-                )}
-              </p>
-            )
-          }
-        />
-
-        <p className="mt-4 text-xs text-muted-foreground">
-          Microphone required. Pausing to study doesn’t use your minutes.
-        </p>
-      </div>
-    </div>
   )
 }
