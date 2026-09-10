@@ -18,6 +18,7 @@ import {
 import { cn } from "@/lib/utils"
 
 export function SessionControls({
+  disabled = false,
   paused,
   studyOpen,
   muted,
@@ -26,6 +27,11 @@ export function SessionControls({
   onTogglePause,
   onEnd,
 }: {
+  /**
+   * The bar is in place but inert — the session is still on its way in. It
+   * renders rather than waits so the stage does not reflow when it arrives.
+   */
+  disabled?: boolean
   paused: boolean
   /**
    * Whether the study surface is up. Both stopping gestures open it, so both
@@ -50,6 +56,7 @@ export function SessionControls({
                 variant="ghost"
                 size="icon-lg"
                 onClick={onReview}
+                disabled={disabled}
                 aria-label="Review — holds the session"
                 aria-pressed={studyOpen}
                 className={cn(
@@ -73,6 +80,7 @@ export function SessionControls({
                 variant="ghost"
                 size="icon-lg"
                 onClick={onToggleMute}
+                disabled={disabled}
                 aria-label={muted ? "Unmute" : "Mute"}
                 className={cn(
                   "rounded-full text-muted-foreground hover:text-foreground",
@@ -93,7 +101,10 @@ export function SessionControls({
                 variant="ghost"
                 size="icon-lg"
                 onClick={onTogglePause}
-                aria-label={paused ? "Resume" : "Hold — opens the study surface"}
+                disabled={disabled}
+                aria-label={
+                  paused ? "Resume" : "Hold — opens the study surface"
+                }
                 aria-pressed={paused}
                 className={cn(
                   "rounded-full text-muted-foreground hover:text-foreground",
@@ -119,6 +130,7 @@ export function SessionControls({
                     variant="ghost"
                     size="icon-lg"
                     onClick={onEnd}
+                    disabled={disabled}
                     aria-label="End session"
                     className="rounded-full text-muted-foreground hover:text-destructive"
                   >

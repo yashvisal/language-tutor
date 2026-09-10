@@ -103,7 +103,7 @@ export default function SessionPage() {
   }
 
   // The room came up without a tutor in it (audit B6). Above the pre-flight
-  // and above the connecting screen, because a failed start that fell back to
+  // and above the connecting stage, because a failed start that fell back to
   // either would look exactly like the session never being attempted. Try
   // again dials the same plan — `connect` clears the failure itself.
   if (live.tutorFailed) {
@@ -125,29 +125,6 @@ export default function SessionPage() {
     return <OutOfMinutesScreen />
   }
 
-  // Handed off from the dashboard, or already dialling: the learner chose to
-  // start, so the only honest screen is the stage warming up — not the form
-  // they just filled in flashing past on its way to the conversation.
-  if (handoff || live.connection === "connecting") {
-    // The same box, the same size and the same vertical position as the
-    // stage gives its aura (`conversation-stage.tsx`), so the orb does not
-    // jump when the conversation arrives under it (live, 2026-09-10).
-    return (
-      <div className="h-svh bg-background">
-        <div className="flex h-full flex-col items-center justify-center px-8 pb-24">
-          <div className="flex w-full shrink-0 justify-center">
-            <TutorAura
-              state="connecting"
-              size="lg"
-              className={STAGE_AURA_CLASS}
-            />
-          </div>
-          <p className="mt-10 text-sm text-muted-foreground">Connecting…</p>
-        </div>
-      </div>
-    )
-  }
-
   // The token route refused or the connect died before there was a room:
   // the sentence with the fix in it, and the same plan to redial.
   if (live.error !== null) {
@@ -161,7 +138,23 @@ export default function SessionPage() {
   }
 
   // Idle with nothing to show: the effect above is on its way to `/home`.
-  if (live.connection !== "live") return null
+  if (!handoff && live.connection === "idle") return null
+
+  // Handed off from the dashboard, or dialling, or in the room waiting for
+  // the tutor: the learner chose to start, so the only honest screen is the
+  // stage itself, warming up in place. One stage from the first paint to the
+  // first word, with a quiet status line in the corner, so nothing jumps
+  // when the conversation arrives (Yash, 2026-09-10). The tutor counts as
+  // joined once it has a track for the Aura or has reported a state — both
+  // arrive only once it is in the room.
+  const tutorJoined =
+    live.agentAudioTrack !== undefined || live.state.agentState !== "idle"
+  const status =
+    handoff || live.connection !== "live"
+      ? "connecting"
+      : tutorJoined
+        ? "live"
+        : "joining"
 
   return (
     <SessionLanguageProvider language={live.plan?.targetLanguage}>
@@ -181,9 +174,12 @@ export default function SessionPage() {
           translate={live.translate}
           study={live.study}
           focusTenses={live.plan?.tenses}
+          status={status}
+          // Until the tutor is live the Aura renders its connecting state,
+          // whatever the reducer says: the reducer has nothing to say yet.
           renderAura={(auraState) => (
             <TutorAura
-              state={auraState}
+              state={status === "live" ? auraState : "connecting"}
               audioTrack={live.agentAudioTrack}
               size="lg"
               className={STAGE_AURA_CLASS}
