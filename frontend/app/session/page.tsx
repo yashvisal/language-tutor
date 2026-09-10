@@ -129,10 +129,21 @@ export default function SessionPage() {
   // start, so the only honest screen is the stage warming up — not the form
   // they just filled in flashing past on its way to the conversation.
   if (handoff || live.connection === "connecting") {
+    // The same box, the same size and the same vertical position as the
+    // stage gives its aura (`conversation-stage.tsx`), so the orb does not
+    // jump when the conversation arrives under it (live, 2026-09-10).
     return (
-      <div className="flex h-svh flex-col items-center justify-center gap-6 bg-background">
-        <TutorAura state="connecting" className={STAGE_AURA_CLASS} />
-        <p className="text-sm text-muted-foreground">Connecting…</p>
+      <div className="h-svh bg-background">
+        <div className="flex h-full flex-col items-center justify-center px-8 pb-24">
+          <div className="flex w-full shrink-0 justify-center">
+            <TutorAura
+              state="connecting"
+              size="lg"
+              className={STAGE_AURA_CLASS}
+            />
+          </div>
+          <p className="mt-10 text-sm text-muted-foreground">Connecting…</p>
+        </div>
       </div>
     )
   }
