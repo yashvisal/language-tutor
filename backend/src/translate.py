@@ -34,9 +34,11 @@ logger = logging.getLogger("tutor.translate")
 # to tempt the model into translating the context instead of the span.
 CONTEXT_TURNS = 4
 
-# Comfortably inside the frontend's 5s timeout: better a clean error the overlay
-# can render than a request the caller has already given up on.
-REQUEST_TIMEOUT = 4.0
+# Comfortably inside the frontend's 10s timeout: better a clean error the
+# overlay can render than a request the caller has already given up on. Eight,
+# not four: a span that took 3.2s to come back landed, and one that would have
+# taken a little longer was a "Couldn't translate" (live, 2026-09-09).
+REQUEST_TIMEOUT = 8.0
 
 # The overlay is for spans, not documents. A selection longer than this is
 # almost certainly a stray triple-click.

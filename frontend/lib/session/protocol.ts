@@ -78,11 +78,11 @@ export interface TranslateRequest {
 export const MAX_SPAN_CHARS = 600
 
 /**
- * How long the overlay waits for a translation. The worker self-limits to 4s
+ * How long the overlay waits for a translation. The worker self-limits to 8s
  * and answers failures with an error string rather than silence, so anything
  * that reaches this ceiling is the transport, not the model.
  */
-export const TRANSLATE_TIMEOUT_MS = 5000
+export const TRANSLATE_TIMEOUT_MS = 10000
 
 /** The `tutor.translate` reply: exactly one of these fields is present. */
 export interface TranslateResponse {
