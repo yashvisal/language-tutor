@@ -258,7 +258,12 @@ class TutorConfig:
     target_lang: str = "es"
     anchor_lang: str = "en"
     # Which of the two the opening goal exchange is held in. See `GOAL_LANGS`.
-    goal_lang: str = "target"
+    # The anchor language (Yash, 2026-09-09): the greeting and the one goal
+    # confirmation are in English, and the conversation switches into the
+    # target language on the first question after the goal is agreed. An
+    # opening in the target language was mostly untranslated to a learner at
+    # the level this product is for, and every session began with a lookup.
+    goal_lang: str = "anchor"
 
     # Endpointing. min must comfortably exceed the STT's interim flush lag
     # (~0.5s for gpt-live-transcribe) — below that, turns commit before their
@@ -354,7 +359,7 @@ class TutorConfig:
         return cls(
             target_lang=_env("TUTOR_TARGET_LANG", "es"),
             anchor_lang=_env("TUTOR_ANCHOR_LANG", "en"),
-            goal_lang=_env_choice("TUTOR_GOAL_LANG", "target", GOAL_LANGS),
+            goal_lang=_env_choice("TUTOR_GOAL_LANG", "anchor", GOAL_LANGS),
             min_endpointing_s=_env_float(
                 "TUTOR_MIN_ENDPOINT_S", 1.2, low=ENDPOINT_MIN_S, high=ENDPOINT_MAX_S
             ),

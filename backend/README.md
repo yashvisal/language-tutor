@@ -143,7 +143,7 @@ CLERK_WORKER_MACHINE_SECRET_KEY=ak_...   # mints the M2M token for /tutor/*
 # optional — defaults shown
 TUTOR_TARGET_LANG=es
 TUTOR_ANCHOR_LANG=en
-TUTOR_GOAL_LANG=target              # target | anchor — the opening goal exchange
+TUTOR_GOAL_LANG=anchor              # anchor | target — the opening goal exchange
 TUTOR_REALTIME_MODEL=gpt-realtime-2.1
 TUTOR_REALTIME_REASONING=minimal           # minimal | low — see config.py
 TUTOR_REALTIME_SPEED=1.0               # output audio speed multiplier
@@ -170,11 +170,11 @@ dev and prod share LiveKit Cloud and a `*.convex.site` host, and a Clerk
 machine key carries no test/live marker, so nothing here can be inferred.
 
 `TUTOR_GOAL_LANG` picks the language of the opening goal exchange and nothing
-else: `target` (the default — the vision doc's rule is that the conversation
-opens in the target language) or `anchor`. The standing one-anchor-line
-allowance applies either way, so a learner who stalls on the first question
-still gets help. It exists so a later "which language" card can flip it without
-a prompt change; there is no language picker now.
+else: `anchor` (the default since 2026-09-09 — the greeting and the goal
+confirmation are in English, and the first question after the goal is agreed
+is in the target language) or `target` (the earlier rule: open in the target
+language). The standing one-anchor-line allowance applies either way, so a
+learner who stalls on the first question still gets help.
 
 `OPENAI_API_KEY` is asserted non-empty at config load: the worker refuses to
 start rather than failing inside a plugin mid-session. `TUTOR_MIN_ENDPOINT_S`

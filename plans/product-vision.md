@@ -200,6 +200,18 @@ From reviewing the phase-1 layout explorations (aura-stage, split-columns, and t
    to the self-reported level, with a short English gloss for a beginner's
    unknown words. Correction *explanations* stay in English (the anchor
    language) — they are read, not practised.
+6. **The opening is in English; the conversation is not** (Yash,
+   2026-09-09). The greeting and the one goal confirmation are in the anchor
+   language, and the first question after the goal is agreed is in the
+   target language. Opening in the target language (decision #4 above,
+   2026-08-24) left a learner at this product's level translating the first
+   thing the tutor said, every session. `TUTOR_GOAL_LANG` defaults to
+   `anchor`; the switch is the worker's, not a setting the learner sees.
+7. **History rows are titled by the goal** (Yash, 2026-09-09), not by the
+   worker's "about" line, which changed the title a minute after the row
+   appeared. The about line lives inside the record as "what it became".
+8. **The pre-flight remembers the language and the level only.** Topic,
+   focus and note are today's answers and start empty each session.
 
 ## The Conversation Surface
 

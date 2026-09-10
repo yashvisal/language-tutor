@@ -200,8 +200,10 @@ pacing.\
 
 # The opening IS the goal setting (phase 7 step 3, Yash 2026-08-25). Two
 # shapes, one exchange each: the learner's cards gave us something to restate,
-# or they did not and we ask. Both are in `TUTOR_GOAL_LANG`'s language, with
-# the standing one-anchor-line allowance if the learner stalls.
+# or they did not and we ask. Both are in `TUTOR_GOAL_LANG`'s language — the
+# anchor language by default since 2026-09-09, so the learner eases in — with
+# the standing one-anchor-line allowance if the learner stalls. The first
+# question after the goal is agreed is in the target language, always.
 GREETING_GOAL_SEEDED_INSTRUCTIONS = """\
 You speak first — never wait for the learner to open. This first message is ONE \
 short line in {goal_lang}, and nothing else: say back in your own plain words \

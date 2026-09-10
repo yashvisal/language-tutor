@@ -137,16 +137,17 @@ def test_an_unseeded_opening_asks_what_they_want_to_work_on() -> None:
     assert "set_session_goal" in text
 
 
-def test_the_opening_is_in_the_target_language_by_default() -> None:
+def test_the_opening_is_in_the_anchor_language_by_default() -> None:
+    # Yash, 2026-09-09: ease in. The greeting and the goal confirmation are
+    # in English; the first question after the goal is agreed is in Spanish.
     text = greeting_instructions(cfg(), None, None)
-    assert "ONE short line in Spanish" in text
+    assert "ONE short line in English" in text
+    assert "one easy question about it in Spanish" in text
 
 
 def test_the_opening_language_is_a_config_parameter() -> None:
-    text = greeting_instructions(cfg(goal_lang="anchor"), None, None)
-    assert "ONE short line in English" in text
-    # The conversation itself is still the target language.
-    assert "in Spanish" in text
+    text = greeting_instructions(cfg(goal_lang="target"), None, None)
+    assert "ONE short line in Spanish" in text
 
 
 def test_a_scenario_opening_still_sets_the_goal_first() -> None:
