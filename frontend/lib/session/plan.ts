@@ -309,6 +309,17 @@ export function subscribeToPlan(listener: () => void): () => void {
   }
 }
 
+/** The language and the level, and nothing else, out of a stored plan. Applied
+ * on the way in AND the way out: a plan stored before the rule (with a topic
+ * in it) must not come back with one (live, 2026-09-09). */
+function remembered(plan: SessionPlan): SessionPlan {
+  return {
+    ...EMPTY_PLAN,
+    targetLanguage: plan.targetLanguage,
+    level: plan.level,
+  }
+}
+
 /** What the learner chose last time — the language and their level in it —
  * so the next pre-flight opens there. Never the questions: see `savePlan`. */
 export function planSnapshot(): SessionPlan {
@@ -321,8 +332,7 @@ export function planSnapshot(): SessionPlan {
   if (raw === cachedRaw) return cachedPlan
   cachedRaw = raw
   try {
-    const plan = raw ? boundPlan(JSON.parse(raw)) : EMPTY_PLAN
-    cachedPlan = plan
+    cachedPlan = raw ? remembered(boundPlan(JSON.parse(raw))) : EMPTY_PLAN
   } catch {
     cachedPlan = EMPTY_PLAN
   }
@@ -346,13 +356,8 @@ export function serverPlanSnapshot(): SessionPlan {
  */
 export function savePlan(plan: SessionPlan): void {
   if (typeof window === "undefined") return
-  const remembered: SessionPlan = {
-    ...EMPTY_PLAN,
-    targetLanguage: plan.targetLanguage,
-    level: plan.level,
-  }
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(remembered))
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(remembered(plan)))
   } catch {
     // Nothing to do: see above.
   }

@@ -43,6 +43,38 @@ test("the browser remembers the language and the level, and not today's question
   }
 })
 
+test("a plan stored before the rule comes back without its topic", async () => {
+  const { planSnapshot } = await import("../lib/session/plan")
+  const store = new Map<string, string>([
+    [
+      "tutor.session-plan.v2",
+      JSON.stringify({
+        targetLanguage: "es",
+        level: "beginner",
+        topic: "Vacation I went on this summer",
+        scenario: null,
+        tenses: ["preterite"],
+        focusNote: "past tenses",
+        note: null,
+        vocab: [],
+      }),
+    ],
+  ])
+  vi.stubGlobal("window", {
+    localStorage: { getItem: (k: string) => store.get(k) ?? null },
+  })
+  try {
+    const plan = planSnapshot()
+    expect(plan.targetLanguage).toBe("es")
+    expect(plan.level).toBe("beginner")
+    expect(plan.topic).toBeNull()
+    expect(plan.focusNote).toBeNull()
+    expect(plan.tenses).toEqual([])
+  } finally {
+    vi.unstubAllGlobals()
+  }
+})
+
 test("the hand-off carries the whole plan to the session, once", async () => {
   const { requestStart, startRequested, takeStartRequest } =
     await import("../lib/session/handoff")
