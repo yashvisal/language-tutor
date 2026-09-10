@@ -71,6 +71,7 @@ export function StudyOverlay({
   focusTenses,
   heroTurnId,
   outOfMinutes = false,
+  onEnd,
   onClose,
   restoreFocusTo,
 }: {
@@ -98,6 +99,8 @@ export function StudyOverlay({
    */
   outOfMinutes?: boolean
   onClose: () => void
+  /** Out of minutes, the card's one action: end the session as End does. */
+  onEnd?: () => void
   /**
    * What opened the surface, captured by the caller at interaction time (a ref,
    * so nothing reads it during render). Null when there is nothing to go back
@@ -131,13 +134,13 @@ export function StudyOverlay({
    * or a learner who opened this from the control bar loses their place.
    */
   const closeRef = useRef<HTMLButtonElement>(null)
-  const homeRef = useRef<HTMLAnchorElement>(null)
+  const endRef = useRef<HTMLButtonElement>(null)
   useEffect(() => {
     // Read on mount, not on close: whatever opened this surface is the thing to
     // return to, whatever the ref happens to hold by then.
     const trigger = restoreFocusTo?.current
-    // Out of minutes the close button is gone; the way home takes its place.
-    ;(closeRef.current ?? homeRef.current)?.focus()
+    // Out of minutes the close button is gone; End takes its place.
+    ;(closeRef.current ?? endRef.current)?.focus()
     return () => {
       if (trigger?.isConnected) trigger.focus()
     }
@@ -204,7 +207,11 @@ export function StudyOverlay({
             transition={{ duration: 0.3, ease: [0.32, 0.72, 0, 1] }}
             className="shrink-0 px-6 pt-5"
           >
-            <OutOfMinutesCard className="mx-auto max-w-md" linkRef={homeRef} />
+            <OutOfMinutesCard
+              className="mx-auto max-w-md"
+              endRef={endRef}
+              onEnd={onEnd}
+            />
           </motion.div>
         )}
 

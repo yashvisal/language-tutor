@@ -447,6 +447,7 @@ export function ConversationStage({
             // not just this one — the surface must never close onto a session
             // that is still held by something the learner can no longer see.
             outOfMinutes={outOfMinutes}
+            onEnd={onEnd}
             onClose={() => holds.forEach(release)}
             restoreFocusTo={studyTrigger}
           />
