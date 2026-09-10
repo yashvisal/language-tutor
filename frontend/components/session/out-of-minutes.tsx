@@ -29,10 +29,14 @@ import { cn } from "@/lib/utils"
 export function OutOfMinutesCard({
   className,
   linkRef,
+  hasSession = true,
 }: {
   className?: string
   /** Where focus lands when this card is the surface's only control. */
   linkRef?: RefObject<HTMLAnchorElement | null>
+  /** False when the token route refused before a room existed: there is no
+   * conversation and no review to promise a place in History. */
+  hasSession?: boolean
 }) {
   return (
     <div className={cn(CARD_CLASS, className)}>
@@ -40,8 +44,9 @@ export function OutOfMinutesCard({
         You&rsquo;re out of minutes.
       </h2>
       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-        Buying more will land here. For now, head home — this conversation and
-        its review are saved to your history.
+        {hasSession
+          ? "Buying more will land here. For now, head home — this conversation and its review are saved to your history."
+          : "You need minutes to start a conversation. Buying more will land here; for now, head home."}
       </p>
       <Button
         size="lg"
@@ -59,7 +64,7 @@ export function OutOfMinutesCard({
 export function OutOfMinutesScreen() {
   return (
     <div className="flex min-h-svh items-center justify-center bg-background px-8">
-      <OutOfMinutesCard className="w-full max-w-md" />
+      <OutOfMinutesCard className="w-full max-w-md" hasSession={false} />
     </div>
   )
 }

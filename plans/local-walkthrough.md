@@ -26,14 +26,14 @@ When reporting a bug, include the selected language, what you clicked or said, w
 In one terminal:
 
 ```powershell
-cd C:\Users\yashv\language-tutor\frontend
+cd frontend
 pnpm dev
 ```
 
 In another:
 
 ```powershell
-cd C:\Users\yashv\language-tutor\backend
+cd backend
 lk agent dev
 ```
 

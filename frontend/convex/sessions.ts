@@ -588,6 +588,11 @@ export const recordSummary = internalMutation({
         room: args.room,
         plan: ADOPTED_PLAN,
         startedAt: Date.now(),
+        // The same lease `debit` gives an adopted row. Without one the row
+        // sits at the head of the reconciliation index (absent sorts first)
+        // for two hours, and enough of them would starve the expired leases
+        // behind them.
+        leaseUntil: Date.now() + LEASE_TTL_MS,
       })
       session = await ctx.db.get(id)
       if (session === null) throw new Error("Session row vanished")

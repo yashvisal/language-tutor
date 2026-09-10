@@ -85,10 +85,15 @@ export function SessionSummary({
    * matter when the client somehow ended with none, which is what a summary
    * re-mounted after a reload looks like.
    */
-  const corrections: Correction[] =
+  // The stored category is a plain string (`convex/validators.ts`); one this
+  // build does not know would reach `CATEGORY_STYLES[category]` and unmount
+  // the summary. Such a correction is skipped here, not restyled: a label the
+  // UI cannot name is not worth a wrong colour.
+  const corrections: Correction[] = (
     outcome.corrections.length > 0
       ? outcome.corrections
       : ((record?.outcome?.corrections as Correction[] | undefined) ?? [])
+  ).filter((correction) => correction.category in CATEGORY_LABELS)
   const groups = groupCorrections(corrections)
 
   /**

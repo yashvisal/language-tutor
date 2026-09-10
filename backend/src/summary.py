@@ -63,8 +63,11 @@ logger = logging.getLogger("tutor.summary")
 
 # The whole teardown seam's budget: the `about` call plus the POST. The
 # shutdown callback wraps the lot in this, because LiveKit's shutdown is not a
-# place to wait on a model.
-SUMMARY_BUDGET_S = 8.0
+# place to wait on a model. Sized as `ABOUT_TIMEOUT_S` plus a full ledger
+# request (`billing.REQUEST_TIMEOUT_S`, 5 s) with slack: an `about` call that
+# used all six seconds used to leave the POST two, and the wrapper cut the
+# whole record — transcript included — when the model was merely slow.
+SUMMARY_BUDGET_S = 12.0
 
 # The `about` call's own budget. Shorter than the wrapper on purpose: a model
 # that has not answered in six seconds should still leave room for the POST.

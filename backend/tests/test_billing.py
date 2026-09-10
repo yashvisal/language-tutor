@@ -45,6 +45,7 @@ from billing import (  # noqa: E402
     SUMMARY_PATH,
     TOKEN_TTL_S,
     BillingClient,
+    _fit_body,
 )
 from clock import report_seconds_billed  # noqa: E402
 
@@ -474,14 +475,44 @@ async def test_summary_drops_unrenderable_turns() -> None:
     assert body["transcript"] == [{"role": "learner", "text": "kept"}]
 
 
-async def test_an_oversized_body_sheds_the_review_then_the_transcript() -> None:
-    ledger = FakeLedger([{"ok": True}])
-    client = make(ledger)
-    turns = [{"role": "learner", "text": "x" * MAX_TURN_CHARS}] * MAX_TRANSCRIPT_TURNS
-    huge = {"tables": ["y" * 1000] * 300}
-    await client.summary(about="about the thing", transcript=turns, review=huge)
-    (body,) = _summaries(ledger)
+def test_an_oversized_body_sheds_the_review_then_halves_the_transcript() -> None:
+    # Straight at `_fit_body`: every field `summary()` sends is bounded, and
+    # the bounds together sit under the ceiling, so the fitter is a safety net
+    # that the public path cannot reach. It still has to work.
+    review = {
+        "vocab": [{"target": "t" * 100, "anchor": "a" * 100}] * 40,
+        "phrases": [],
+        "tables": [],
+    }
+    turns = [{"role": "learner", "text": "x" * 2000}] * 300  # ~600 KB
+    body = _fit_body({"about": "about the thing", "review": review, "transcript": list(turns)})
     assert "review" not in body
+    assert body["about"] == "about the thing"
+    # Halved from the oldest end until it fits, and not thrown away whole.
+    assert 0 < len(body["transcript"]) < len(turns)
+    assert body["transcript"][-1] == turns[-1]
+    assert len(json.dumps(body).encode("utf-8")) <= MAX_BODY_BYTES
+
+
+def test_a_body_that_cannot_fit_keeps_the_about_line_alone() -> None:
+    corrections = [
+        {
+            "id": str(i),
+            "original": "o" * 400,
+            "replacement": "r" * 400,
+            "category": "tense",
+            "severity": "error",
+            "explanation": "e" * 400,
+        }
+        for i in range(200)
+    ]
+    body = _fit_body(
+        {
+            "about": "about the thing",
+            "transcript": [{"role": "learner", "text": "x" * 3000}] * 200,
+            "corrections": corrections,
+        }
+    )
     assert body["about"] == "about the thing"
     assert len(json.dumps(body).encode("utf-8")) <= MAX_BODY_BYTES
 

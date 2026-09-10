@@ -12,7 +12,7 @@ importers:
         specifier: ^1.7.0
         version: 1.7.0(@types/react@19.2.18)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@clerk/backend':
-        specifier: ^3.16.10
+        specifier: 3.16.10
         version: 3.16.10(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@clerk/nextjs':
         specifier: ^7.8.0

@@ -7,6 +7,11 @@
 # suite catch what CI can honestly catch; the build is verified by the deploy.
 name: CI
 
+# Read-only: nothing here writes to the repository, so the token gets no
+# more than checkout needs.
+permissions:
+  contents: read
+
 on:
   pull_request:
   push:
@@ -27,6 +32,8 @@ jobs:
         working-directory: frontend
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       # Version comes from `frontend/package.json`'s `packageManager` field, so
       # CI and every local machine use the same pnpm.
@@ -56,6 +63,8 @@ jobs:
         working-directory: backend
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - uses: astral-sh/setup-uv@v7
         with:

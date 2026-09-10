@@ -281,7 +281,12 @@ export function SelectionTranslator({
                     not a dismissal, and the selection is still on screen. */}
                 <button
                   type="button"
-                  onClick={() => setAttempt((n) => n + 1)}
+                  onClick={() => {
+                    // Back to the shimmer first, so the button is gone while
+                    // the request runs and cannot start a second one.
+                    setResolved(null)
+                    setAttempt((n) => n + 1)
+                  }}
                   className="text-foreground underline decoration-foreground/30 underline-offset-4 transition-colors duration-200 outline-none hover:decoration-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
                 >
                   Try again

@@ -45,7 +45,10 @@ export function TutorUnavailableCard({
               ? "That’s a lot of conversations for one hour."
               : "The tutor didn’t join."}
       </h2>
-      <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+      <p
+        role="alert"
+        className="mt-2 text-sm leading-relaxed text-muted-foreground"
+      >
         {reason === "silent"
           ? "It connected but never spoke. Nothing was charged — the clock starts when the tutor does."
           : reason === "open_session"

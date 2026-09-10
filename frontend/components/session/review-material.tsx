@@ -60,8 +60,8 @@ export function ReviewMaterialView({
         {material.tables.length > 0 && (
           <Section label="Conjugations">
             <div className="space-y-7">
-              {orderTables(material.tables, focusTenses).map((table) => (
-                <div key={`${table.verb} ${table.tense}`}>
+              {orderTables(material.tables, focusTenses).map((table, i) => (
+                <div key={`${i} ${table.verb} ${table.tense}`}>
                   <div className="mb-2 flex items-baseline gap-2">
                     <span
                       lang={language}
@@ -125,9 +125,9 @@ function PairList({ items }: { items: readonly ReviewItem[] }) {
   const language = useSessionLanguage()
   return (
     <dl className="text-sm">
-      {items.map((item) => (
+      {items.map((item, i) => (
         <div
-          key={`${item.target} ${item.anchor}`}
+          key={`${i} ${item.target} ${item.anchor}`}
           className="flex gap-6 border-t border-border/40 py-1.5 first:border-t-0"
         >
           <dt
