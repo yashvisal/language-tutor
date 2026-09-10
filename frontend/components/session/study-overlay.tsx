@@ -209,8 +209,12 @@ export function StudyOverlay({
         )}
 
         <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-6 pb-16">
-          {/* Same grid as the stage, so every tab reads as the same document. */}
-          <StageGrid className="h-full">
+          {/* Same grid as the stage, so every tab reads as the same document.
+              `min-h-full`, not `h-full`: a fixed-height grid inside a scroll
+              container lets a long transcript overflow its own box, and the
+              container's bottom padding then sits behind the overflow rather
+              than after it — the "no gap at the bottom" (live, 2026-09-09). */}
+          <StageGrid className="min-h-full">
             <TabsContent value="transcript">
               <TranscriptTab turns={turns} thread={thread} />
             </TabsContent>
