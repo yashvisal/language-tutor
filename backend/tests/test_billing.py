@@ -495,26 +495,26 @@ def test_an_oversized_body_sheds_the_review_then_halves_the_transcript() -> None
 
 
 def test_a_body_that_cannot_fit_keeps_the_about_line_alone() -> None:
-    corrections = [
-        {
-            "id": str(i),
-            "original": "o" * 400,
-            "replacement": "r" * 400,
-            "category": "tense",
-            "severity": "error",
-            "explanation": "e" * 400,
-        }
-        for i in range(200)
-    ]
+    # One turn and one correction, each larger than the whole ceiling: halving
+    # cannot rescue either, so both go, and what is left is exactly the line
+    # the summary screen cannot be written without.
     body = _fit_body(
         {
             "about": "about the thing",
-            "transcript": [{"role": "learner", "text": "x" * 3000}] * 200,
-            "corrections": corrections,
+            "transcript": [{"role": "learner", "text": "x" * (MAX_BODY_BYTES + 1)}],
+            "corrections": [
+                {
+                    "id": "1",
+                    "original": "o",
+                    "replacement": "r",
+                    "category": "tense",
+                    "severity": "error",
+                    "explanation": "e" * (MAX_BODY_BYTES + 1),
+                }
+            ],
         }
     )
-    assert body["about"] == "about the thing"
-    assert len(json.dumps(body).encode("utf-8")) <= MAX_BODY_BYTES
+    assert body == {"about": "about the thing"}
 
 
 async def test_a_refused_summary_is_a_returned_false_never_a_raise() -> None:
