@@ -954,14 +954,16 @@ def _fit_body(payload: dict) -> dict:
         # Halve rather than pop: a 256 KB overrun is not one turn's worth.
         turns = turns[max(1, len(turns) // 2) :]
         payload["transcript"] = turns
-    if _body_bytes(payload) > MAX_BODY_BYTES:
+    # Emptied, or still too large: gone. An empty list on the wire would tell
+    # the ledger "the transcript was nothing", which is not what happened.
+    if _body_bytes(payload) > MAX_BODY_BYTES or payload.get("transcript") == []:
         payload.pop("transcript", None)
         logger.warning("summary body too large: dropping the transcript")
     findings = payload.get("corrections")
     while isinstance(findings, list) and findings and _body_bytes(payload) > MAX_BODY_BYTES:
         findings = findings[max(1, len(findings) // 2) :]
         payload["corrections"] = findings
-    if _body_bytes(payload) > MAX_BODY_BYTES:
+    if _body_bytes(payload) > MAX_BODY_BYTES or payload.get("corrections") == []:
         payload.pop("corrections", None)
         logger.warning("summary body still too large: posting the about line alone")
     return payload
