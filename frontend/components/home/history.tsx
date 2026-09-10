@@ -95,6 +95,12 @@ export function History() {
                   <span className="min-w-0 flex-1 truncate text-sm text-foreground">
                     {entry.goal?.trim() || titleFor(entry.plan)}
                   </span>
+                  {/* The language, now that it is a choice rather than a
+                      given: a learner working on two languages needs to tell
+                      the rows apart at a glance (Yash, 2026-09-10). */}
+                  <span className="shrink-0 rounded-full bg-foreground/[0.05] px-2 py-0.5 text-[11px] text-muted-foreground dark:bg-white/10">
+                    {LANGUAGE_NAMES[targetLanguage(entry.plan.targetLanguage)]}
+                  </span>
                   <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
                     {formatDate(entry.startedAt)}
                   </span>
