@@ -195,11 +195,12 @@ From reviewing the phase-1 layout explorations (aura-stage, split-columns, and t
 4. **Five free minutes at signup, not ten** (Yash, 2026-09-06). One constant,
    `SIGNUP_GRANT_SECONDS` in `frontend/lib/billing.ts`; every surface that
    promises the grant reads it.
-5. **Ask answers in the target language** (Yash, 2026-09-06). The pause
-   surface is still the tutor: Ask writes in the session's language, pitched
-   to the self-reported level, with a short English gloss for a beginner's
-   unknown words. Correction *explanations* stay in English (the anchor
-   language) — they are read, not practised.
+5. **Ask answers in English, with the target phrases quoted** (Yash,
+   2026-09-10, reversing 2026-09-06). An Ask answer in the target language
+   was one more thing to translate mid-pause. Ask writes in the anchor
+   language, pitched to the self-reported level, and puts every target-
+   language word or phrase the learner should say in quotes — what to say
+   and when. Correction *explanations* stay in English too.
 6. **The opening is in English; the conversation is not** (Yash,
    2026-09-09). The greeting and the one goal confirmation are in the anchor
    language, and the first question after the goal is agreed is in the

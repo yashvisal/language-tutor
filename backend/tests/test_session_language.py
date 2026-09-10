@@ -73,7 +73,9 @@ def test_preflight_answers_and_level_reach_prompts(level, guidance):
         assert "early-intermediate" not in prompt
 
 
-def test_ask_answers_in_the_target_language_at_the_learner_level():
+def test_ask_answers_in_english_with_the_target_phrases_quoted():
+    # Yash, 2026-09-10: an answer in the target language was one more thing
+    # to translate. English guidance, with the Italian to say in quotes.
     from prompts import ask_instructions
 
     plan = JobMetadata.parse(
@@ -81,7 +83,8 @@ def test_ask_answers_in_the_target_language_at_the_learner_level():
     ).plan
     cfg = TutorConfig().with_session_language(plan.target_language)
     prompt = ask_instructions(cfg, plan)
-    assert "Write in Italian" in prompt
+    assert "Write in English" in prompt
+    assert "Italian word or phrase you want them to use in quotation marks" in prompt
     assert "beginner" in prompt
     assert "Slow, short sentences" in prompt
-    assert "Write in English" not in prompt
+    assert "Write in Italian" not in prompt
