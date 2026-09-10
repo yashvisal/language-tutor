@@ -23,6 +23,7 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any
 
+import openai as openai_sdk
 from dotenv import load_dotenv
 from livekit import agents, rtc
 from livekit.agents import (
@@ -369,6 +370,23 @@ def _prewarm(proc: JobProcess) -> None:
         proc.userdata["turn_detector"] = inference.TurnDetector()
     except Exception:
         logger.warning("prewarm failed; sessions will build their own", exc_info=True)
+
+    # The OpenAI SDK builds its pydantic models on first use, and the first
+    # use is a job's first Responses call — the analyzer, the Review, the goal
+    # tool — which stalled the agent's event loop for up to 0.9 s while it
+    # imported and validated schemas (live, 2026-09-10). Touching those
+    # modules here, and building one client, pays that once per process,
+    # before any audio is in flight.
+    try:
+        import openai.lib.streaming.responses  # noqa: F401
+        import openai.types.beta  # noqa: F401
+        import openai.types.responses  # noqa: F401
+
+        # `openai_sdk`, because `openai` in this module is the LiveKit plugin.
+        openai_client = openai_sdk.AsyncOpenAI(api_key="prewarm")
+        _ = openai_client.responses  # the lazy resource, and its models
+    except Exception:
+        logger.debug("OpenAI SDK prewarm skipped", exc_info=True)
 
 
 server = AgentServer(num_idle_processes=NUM_IDLE_PROCESSES)
