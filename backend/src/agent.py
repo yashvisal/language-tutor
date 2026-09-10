@@ -207,6 +207,7 @@ class TutorAgent(Agent):
         self._state = state
         self._room = room
         self._goals = goals
+        self._last_commit_at: float | None = None
 
     # The session's one tool (phase 7 step 3). It exists because the goal the
     # conversation is aimed at should be what the learner AGREED to, not what a
@@ -261,6 +262,19 @@ class TutorAgent(Agent):
         # hold is still a committed turn, and the StopResponse it raises only
         # suppresses the tutor's reply.
         _publish_turn_commit(self._room, self._state)
+
+        # How a sentence was cut, as a number (from the GPT-Live spike, kept):
+        # a run of short commits a second or two apart is one sentence in
+        # pieces, and that is the thing to compare when endpointing changes.
+        now = time.monotonic()
+        logger.info(
+            "turn committed",
+            extra={
+                "chars": len(new_message.text_content or ""),
+                "gap_s": round(now - self._last_commit_at, 2) if self._last_commit_at else None,
+            },
+        )
+        self._last_commit_at = now
 
         # The goal's safety net: by the third committed turn the opening
         # exchange has happened, and if the tool never fired the session still
