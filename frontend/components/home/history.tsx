@@ -85,12 +85,15 @@ export function History() {
                   onClick={() => setOpenId(entry.id)}
                   className="flex w-full items-baseline justify-between gap-4 rounded-md px-2 py-2.5 text-left transition-colors duration-200 hover:bg-foreground/[0.03] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
                 >
-                  {/* What it was ABOUT, which the worker writes from the
-                      transcript at teardown — the plan's topic is what the
-                      learner declared beforehand, and only the fallback for a
-                      row that ended before `about` existed. */}
+                  {/* The goal: the line the tutor and the learner agreed at
+                      the top. It is there from the moment the goal is set
+                      and it does not change, which is why it is the title —
+                      the worker's `about` line used to take over when the
+                      record landed, and a row renaming itself a minute later
+                      read as a glitch (Yash, 2026-09-09). The plan's topic
+                      stands in for a row with no goal. */}
                   <span className="min-w-0 flex-1 truncate text-sm text-foreground">
-                    {entry.about?.trim() || titleFor(entry.plan)}
+                    {entry.goal?.trim() || titleFor(entry.plan)}
                   </span>
                   <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
                     {formatDate(entry.startedAt)}
@@ -148,7 +151,6 @@ function SessionDialog({
    * and the modal opens before the second query resolves. Same value either
    * way; this only stops the line appearing a beat late.
    */
-  const goal = record?.goal?.text ?? entry?.goal ?? null
   const endReason = entry?.endReason ?? record?.endReason ?? null
 
   return (
@@ -159,7 +161,7 @@ function SessionDialog({
             <>
               <DialogHeader className="px-6 pt-6 pb-4 text-left">
                 <DialogTitle className="text-lg font-semibold tracking-tight">
-                  {entry.about?.trim() || titleFor(entry.plan)}
+                  {entry.goal?.trim() || titleFor(entry.plan)}
                 </DialogTitle>
                 <DialogDescription className="tabular-nums">
                   {formatDate(entry.startedAt)} ·{" "}
@@ -168,11 +170,10 @@ function SessionDialog({
               </DialogHeader>
 
               <div className="max-h-[60svh] [scrollbar-width:thin] [scrollbar-color:var(--border)_transparent] space-y-6 overflow-y-auto px-6 py-1">
-                {/* What the session was SET UP to be — the line the tutor and
-                  the learner agreed at the top of it. The list row shows only
-                  what it BECAME (`about`); the goal lives in here, because a
-                  row that says both says neither. */}
-                <GoalLine goal={goal} />
+                {/* What it BECAME: the worker's one line off the transcript,
+                  against the goal in the title — what was set up. Absent for
+                  a row the worker never closed. */}
+                <GoalLine goal={entry.about} label="What it became" />
 
                 {/* And why it stopped, where that is worth saying. Absent for an
                   ordinary ending, and for every row that predates the field —
