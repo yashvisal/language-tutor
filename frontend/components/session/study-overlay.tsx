@@ -214,7 +214,7 @@ export function StudyOverlay({
               container lets a long transcript overflow its own box, and the
               container's bottom padding then sits behind the overflow rather
               than after it — the "no gap at the bottom" (live, 2026-09-09). */}
-          <StageGrid className="min-h-full">
+          <StageGrid className="flex min-h-full flex-col">
             <TabsContent value="transcript">
               <TranscriptTab turns={turns} thread={thread} />
             </TabsContent>
@@ -225,7 +225,11 @@ export function StudyOverlay({
                 focusTenses={focusTenses}
               />
             </TabsContent>
-            <TabsContent value="ask" className="h-full">
+            {/* The Ask tab fills the column so its composer sits at the
+                bottom; `h-full` on it had nothing to be full of once the grid
+                became `min-h-full`, and the empty state showed the composer
+                floating mid-screen (live, 2026-09-10). */}
+            <TabsContent value="ask" className="flex flex-1 flex-col">
               <AskTab
                 thread={thread}
                 onAsk={onAsk}

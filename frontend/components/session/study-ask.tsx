@@ -61,7 +61,7 @@ export function AskTab({
   }
 
   return (
-    <div className="flex min-h-full flex-col pt-2">
+    <div className="flex flex-1 flex-col pt-2">
       <div className="flex-1 space-y-8">
         {thread.length === 0 && (
           <p className="pt-16 text-sm text-muted-foreground">
