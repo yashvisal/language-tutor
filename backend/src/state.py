@@ -204,6 +204,12 @@ def goal_from_plan(plan: SessionPlan | None) -> SessionGoal | None:
 
 @dataclass
 class SessionState:
+    # Whether the tutor has produced any audio yet. Until it has, nothing has
+    # been asked, so a committed learner turn is noise — a "0" the transcriber
+    # heard in room tone answered the greeting before it was spoken and the
+    # model opened in the wrong language (live, 2026-09-10). Set from the
+    # agent-state watcher in `agent._meter_from_first_tutor_audio`.
+    tutor_spoken: bool = False
     paused: bool = False
     # The OTHER thing that holds the meter, and it is not the UI's hold: the
     # learner's participant has left the room (a wifi drop, a closed laptop, a

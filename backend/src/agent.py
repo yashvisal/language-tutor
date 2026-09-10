@@ -243,6 +243,19 @@ class TutorAgent(Agent):
     async def on_user_turn_completed(
         self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage
     ) -> None:
+        # Nothing has been asked yet: the tutor speaks first, and a turn that
+        # commits before its first audio is room tone the transcriber made a
+        # word of. Dropped whole — not published, not analyzed, not answered,
+        # and emptied so it does not sit in the model's context as an answer
+        # to the greeting it is about to give (live, 2026-09-10).
+        if not self._state.tutor_spoken:
+            logger.info(
+                "dropping a learner turn before the tutor's first audio",
+                extra={"text": (new_message.text_content or "")[:80]},
+            )
+            new_message.content = []
+            raise StopResponse()
+
         # The turn is committed — tell the UI so it can close the learner's
         # bubble. BEFORE the hold branch below: a turn that commits during a
         # hold is still a committed turn, and the StopResponse it raises only
@@ -629,7 +642,7 @@ async def tutor(ctx: JobContext) -> None:
     # here, first, so the learner's first metered second is a second of
     # tutoring.
     session.generate_reply(instructions=greeting_instructions(cfg, meta.plan, seeded_goal))
-    _meter_from_first_tutor_audio(ctx, session, clock, billing)
+    _meter_from_first_tutor_audio(ctx, session, clock, state, billing)
 
 
 async def _open_ledger(
@@ -784,6 +797,7 @@ def _meter_from_first_tutor_audio(
     ctx: JobContext,
     session: AgentSession,
     clock: SessionClock,
+    state: SessionState,
     billing: BillingClient | None = None,
 ) -> None:
     """Start the clock on the first frame of tutor audio that actually plays.
@@ -805,7 +819,10 @@ def _meter_from_first_tutor_audio(
     requested_at = time.monotonic()
 
     def _on_agent_state(ev: object) -> None:
-        if getattr(ev, "new_state", None) != "speaking" or clock.started:
+        if getattr(ev, "new_state", None) != "speaking":
+            return
+        state.tutor_spoken = True
+        if clock.started:
             return
         # The number behind "it took a while to start" (live, 2026-09-08:
         # about seven seconds, and the learner spoke first). Logged so the
