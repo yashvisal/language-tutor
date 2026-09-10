@@ -72,6 +72,31 @@ found the turn-taking itself better.
 
 Production code on the realtime path, billing, study surfaces, a merge.
 
-## Result
+## Result (2026-09-10, one live-engine run of 2:19, Spanish; realtime baseline = the three runs of 09-08/09/10)
 
-*(filled in after the two runs)*
+| Question | Answer |
+| --- | --- |
+| Fewer split sentences; "hay" stays Spanish? | **Worse at the framework level, better at the model level.** The raw words were right ("estoy trabajando en un tutor para aprender lenguas"), but the plugin ends a learner "turn" 0.8 s after the last transcript fragment, so the framework saw 44 user messages of one to three words each against 12 tutor lines. Our turn-completed hook never fired once. |
+| Meter starts on first tutor audio? | Yes. First audio 1.95 s after the greeting request; debits at 60/120/139 s, zero-hold and final close all correct. |
+| Pause works? | Partly. Mute/unmute acknowledged each time; the resume bridge played; but the model's context kept growing (2.5 % → 5.5 %) through an 85 s pause, so it is generating into the muted output. |
+| Goal round-trip? | Yes. English opening ("So, you wanna talk about a project…?"), confirmation, delegated tool, appended rule, "Vale. ¿Qué proyecto has estado preparando?". |
+| Analyzer still gets turns? | **No.** Zero analyzer runs, zero corrections: there were no committed turns to analyze. Ask, Review, translate and the summary all worked (they read the chat context, not turns). |
+
+Also: the cost line is wrong on this engine — `usage.py` counts realtime audio
+tokens, and GPT-Live reports minutes ($0.05/min, so ≈ $0.12 for this session,
+in line with today's ≈ $0.09–0.11).
+
+**Verdict: not now.** The model's conversation is the best we have heard — the
+opening, the switch, the one-English-line help ("You can say: tener una
+conversación"), the pace. The blocker is that the Live API has no learner-turn
+signal and LiveKit's plugin invents one from transcript gaps, which for a
+hesitant speaker is every word. That breaks the analyzer (the product's
+corrections) and floods the transcript. Fixing it means our own segmentation
+on top of the plugin — join fragments until the tutor starts speaking or a
+longer gap — which is the same class of problem we have today, on an alpha
+plugin, against a deploy that was due days ago.
+
+**What to carry forward:** the framework upgrade to 1.8.1 (harmless, done);
+the turn-commit instrumentation; the observation that GPT-Live's raw
+transcription of Spanish was cleaner than gpt-live-transcribe's. Revisit when
+the plugin exposes a turn boundary or when there is a week to build one.
