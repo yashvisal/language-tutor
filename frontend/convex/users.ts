@@ -196,6 +196,35 @@ export const balanceByClerkId = internalQuery({
   },
 })
 
+/**
+ * Operator-run: set a learner's balance to exactly `seconds` by writing one
+ * `adjustment` ledger row for the difference. Development refills between
+ * test sessions (`npx convex run users:setBalance '{"clerkId":"user_…","seconds":600}'`)
+ * and, later, support corrections — every change is a ledger row with a ref,
+ * never an edit to a number.
+ */
+export const setBalance = internalMutation({
+  args: { clerkId: v.string(), seconds: v.number(), ref: v.optional(v.string()) },
+  returns: v.object({ before: v.number(), after: v.number() }),
+  handler: async (ctx, args) => {
+    const user = await userByClerkId(ctx, args.clerkId)
+    if (user === null) throw new Error("No such user")
+    const before = await secondsFor(ctx, user._id)
+    const target = Math.max(0, Math.round(args.seconds))
+    const delta = target - before
+    if (delta !== 0) {
+      await ctx.db.insert("creditLedger", {
+        userId: user._id,
+        kind: "adjustment",
+        seconds: delta,
+        ref: args.ref ?? `adjustment:${args.clerkId}:${Date.now()}`,
+        createdAt: Date.now(),
+      })
+    }
+    return { before, after: target }
+  },
+})
+
 /* -------------------------------------------------------------------------- */
 /*  Account deletion                                                          */
 /* -------------------------------------------------------------------------- */

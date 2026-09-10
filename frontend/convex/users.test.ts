@@ -96,6 +96,39 @@ async function remainsOf(t: TestConvex, userId: Id<"users">) {
   }))
 }
 
+describe("users.setBalance", () => {
+  test("writes one adjustment for the difference, and nothing when there is none", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner", { ledgerRows: 1, sessionRows: 0 })
+
+    expect(
+      await t.mutation(internal.users.setBalance, { clerkId: "user_owner", seconds: 900 })
+    ).toEqual({ before: SIGNUP_GRANT_SECONDS, after: 900 })
+    expect(
+      await t.mutation(internal.users.setBalance, { clerkId: "user_owner", seconds: 900 })
+    ).toEqual({ before: 900, after: 900 })
+    expect(
+      await t.mutation(internal.users.setBalance, { clerkId: "user_owner", seconds: 60 })
+    ).toEqual({ before: 900, after: 60 })
+
+    const rows = await t.run(async (ctx) =>
+      ctx.db
+        .query("creditLedger")
+        .withIndex("by_user", (q) => q.eq("userId", userId))
+        .collect()
+    )
+    // The grant, +600, then -840: a ledger of what happened, not a number edited.
+    expect(rows.map((row) => [row.kind, row.seconds])).toEqual([
+      ["signup_grant", SIGNUP_GRANT_SECONDS],
+      ["adjustment", 900 - SIGNUP_GRANT_SECONDS],
+      ["adjustment", 60 - 900],
+    ])
+    await expect(
+      t.mutation(internal.users.setBalance, { clerkId: "user_nobody", seconds: 1 })
+    ).rejects.toThrow("No such user")
+  })
+})
+
 describe("users.deleteByClerkId", () => {
   test("erases the learner from all three tables", async () => {
     const t = setup()
