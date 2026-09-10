@@ -294,6 +294,10 @@ const MOCK_TABLES = [
   },
 ]
 
+/** The goal replay pretends was confirmed at the top of the conversation. */
+const MOCK_GOAL =
+  "Order food and drinks at a restaurant without switching to English."
+
 /** How long replay pretends the worker is still generating the material. */
 const MOCK_REVIEW_DELAY_MS = 1200
 
@@ -313,6 +317,9 @@ export const mockReview: StudyBackend["review"] = () => {
   }
   return Promise.resolve<ReviewResponse>({
     ready: true,
+    // Replay's material never changes, so it is version 1 forever — which is
+    // exactly the signal that stops the tab asking again (see `useStudy`).
+    version: 1,
     vocab: MOCK_VOCAB,
     phrases: CONVERSATION.filter((turn) => turn.speaker === "tutor")
       .slice(0, 4)
@@ -339,7 +346,9 @@ export function useMockSession(): MockSession {
     () => ({ ask: mockAsk, review: mockReview }),
     []
   )
-  const study = useStudy(backend)
+  // Replay agrees its goal the way a real session does — the playground is a
+  // test of the surface, and the Review tab's top line is part of it.
+  const study = useStudy(backend, { goal: MOCK_GOAL, reviewVersion: 1 })
 
   useEffect(() => {
     if (state.holds.length > 0) return

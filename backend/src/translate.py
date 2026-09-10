@@ -26,6 +26,7 @@ from livekit.agents import AgentSession, JobContext
 from analyzer import ContextTurn, context_lines, recent_context
 from config import RPC_TRANSLATE, TutorConfig
 from prompts import translate_instructions
+from usage import UsageTracker
 
 logger = logging.getLogger("tutor.translate")
 
@@ -33,15 +34,24 @@ logger = logging.getLogger("tutor.translate")
 # to tempt the model into translating the context instead of the span.
 CONTEXT_TURNS = 4
 
-# Comfortably inside the frontend's 5s timeout: better a clean error the overlay
-# can render than a request the caller has already given up on.
-REQUEST_TIMEOUT = 4.0
+# Comfortably inside the frontend's 10s timeout: better a clean error the
+# overlay can render than a request the caller has already given up on. Eight,
+# not four: a span that took 3.2s to come back landed, and one that would have
+# taken a little longer was a "Couldn't translate" (live, 2026-09-09).
+REQUEST_TIMEOUT = 8.0
 
 # The overlay is for spans, not documents. A selection longer than this is
 # almost certainly a stray triple-click.
 MAX_SPAN_CHARS = 600
 
 SPEAKERS = ("learner", "tutor")
+
+# The lookups kept for the after-session record (phase 7 step 3, the "edges"
+# list: every select-to-translate lookup is the sharpest study record a session
+# produces and none of it was stored). Bounded here, at the ledger's numbers,
+# because this is the place the list is built.
+MAX_LOOKUPS = 100
+MAX_LOOKUP_CHARS = 200
 
 
 class SpanTranslator:
@@ -53,14 +63,34 @@ class SpanTranslator:
     real gain.
     """
 
-    def __init__(self, cfg: TutorConfig) -> None:
+    def __init__(self, cfg: TutorConfig, usage: UsageTracker | None = None) -> None:
         self._cfg = cfg
+        self._usage = usage
         self._instructions = translate_instructions(cfg)
+        # What the learner looked up, oldest first, for the after-session
+        # record. Trimmed as it grows, like every other session-long list here.
+        self._lookups: list[dict[str, str]] = []
         # Built on first use. Constructing the client loads the CA bundle and
         # builds an SSL context, and the translator is constructed on every job
         # while plenty of sessions never translate anything — so that cost does
         # not belong on the path to `session.start`.
         self._client: openai.AsyncOpenAI | None = None
+        self._warm_task: asyncio.Task[None] | None = None
+
+    @property
+    def lookups(self) -> list[dict[str, str]]:
+        """Every span the learner translated, as `{source, translation}`."""
+        return list(self._lookups)
+
+    def _record(self, source: str, translation: str) -> None:
+        self._lookups.append(
+            {
+                "source": " ".join(source.split())[:MAX_LOOKUP_CHARS],
+                "translation": " ".join(translation.split())[:MAX_LOOKUP_CHARS],
+            }
+        )
+        if len(self._lookups) > MAX_LOOKUPS:
+            del self._lookups[:-MAX_LOOKUPS]
 
     def _get_client(self) -> openai.AsyncOpenAI:
         if self._client is None:
@@ -90,6 +120,18 @@ class SpanTranslator:
         self._warm_task = asyncio.create_task(self.warm())
 
     async def aclose(self) -> None:
+        # A warm-up still in flight holds a socket into a loop that is closing
+        # under it, and logs its own failure on the way out. Cancel it first.
+        task = self._warm_task
+        self._warm_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.debug("warm-up failed on the way out (harmless)", exc_info=True)
         if self._client is not None:
             await self._client.close()
 
@@ -109,7 +151,12 @@ class SpanTranslator:
             # time-to-first-token well outside an interactive budget.
             reasoning={"effort": "none"},
         )
-        return (response.output_text or "").strip()
+        if self._usage is not None:
+            self._usage.record_text_usage(response, label="translate")
+        translation = (response.output_text or "").strip()
+        if translation:
+            self._record(text, translation)
+        return translation
 
 
 async def register_translate_rpc(

@@ -78,11 +78,11 @@ export interface TranslateRequest {
 export const MAX_SPAN_CHARS = 600
 
 /**
- * How long the overlay waits for a translation. The worker self-limits to 4s
+ * How long the overlay waits for a translation. The worker self-limits to 8s
  * and answers failures with an error string rather than silence, so anything
  * that reaches this ceiling is the transport, not the model.
  */
-export const TRANSLATE_TIMEOUT_MS = 5000
+export const TRANSLATE_TIMEOUT_MS = 10000
 
 /** The `tutor.translate` reply: exactly one of these fields is present. */
 export interface TranslateResponse {
@@ -168,14 +168,40 @@ export interface ReviewMaterial {
 
 /**
  * The `tutor.review` reply. `ready: false` means the material is still being
- * generated — the only correct response is to poll again, not to show an
- * error, because a session's material is generated once and then never changes.
+ * generated — the only correct response is to ask again, not to show an error.
+ *
+ * `version` is the snapshot this material belongs to, matching
+ * `tutor.review_version` at the moment the worker generated it. From phase 7
+ * step 3 the material is NOT generated once and then frozen: the worker
+ * regenerates it from the transcript at a hold when there is enough new
+ * material, and bumps the attribute. The version is what lets the tab tell a
+ * re-fetch that changed nothing from one that brought a new snapshot — and it
+ * is optional because a worker that predates it still answers these calls, and
+ * a tab that cannot see a version falls back to the slow poll below.
  */
 export type ReviewResponse =
-  ({ ready: true } & ReviewMaterial) | { ready: false }
+  | ({ ready: true; version?: number } & ReviewMaterial)
+  | { ready: false; version?: number }
 
 /** Gap between review polls while the worker says the material is not ready. */
 export const REVIEW_POLL_MS = 1500
+
+/**
+ * The fallback cadence, once the fast poll above has given up or the worker
+ * answered without a version. Review arrives by PUSH now — the worker bumps
+ * `tutor.review_version` and the tab re-fetches — so this exists only for the
+ * two cases where the push cannot be trusted: material that has never arrived,
+ * and a worker whose reply carries no version at all. Slow on purpose: it is a
+ * safety net, not a mechanism.
+ */
+export const REVIEW_FALLBACK_POLL_MS = 30_000
+
+/**
+ * How long the Review tab wears its "Updated" marker after new material has
+ * replaced what was on screen. Long enough to be noticed by someone reading,
+ * short enough that it is not a badge.
+ */
+export const REVIEW_UPDATED_MS = 6000
 
 /**
  * How many times to ask before giving up. At ~1.5s a poll this is half a
@@ -268,7 +294,85 @@ export const PARTICIPANT_ATTRIBUTES = {
    * learner's bubble on stage (see `openSegment` in `reducer.ts`).
    */
   turnSeq: "tutor.turn_seq",
+  /**
+   * The one thing the worker can say when the conversation cannot happen. Two
+   * values, and they are different facts (see `TUTOR_ERROR_*` below); absent
+   * whenever the session is merely fine.
+   */
+  error: "tutor.error",
+  /** The confirmed goal, one line. See `ATTR_GOAL`. */
+  goal: "tutor.goal",
+  /** The Review snapshot counter. See `ATTR_REVIEW_VERSION`. */
+  reviewVersion: "tutor.review_version",
 } as const
+
+/**
+ * The session's confirmed goal, as one line of text — empty until the tutor and
+ * the learner have agreed one (phase 7 step 3: the conversation starts with
+ * goal setting). Published as an attribute rather than sent as an event because
+ * it is a fact about the session that a tab joining late must also see, and
+ * because it changes at most once.
+ *
+ * Named separately from the map above for the same reason as `ATTR_ERROR`: the
+ * producer reads it directly, and the surfaces that render it should not have
+ * to know which bag the key lives in.
+ */
+export const ATTR_GOAL = "tutor.goal"
+
+/**
+ * Integer string, `"0"` at the start of a session and incremented every time
+ * the worker has a NEW Review snapshot. This is what makes Review a push:
+ * the tab watches this attribute and re-fetches `tutor.review` when it moves,
+ * instead of polling a material that used to be generated once and then never
+ * changed. A worker that never bumps it is indistinguishable from the old one,
+ * and the slow fallback poll covers that case.
+ */
+export const ATTR_REVIEW_VERSION = "tutor.review_version"
+
+/**
+ * `tutor.error`, spelled out. Named separately from the map above because both
+ * halves of the surface read it directly: the live producer to decide whether
+ * this session has a future, and the failed card to decide what to say.
+ */
+export const ATTR_ERROR = "tutor.error"
+
+/**
+ * The realtime model died and could not be brought back. The worker holds,
+ * debits what was actually spoken, and ends the session through the ordinary
+ * `session_over` path — so the learner gets their summary, with a line saying
+ * it ended on its own. Time already talked IS billed: it happened.
+ */
+export const TUTOR_ERROR_MODEL = "model"
+
+/**
+ * The tutor joined and never produced a single audio frame inside
+ * `TUTOR_SILENT_TIMEOUT_MS`. Nothing is billed — the meter starts at the first
+ * tutor audio — so this is a failed start, not a short session.
+ */
+export const TUTOR_ERROR_SILENT = "tutor_silent"
+
+/**
+ * The ledger refused to open this room: the learner already has a live
+ * conversation (another tab, or a worker still holding its lease). The worker
+ * publishes it and leaves; nothing was billed.
+ */
+export const TUTOR_ERROR_OPEN_SESSION = "open_session"
+
+/** The ledger refused to open this room because it has already ended — a
+ * reused token. The worker publishes it and leaves; nothing was billed. */
+export const TUTOR_ERROR_CLOSED = "closed"
+
+/** The ledger refused to open this room because the learner hit the hourly
+ * start limit between the token's pre-check and the worker's join. */
+export const TUTOR_ERROR_RATE_LIMITED = "rate_limited"
+
+/**
+ * How long the surface waits for the tutor to JOIN before calling the session
+ * failed. Generous next to a healthy dispatch (a second or two) and short
+ * enough that a learner never sits in front of a silent stage wondering
+ * whether they are supposed to speak first. Audit B6.
+ */
+export const AGENT_JOIN_TIMEOUT_MS = 12_000
 
 /** Value convention for boolean participant attributes. */
 export const ATTRIBUTE_TRUE = "true"
@@ -302,6 +406,7 @@ export interface SessionDispatchMetadata {
   /** Balance in seconds at the moment the token was minted. */
   balance_s: number
   plan: {
+    target_language?: string
     topic: string | null
     scenario: string | null
     tenses: string[]

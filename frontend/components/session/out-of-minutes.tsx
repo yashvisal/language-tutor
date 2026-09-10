@@ -12,6 +12,11 @@
  * Buying more will land in this card. Until then the only honest offer is the
  * way home, so that is the only button: an offer nobody can accept is worse
  * than no offer.
+ *
+ * The second line used to promise the transcript and review were "saved in
+ * this session", which was true only until the tab closed. Since the worker
+ * writes both to the `sessions` row at teardown (`sessions.recordSummary`) and
+ * History renders them, the promise is now the one the code keeps.
  */
 
 import type { RefObject } from "react"
@@ -24,10 +29,14 @@ import { cn } from "@/lib/utils"
 export function OutOfMinutesCard({
   className,
   linkRef,
+  hasSession = true,
 }: {
   className?: string
   /** Where focus lands when this card is the surface's only control. */
   linkRef?: RefObject<HTMLAnchorElement | null>
+  /** False when the token route refused before a room existed: there is no
+   * conversation and no review to promise a place in History. */
+  hasSession?: boolean
 }) {
   return (
     <div className={cn(CARD_CLASS, className)}>
@@ -35,8 +44,9 @@ export function OutOfMinutesCard({
         You&rsquo;re out of minutes.
       </h2>
       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-        Buying more will land here. For now, head home — your transcript and
-        review are saved in this session.
+        {hasSession
+          ? "Buying more will land here. For now, head home — this conversation and its review are saved to your history."
+          : "You need minutes to start a conversation. Buying more will land here; for now, head home."}
       </p>
       <Button
         size="lg"
@@ -54,7 +64,7 @@ export function OutOfMinutesCard({
 export function OutOfMinutesScreen() {
   return (
     <div className="flex min-h-svh items-center justify-center bg-background px-8">
-      <OutOfMinutesCard className="w-full max-w-md" />
+      <OutOfMinutesCard className="w-full max-w-md" hasSession={false} />
     </div>
   )
 }

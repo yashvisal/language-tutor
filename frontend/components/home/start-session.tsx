@@ -12,13 +12,13 @@
  *
  * The plan picker lives in a modal behind the button: a learner arriving at
  * `/home` is not here to fill in a form, and the questions are optional
- * anyway. Start persists the plan and hands off to `/session?start=1`, which
- * connects immediately.
+ * anyway. Start persists the plan, flags the hand-off (`lib/session/handoff`)
+ * and navigates to `/session`, which connects immediately.
  */
 
 import { useState, useSyncExternalStore } from "react"
+import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { useQuery } from "convex/react"
 
 import { PlanCards } from "@/components/session/session-preflight"
 import { CARD_CLASS } from "@/components/surface"
@@ -36,8 +36,10 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { api } from "@/convex/_generated/api"
+import { useViewer } from "@/lib/use-authed-query"
 import { LOW_BALANCE_SECONDS, formatClock } from "@/lib/billing"
 import type { SessionPlan } from "@/lib/session/contract"
+import { requestStart } from "@/lib/session/handoff"
 import {
   planSnapshot,
   savePlan,
@@ -48,7 +50,7 @@ import { cn } from "@/lib/utils"
 
 export function StartSession() {
   const router = useRouter()
-  const viewer = useQuery(api.users.viewer)
+  const viewer = useViewer()
 
   const stored = useSyncExternalStore(
     subscribeToPlan,
@@ -58,10 +60,17 @@ export function StartSession() {
   const [edited, setEdited] = useState<SessionPlan | null>(null)
   const [open, setOpen] = useState(false)
 
-  // The level the learner already declared wins over whatever last session's
-  // stored plan carried — the profile is the answer they gave on purpose.
-  const plan = edited ?? { ...stored, level: viewer?.level ?? stored.level }
+  const plan = edited ?? stored
 
+  /**
+   * Three states, and the middle one used to be invisible. `undefined` is the
+   * query in flight; `null` is a signed-in Clerk session with no `users` row
+   * behind it — a webhook that never fired, a half-finished sign-up — and it
+   * left Start permanently disabled with nothing on screen explaining why
+   * (audit §4.13). `/welcome` is where a row gets made, so that is the offer.
+   */
+  const loading = viewer === undefined
+  const missing = viewer === null
   const seconds = viewer?.seconds
   const known = seconds !== undefined
   const empty = known && seconds <= 0
@@ -88,11 +97,24 @@ export function StartSession() {
             {known && formatClock(seconds)}
           </p>
           <p className="mt-1.5 text-sm text-muted-foreground">
-            {empty
-              ? "Talking uses time. Studying never does."
-              : low
-                ? "Enough for a short conversation."
-                : "Counts only while you talk."}
+            {missing ? (
+              <>
+                We haven&rsquo;t finished setting up your account.{" "}
+                <Link
+                  href="/welcome"
+                  className="text-foreground underline decoration-foreground/30 underline-offset-4 transition-colors duration-200 hover:decoration-foreground"
+                >
+                  Finish setup
+                </Link>
+                .
+              </>
+            ) : empty ? (
+              "Talking uses time. Studying never does."
+            ) : low ? (
+              "Enough for a short conversation."
+            ) : (
+              "Counts only while you talk."
+            )}
           </p>
         </div>
 
@@ -112,7 +134,9 @@ export function StartSession() {
         ) : (
           <Button
             size="lg"
-            disabled={!known}
+            // Disabled while the balance is unknown — which is the query in
+            // flight, and no longer "forever, because there is no row".
+            disabled={loading || missing}
             onClick={() => setOpen(true)}
             className="shrink-0 transition-[transform,box-shadow,background-color] duration-200 hover:shadow-md"
           >
@@ -144,7 +168,8 @@ export function StartSession() {
             footerClassName="px-6 py-4"
             onStart={(finalPlan) => {
               savePlan(finalPlan)
-              router.push("/session?start=1")
+              requestStart(finalPlan)
+              router.push("/session")
             }}
           />
         </DialogContent>

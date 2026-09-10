@@ -23,16 +23,12 @@
 
 import { useEffect, useState } from "react"
 
+import { OVERLINE_CLASS } from "@/components/overline"
+import { formatClock } from "@/lib/billing"
 import { cn } from "@/lib/utils"
 
 /** Where the countdown starts. Matches the worker's nudge, by design. */
 const REMAINING_THRESHOLD_S = 30
-
-/** `m:ss`. Minutes are unpadded: this is a stopwatch, not a timestamp. */
-function clock(seconds: number): string {
-  const whole = Math.max(0, Math.floor(seconds))
-  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`
-}
 
 export function SessionClock({
   elapsedSeconds,
@@ -101,14 +97,17 @@ function ClockFace({
       <span
         aria-live="polite"
         className={cn(
-          "flex items-baseline gap-2 text-[11px] tracking-[0.1em] whitespace-nowrap uppercase transition-colors duration-500",
-          ending ? "text-primary" : "text-muted-foreground"
+          // The product's one label scale — the clock is a span rather than an
+          // `Overline` only because it is an `aria-live` region in a flex row.
+          OVERLINE_CLASS,
+          "flex items-baseline gap-2 whitespace-nowrap transition-colors duration-500",
+          ending && "text-primary"
         )}
       >
         <span className="tabular-nums">
           {ending && remaining !== null
-            ? `${clock(remaining)} left`
-            : clock(elapsed)}
+            ? `${formatClock(remaining)} left`
+            : formatClock(elapsed)}
         </span>
         {held && <span>paused · free</span>}
       </span>

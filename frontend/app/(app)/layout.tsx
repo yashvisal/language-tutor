@@ -21,7 +21,7 @@ export default async function AppLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   const viewer = await viewerOnServer()
-  if (!viewer?.level) redirect("/welcome")
+  if (!viewer?.onboarded) redirect("/welcome")
 
   return (
     <div className="flex min-h-svh flex-col bg-background">

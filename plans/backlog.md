@@ -7,13 +7,15 @@ Read `product-vision.md` first; nothing here reopens a settled decision.*
 
 ## Tutor logic
 
-1. **Free conversation should ask.** With `plan_scenario = "free conversation"`
+1. ~~**Free conversation should ask.**~~ *Done 2026-08-25 (phase 7 step 3): the conversation opens with goal setting.*
+   Original: With `plan_scenario = "free conversation"`
    the frame invents a scenario ("ordering and small talk", a café example)
    instead of asking what the learner wants to talk about. The frame for a
    plan with no scenario should open with the question and build the session
    from the answer. (`backend/src/prompts.py`, frame phase; `arc.py`
    `GENERIC_BEATS`.)
-2. **Review should follow the conversation.** `tutor.review` generates once per
+2. ~~**Review should follow the conversation.**~~ *Done 2026-08-25 (phase 7 step 3): Review is generated from the confirmed goal and regenerated from the transcript on hold.*
+   Original: `tutor.review` generates once per
    plan at session start, so a session that drifted from restaurants to taxis
    reviews restaurants. Regenerate — or extend — from the transcript-so-far
    when the study surface opens, keeping the deterministic conjugation tables.
@@ -21,7 +23,7 @@ Read `product-vision.md` first; nothing here reopens a settled decision.*
    truth. (`backend/src/review.py`, `frontend/components/session/study-review.tsx`.)
 3. ~~**Arc feel.**~~ *Superseded 2026-08-24: there is no arc. See the vision
    doc's "metered conversation" decisions and `phases/phase-6-metered-conversation.md`.*
-4. **Review depth** is surface-level (tabled 2026-08-21, after #2).
+4. **Review depth** is surface-level (tabled 2026-08-21; #2 is done — revisit after live testing of the goal-driven Review).
 
 ## Transcript and hold
 
@@ -46,7 +48,8 @@ Read `product-vision.md` first; nothing here reopens a settled decision.*
 
 ## Cost
 
-8. **Measure the text-only calls.** The $0.85–0.95 per 10-minute figure is
+8. ~~**Measure the text-only calls.**~~ *Worker side done 2026-08-25: analyzer, Review, Ask, translate, goal and about calls are counted in `usage.py`. Still no cost column on `sessions` (phase 7 step 4).*
+   Original: The $0.85–0.95 per 10-minute figure is
    realtime audio only; the analyzer, Review and Ask (Luna) are not in it.
    Add their usage to `usage.py`'s summary so pricing rests on the complete
    number. Text-token prices for `gpt-realtime-2.1` are also unverified.

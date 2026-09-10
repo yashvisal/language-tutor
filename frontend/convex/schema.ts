@@ -2,9 +2,15 @@ import { defineSchema, defineTable } from "convex/server"
 import { v } from "convex/values"
 
 import {
+  endReasonValidator,
+  ledgerKindValidator,
   levelValidator,
+  reviewMaterialValidator,
+  sessionGoalValidator,
   sessionOutcomeValidator,
   sessionPlanValidator,
+  transcriptTurnValidator,
+  translationLookupValidator,
 } from "./validators"
 
 /**
@@ -27,13 +33,13 @@ export default defineSchema({
      */
     email: v.optional(v.string()),
     /**
-     * Self-declared, from `LEVELS` in `lib/session/plan.ts` — the validator is
-     * built from that same catalog. Optional because "a row with no level" is
-     * exactly the state `/welcome` exists to fill.
+     * Legacy, no longer written (2026-09-06): language and level are chosen
+     * per session in the preflight and stored on `sessions.plan`. Rows created
+     * before that still carry them; nothing reads them.
      */
     level: v.optional(levelValidator),
-    targetLang: v.string(),
-    anchorLang: v.string(),
+    targetLang: v.optional(v.string()),
+    anchorLang: v.optional(v.string()),
     createdAt: v.number(),
     // Clerk owns identity; this row is looked up by its subject claim on every
     // authenticated query, so the index is not optional.
@@ -41,12 +47,7 @@ export default defineSchema({
 
   creditLedger: defineTable({
     userId: v.id("users"),
-    kind: v.union(
-      v.literal("signup_grant"),
-      v.literal("purchase"),
-      v.literal("debit"),
-      v.literal("adjustment")
-    ),
+    kind: ledgerKindValidator,
     /**
      * Signed SECONDS: grants are positive, debits negative. Seconds, not
      * minutes, because the meter bills the seconds actually spoken — see
@@ -55,8 +56,11 @@ export default defineSchema({
     seconds: v.number(),
     /**
      * Unique per entry by convention, enforced by every writer checking this
-     * index first: `signup:<clerkId>`, a Stripe session id, or `<room>:<seq>`
-     * for a worker debit.
+     * index first: `signup:<clerkId>`, a Stripe session id, or
+     * `<room>:<jobId>:<seq>` for a worker debit. The job id is in the debit
+     * ref because `seq` restarts at 1 for every LiveKit job, so a redispatch
+     * into the same room would otherwise replay refs it had already written
+     * and every debit would be dropped as a duplicate.
      */
     ref: v.string(),
     createdAt: v.number(),
@@ -70,8 +74,17 @@ export default defineSchema({
     /** The bounded `SessionPlan` the learner started with. */
     plan: sessionPlanValidator,
     startedAt: v.number(),
-    // Absent until the worker reports the session finished.
+    // Absent until the worker's final debit or the reconciliation cron closes
+    // the row. The client's `finish` never writes it (audit 2026-09-06, L1).
     endedAt: v.optional(v.number()),
+    /**
+     * The lease. While this is in the future the row is a live conversation:
+     * `sessions.open` refuses this learner a second one, and the cron leaves
+     * it alone. Written by the worker's `open` and renewed by its `open` and
+     * `debit` calls (`LEASE_TTL_MS` ahead each time); never by the browser.
+     * Absent on rows from before the lease existed, which count as not live.
+     */
+    leaseUntil: v.optional(v.number()),
     /** Cumulative seconds this room has been billed for; the debit action's
      * high-water mark, so a re-reported total debits only the delta. */
     secondsBilled: v.optional(v.number()),
@@ -88,12 +101,110 @@ export default defineSchema({
      * field existed (history is never backfilled with guesses).
      */
     outcome: v.optional(sessionOutcomeValidator),
+    /**
+     * The after-session record, written by the worker at teardown through
+     * `POST /tutor/summary`. All three are optional and independently written:
+     * the worker sends what it has, a field absent from the body is left
+     * untouched, and a session that ended before this existed carries none of
+     * them — history is never backfilled with guesses.
+     *
+     * They exist because the conversation used to die with the tab. The
+     * summary screen and the History modal render THE SAME record, and
+     * `out-of-minutes.tsx` promises the transcript and the review are saved;
+     * these three fields are that promise.
+     */
+
+    /** One line, <= 200 chars: what this conversation was actually about,
+     * read off the transcript rather than the plan the learner started with —
+     * the plan is an intention, and this is what happened. */
+    about: v.optional(v.string()),
+    /** What was said, clamped on write to 200 turns x 500 chars. Not the live
+     * `Turn` shape: segments, anchor text and in-flight flags are a reducer's
+     * business, and a record only needs who said what. */
+    transcript: v.optional(v.array(transcriptTurnValidator)),
+    /** The Review snapshot — vocab, phrases and the deterministic tables, as
+     * the Review tab saw them. Made once per session and never regenerated,
+     * so if it is not stored it is gone. */
+    review: v.optional(reviewMaterialValidator),
+
+    /**
+     * Step 3's half of the same record: what was SET UP, how much was
+     * actually done, and why it stopped. Written by the worker on the same
+     * two calls (`/tutor/summary` for all but the last, `/tutor/debit` for
+     * `endReason`), all optional, all independently written, none of them
+     * backfilled onto older rows.
+     *
+     * Together with `about` they let History say the sentence it could not
+     * say before: "you set up X, talked for N turns, and it ended because Y."
+     */
+
+    /** The confirmed goal — the session's spine. `text` is one line (<= 200
+     * chars), `forms` the grammatical forms it implies (<= 8 x 60), `source`
+     * how it was captured (plan / tool / extracted), which is also how much
+     * to trust it: an extracted goal was never said back to the learner. */
+    goal: v.optional(sessionGoalValidator),
+    /**
+     * Why the conversation stopped, from the worker's teardown debit — the
+     * one half that knows. Absent on a row that is still open, and on every
+     * row written before this field existed, so absent means "we do not
+     * know", never "it ended cleanly". Written once and never overwritten:
+     * the first `final` report is the one that was actually there.
+     */
+    endReason: v.optional(endReasonValidator),
+    /** Learner turns committed by the worker's turn detector — the honest
+     * measure of how much the learner actually spoke, which seconds are not
+     * (a held session bills nothing and a silent one bills the same as a
+     * talkative one). */
+    turns: v.optional(v.number()),
+    /**
+     * 0..1: the share of those turns spoken mostly in the ANCHOR language.
+     * High is the learner falling back to English, which is the exact input
+     * support-on-evidence needs — and a number the tutor was measuring live
+     * and discarding.
+     */
+    anchorRatio: v.optional(v.number()),
+    /** The questions asked in the Ask tab, in order (<= 25 x 400 chars).
+     * Answers are not stored: the question is what the learner did not know,
+     * and that is the study record. */
+    asks: v.optional(v.array(v.string())),
+    /**
+     * The worker's estimated MODEL spend for this session, in USD — realtime
+     * audio plus every text call (`backend/src/usage.py`), written on the
+     * teardown `/tutor/summary` report.
+     *
+     * Internal, and deliberately not on any surface: it is what the session
+     * COST to run, not what the learner was billed (that is `secondsBilled`
+     * against the ledger). It exists because the number was being computed
+     * and then logged into oblivion, which meant nobody could answer "does a
+     * ten-minute conversation make money" without reading worker logs.
+     */
+    estCostUsd: v.optional(v.number()),
+    /** Every select-to-translate lookup (<= 100, strings <= 200) — the span
+     * highlighted and what it came back as. It lived in an overlay that
+     * unmounted on resume, which meant the sharpest signal in the session was
+     * also the only one nothing kept. */
+    lookups: v.optional(v.array(translationLookupValidator)),
   })
     .index("by_room", ["room"])
     .index("by_user", ["userId"])
     // History reads one learner's recent sessions newest-first; `by_user`
-    // alone would make it collect a lifetime of rows to show thirty.
-    .index("by_user_startedAt", ["userId", "startedAt"]),
+    // alone would make it collect a lifetime of rows to show thirty. It is
+    // also the hourly start limit's read in `sessions.open`.
+    .index("by_user_startedAt", ["userId", "startedAt"])
+    // The reconciliation cron's read (`convex/crons.ts`): every row still open
+    // and older than two hours. `endedAt` is the first field so `eq(undefined)`
+    // selects exactly the unfinished rows and `startedAt` orders them — the
+    // alternative is a full table scan every hour, forever.
+    .index("by_endedAt_startedAt", ["endedAt", "startedAt"])
+    /** The cron's read: open rows whose lease has run out. */
+    .index("by_endedAt_leaseUntil", ["endedAt", "leaseUntil"])
+    // History's read: one learner's FINISHED rows, newest first.
+    // `by_user_startedAt` could not express "finished" at all, so the query
+    // over-fetched and filtered in JS — a learner with a run of abandoned rows
+    // pushed real conversations off their own history page. Ordering on
+    // `endedAt` with a `gte(0)` bound selects exactly the finished rows and
+    // pages them properly, however many open rows sit alongside.
+    .index("by_user_endedAt", ["userId", "endedAt"]),
 
   purchases: defineTable({
     userId: v.id("users"),

@@ -127,6 +127,8 @@ export const CATEGORY_LABELS: Record<CorrectionCategory, string> = {
  * is the wire shape, this is the frontend's.
  */
 export interface SessionPlan {
+  /** Absent on historical plans; defaults to Spanish. */
+  targetLanguage?: string
   /** A curated situation to play out, prompt-ready ("ordering at a restaurant"). */
   scenario: string | null
   /** Free text, when the learner wants a subject rather than a situation. */
@@ -153,6 +155,85 @@ export interface SessionPlan {
 }
 
 /**
+ * Where the session's confirmed goal came from — the three ways step 3's goal
+ * crystallization can land one, in descending order of confidence.
+ *
+ * - `"plan"`: the pre-flight cards already said enough (topic / focusNote /
+ *   note), so the tutor only restated it and the learner said yes.
+ * - `"tool"`: the tutor called `set_session_goal` when the learner confirmed —
+ *   the ordinary path when the plan was thin.
+ * - `"extracted"`: the safety net. The tool never fired, so the goal was read
+ *   silently off the opening exchange. Real, but nobody said it back.
+ */
+export type GoalSource = "plan" | "tool" | "extracted"
+
+/**
+ * The session's spine: what the learner and the tutor agreed, in one line, at
+ * the top of the conversation. It drives the tutor's standing instructions,
+ * the analyzer's focus, the Ask context and the Review — and it rides the
+ * after-session record so History can say what was SET UP as well as what was
+ * done ("you set up X and did Y"; `about` is the Y).
+ *
+ * `forms` are the grammatical forms the goal implies, as catalog values where
+ * they came from the plan and as free text where the tutor named them. Empty
+ * is a real answer — a goal can be purely topical.
+ */
+export interface SessionGoal {
+  /** One line, <= 200 chars, in the learner's anchor language. */
+  text: string
+  /** <= 8 entries, <= 60 chars each. */
+  forms: string[]
+  source: GoalSource
+}
+
+/**
+ * Why a conversation stopped. The worker is the only half that knows, and
+ * before this the wire carried nothing but `final: true` — so History could
+ * not tell a clean goodbye from a crash, and the summary could not explain
+ * itself.
+ *
+ * - `"ended"` — the learner ended it, or the tutor closed it cleanly.
+ * - `"out_of_minutes_idle"` — the clock hit zero and nobody bought more.
+ * - `"hold_idle"` — held on the study surface and never resumed.
+ * - `"learner_left"` — the participant left the room and did not come back.
+ * - `"model_error"` — the realtime model failed.
+ * - `"ledger_failure"` — five consecutive debit failures held the clock and
+ *   ended the session (phase 7 step 1's ceiling).
+ * - `"tutor_silent"` — the tutor never produced audio at all: a start that
+ *   failed rather than a conversation that ended.
+ * - `"stale"` — nobody closed the row: the worker died or the tab went away
+ *   without a goodbye, and the reconciliation cron finished it later. Written
+ *   by Convex, never by the worker.
+ *
+ * This union and `convex/validators.ts`'s must stay identical — the validator
+ * asserts equality against it at type level, so adding a reason in one place
+ * and not the other fails `tsc`.
+ */
+export type SessionEndReason =
+  | "ended"
+  | "out_of_minutes_idle"
+  | "hold_idle"
+  | "learner_left"
+  | "model_error"
+  | "ledger_failure"
+  | "tutor_silent"
+  | "stale"
+  | "lease_lost"
+
+/**
+ * One select-to-translate lookup, as stored. The span the learner highlighted
+ * and what it came back as — the sharpest record a session produces of what
+ * they did not understand, and until now it lived in an overlay that unmounted
+ * on resume.
+ */
+export interface TranslationLookup {
+  /** The selected target-language span, <= 200 chars. */
+  source: string
+  /** Its anchor-language translation, <= 200 chars. */
+  translation: string
+}
+
+/**
  * A finished session, snapshotted at the moment it ended — the whole input to
  * the post-session summary.
  *
@@ -171,6 +252,23 @@ export interface SessionOutcome {
   endedByClock: boolean
   /** Every correction the analyzer produced this session, in the order seen. */
   corrections: Correction[]
+  /**
+   * The session ended without the learner asking it to — the agent left, the
+   * room closed, the network gave up. CLIENT-ONLY: `sessionOutcomeValidator`
+   * has no such field and `sessions.finish` is never sent it, because the
+   * stored record is what was said and this is a fact about how the tab's
+   * connection died. It changes one line of copy on the summary and nothing
+   * else. Audit B5.
+   */
+  endedUnexpectedly: boolean
+  /**
+   * The room this conversation happened in, frozen at the moment of ending —
+   * `room.name` is empty again by the time the summary renders. Also
+   * client-only, and the key the summary reads `sessions.byRoom` with, which
+   * is how the worker's `about`, Review and transcript reach the screen the
+   * learner is already looking at. Null when the session never connected.
+   */
+  room: string | null
 }
 
 /**
@@ -242,14 +340,47 @@ export interface StudySession {
   /** Asks a question and files it under the turn on stage. Never rejects. */
   ask: (question: string, turnId: string | null) => void
   /**
-   * This session's review material, awaited by the Review tab. Polls while the
-   * worker is still generating and resolves null when it never arrives —
-   * "not available" is a quiet line, not an error.
+   * This session's review material and everything the tab needs to say about
+   * it. State rather than a promise because the material is no longer fetched
+   * once and frozen: the worker regenerates it during the session and pushes a
+   * new version, so what the tab renders changes UNDER it (see `ReviewState`).
    */
-  fetchReview: () => Promise<ReviewMaterial | null>
+  review: ReviewState
+  /**
+   * The session's confirmed goal, one line, or null before one exists. It is
+   * here — on the study surface's state — because the Review tab is the one
+   * place it is shown live: the stage stays minimal (plans/product-vision.md,
+   * "the screen carries the minimum the current moment needs").
+   */
+  goal: string | null
   /** The tab the learner last had open. Remembered for the session. */
   tab: StudyTab
   setTab: (tab: StudyTab) => void
+}
+
+/**
+ * The Review tab's whole world, owned by the producer for the length of the
+ * session so that it survives the overlay unmounting on every resume.
+ *
+ * Four states, and they are not the same fact:
+ *
+ * - `loading` — nothing has arrived yet and something is in flight. The only
+ *   state that shimmers, and only ever before the FIRST material: a refresh
+ *   behind an existing snapshot must not blank the page a learner is reading.
+ * - `absent` — asked, waited, and nothing came. A quiet line, not an error and
+ *   not a retry button.
+ * - material, with a `version` — the ordinary state.
+ * - `updatedAt` — the moment new material REPLACED material already on screen.
+ *   The tab wears a one-word marker for a few seconds and then stops; null
+ *   whenever the current material is the first that ever landed.
+ */
+export interface ReviewState {
+  material: ReviewMaterial | null
+  loading: boolean
+  absent: boolean
+  /** The snapshot `material` came from, where the worker named one. */
+  version: number | null
+  updatedAt: number | null
 }
 
 /* -------------------------------------------------------------------------- */
@@ -346,7 +477,18 @@ export interface SessionResetEvent {
   type: "session.reset"
 }
 
+/**
+ * The target language of the conversation about to start. Transcript joining
+ * is language-aware (German capitalizes nouns; "um" is a word in German and
+ * Portuguese), so the reducer has to be told before the first segment lands.
+ */
+export interface SessionLanguageEvent {
+  type: "session.language"
+  language: string
+}
+
 export type SessionEvent =
+  | SessionLanguageEvent
   | TranscriptDeltaEvent
   | TranscriptFinalEvent
   | AnalysisCompleteEvent

@@ -12,23 +12,21 @@ import { MarketingHeader } from "@/components/marketing/marketing-header"
 import { PricingNote, PricingPacks } from "@/components/marketing/pricing"
 import { PrimaryCta } from "@/components/marketing/primary-cta"
 import { Reveal } from "@/components/marketing/reveal"
+import { SIGNUP_GRANT_MINUTES } from "@/lib/billing"
+import { LANGUAGE_NAMES, TARGET_LANGUAGES } from "@/lib/session/plan"
 import { cn } from "@/lib/utils"
 
 export const metadata: Metadata = {
-  title: "tutor — speak Spanish, uninterrupted",
+  title: "tutor — practice languages, uninterrupted",
   description:
-    "A live Spanish tutor that keeps the conversation going. Your words appear as you speak them, and after your turn settles you see what you should have said.",
+    "A live language tutor that keeps the conversation going. Your words appear as you speak them, and after your turn settles you see what you should have said.",
 }
 
-/** The languages we mean to reach, the one we have, honestly labelled. */
-const LANGUAGES = [
-  { name: "Spanish", native: "Español", available: true },
-  { name: "French", native: "Français" },
-  { name: "Portuguese", native: "Português" },
-  { name: "Italian", native: "Italiano" },
-  { name: "German", native: "Deutsch" },
-  { name: "Japanese", native: "日本語" },
-] as const
+const LANGUAGES = TARGET_LANGUAGES.map(({ code, native }) => ({
+  name: LANGUAGE_NAMES[code],
+  native,
+  available: true,
+}))
 
 /**
  * The landing page. The Aura is the hero — the product, playing by itself —
@@ -49,7 +47,7 @@ export default function LandingPage() {
             className="pointer-events-none absolute top-[55%] left-1/2 -z-10 h-[40rem] w-[40rem] -translate-x-1/2 -translate-y-1/2 rounded-full bg-blue-400/25 blur-[120px] dark:bg-blue-500/15"
           />
           <h1 className="text-4xl leading-[1.05] font-semibold tracking-tight text-balance sm:text-5xl lg:text-6xl">
-            Spanish, out loud. Pay for the minutes you talk.
+            Your next language, out loud. Pay for the minutes you talk.
           </h1>
           <p className="mt-4 max-w-lg text-base leading-relaxed text-balance text-muted-foreground sm:text-lg">
             A tutor that answers naturally and never talks over you. The
@@ -62,7 +60,7 @@ export default function LandingPage() {
             <PrimaryCta />
           </div>
           <p className="mt-3 text-xs text-muted-foreground">
-            Spanish for now. Runs in your browser — no app to install.
+            Choose your language. Runs in your browser — no app to install.
           </p>
         </section>
 
@@ -96,7 +94,7 @@ export default function LandingPage() {
                 {
                   n: "2",
                   title: "The tutor answers",
-                  body: "In Spanish, at conversation speed — and it waits. Nobody stops you mid-sentence to fix a verb.",
+                  body: "In your chosen language, at conversation speed — and it waits. Nobody stops you mid-sentence to fix a verb.",
                   stage: <AnswerFragment />,
                 },
                 {
@@ -108,12 +106,12 @@ export default function LandingPage() {
               ].map((step, i) => (
                 <li key={step.n} className="flex h-full flex-col">
                   <Reveal delay={i * 0.08} className="flex h-full flex-col">
-                    <div className="h-56 rounded-2xl border border-border/60 bg-muted/50 shadow-xs dark:bg-card/40 dark:shadow-none px-6">
+                    <div className="h-56 rounded-2xl border border-border/60 bg-muted/50 px-6 shadow-xs dark:bg-card/40 dark:shadow-none">
                       {step.stage}
                     </div>
                     <div className="px-1 pt-5">
                       <div className="flex items-baseline gap-3">
-                        <span className="text-xs font-medium tabular-nums text-primary">
+                        <span className="text-xs font-medium text-primary tabular-nums">
                           {step.n}
                         </span>
                         <h3 className="text-lg font-medium tracking-tight">
@@ -147,11 +145,11 @@ export default function LandingPage() {
                     Languages
                   </h2>
                   <p className="mt-3 text-2xl font-medium tracking-tight">
-                    Spanish today. More as we go.
+                    Choose the language you want to speak.
                   </p>
                 </div>
                 <p className="text-sm text-muted-foreground">
-                  Tell us which one you want next.
+                  Explanations and coaching in English.
                 </p>
               </div>
               <ul className="mt-8 flex flex-wrap gap-2.5">
@@ -196,7 +194,7 @@ export default function LandingPage() {
                     Minutes
                   </h2>
                   <p className="mt-3 text-2xl font-medium tracking-tight">
-                    Your first 10 minutes are free.
+                    Your first {SIGNUP_GRANT_MINUTES} minutes are free.
                   </p>
                 </div>
                 <PricingNote />
@@ -218,7 +216,7 @@ export default function LandingPage() {
                 <AmbientAura state="listening" className="h-full" />
               </div>
               <h2 className="mt-8 text-3xl font-semibold tracking-tight text-balance sm:text-4xl">
-                Speak Spanish with a tutor that lets you finish.
+                Practice with a tutor that lets you finish.
               </h2>
               <p className="mt-3 max-w-md text-muted-foreground">
                 No lesson, no quiz. A conversation that waits for you.

@@ -88,7 +88,7 @@ export function SpeakerLabel({
   return (
     <div
       className={cn(
-        "mb-1 text-[10px] leading-4 font-medium tracking-[0.2em] text-muted-foreground/55 uppercase",
+        "mb-1 text-[10px] leading-4 font-medium tracking-[0.2em] text-muted-foreground uppercase",
         className
       )}
     >

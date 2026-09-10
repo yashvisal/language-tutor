@@ -18,8 +18,10 @@
  */
 
 import { useEffect, useRef, useState } from "react"
+import { ArrowUp } from "lucide-react"
 
 import { Shimmer } from "@/components/session/translate-overlay"
+import { Button } from "@/components/ui/button"
 import type { AskExchange, Turn } from "@/lib/session/contract"
 import { MAX_QUESTION_CHARS } from "@/lib/session/protocol"
 
@@ -59,12 +61,11 @@ export function AskTab({
   }
 
   return (
-    <div className="flex min-h-full flex-col pt-2">
+    <div className="flex flex-1 flex-col pt-2">
       <div className="flex-1 space-y-8">
         {thread.length === 0 && (
-          <p className="pt-16 text-sm text-muted-foreground/60">
-            Ask about anything you just said — a word you couldn’t reach, a
-            correction you don’t believe.
+          <p className="pt-16 text-sm text-muted-foreground">
+            Ask anything about what you just said.
           </p>
         )}
         {thread.map((entry, i) => (
@@ -84,25 +85,46 @@ export function AskTab({
       </div>
 
       <div className="sticky bottom-0 mt-8 bg-background/80 pt-3 pb-2 backdrop-blur-sm">
-        <textarea
-          ref={inputRef}
-          value={draft}
-          onChange={(e) =>
-            setDraft(e.target.value.slice(0, MAX_QUESTION_CHARS))
-          }
-          onKeyDown={(e) => {
-            // Enter sends; Shift+Enter is a newline. Escape is left alone — it
-            // belongs to the overlay, and closing is also resuming.
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault()
-              send()
+        {/* Enter has always sent; the button is for everyone who has no reason
+            to know that — and it is the only thing on the surface that says a
+            typed question goes anywhere. It sits inside the field rather than
+            beside it so the composer stays one object. */}
+        <div className="relative">
+          <textarea
+            ref={inputRef}
+            value={draft}
+            onChange={(e) =>
+              setDraft(e.target.value.slice(0, MAX_QUESTION_CHARS))
             }
-          }}
-          rows={2}
-          placeholder="Ask a question…"
-          aria-label="Ask the coach a question"
-          className="w-full resize-none rounded-lg border border-border/60 bg-background/60 px-3 py-2 text-sm leading-6 transition-colors outline-none placeholder:text-muted-foreground/50 focus:border-border"
-        />
+            onKeyDown={(e) => {
+              // Enter sends; Shift+Enter is a newline. Escape is left alone —
+              // it belongs to the overlay, and closing is also resuming.
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault()
+                send()
+              }
+            }}
+            rows={2}
+            placeholder="Ask a question"
+            aria-label="Ask the coach a question"
+            // Grows with the question up to a few lines, then scrolls with a
+            // thin bar: a two-row box with a full scrollbar inside it read as
+            // a bug (live, 2026-09-09).
+            className="max-h-40 w-full resize-none rounded-lg border border-border/60 bg-background/60 py-2 pr-12 pl-3 text-sm leading-6 transition-colors outline-none [field-sizing:content] [scrollbar-width:thin] placeholder:text-muted-foreground focus:border-border"
+          />
+          <Button
+            type="button"
+            size="icon-sm"
+            onClick={send}
+            // Nothing to send is not an error worth explaining: the button is
+            // simply not available until there is a question in the field.
+            disabled={draft.trim().length === 0}
+            aria-label="Send"
+            className="absolute right-2 bottom-2 rounded-full"
+          >
+            <ArrowUp />
+          </Button>
+        </div>
       </div>
     </div>
   )
@@ -118,19 +140,25 @@ function Exchange({
   return (
     <div>
       {anchor && (
-        <p className="mb-2 text-xs text-muted-foreground/50 italic">
+        <p className="mb-2 text-xs text-muted-foreground italic">
           asked after “{anchor}”
         </p>
       )}
-      <p className="text-sm leading-6 tracking-[-0.011em] text-foreground/90">
-        {entry.question}
-      </p>
+      {/* The question sits on the right in a quiet bubble and the answer runs
+          full width as prose: the two used to be the same paragraph twice,
+          and a thread of them was unreadable (live, 2026-09-09). The bubble
+          is the transcript's learner treatment, not a second chat idiom. */}
+      <div className="flex justify-end">
+        <p className="max-w-[85%] rounded-2xl rounded-br-md bg-foreground/[0.05] px-3.5 py-2 text-sm leading-6 tracking-[-0.011em] text-foreground dark:bg-white/[0.08]">
+          {entry.question}
+        </p>
+      </div>
       {entry.answer ? (
-        <p className="mt-2 text-sm leading-6 text-pretty text-foreground/65">
+        <p className="mt-3 pr-8 text-sm leading-6 text-pretty text-foreground">
           {entry.answer}
         </p>
       ) : entry.failed ? (
-        <p className="mt-2 text-xs text-muted-foreground/60">
+        <p className="mt-3 text-xs text-muted-foreground">
           Couldn’t answer — ask again
         </p>
       ) : (

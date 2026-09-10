@@ -175,6 +175,45 @@ From reviewing the phase-1 layout explorations (aura-stage, split-columns, and t
 
 ---
 
+## Decisions Settled (2026-09-06, returning to launch)
+
+1. **Choose the target language before starting.** Spanish remains the test
+   baseline, but is no longer the only selectable language. A popover in the
+   shared session preflight offers Spanish, French, German, Italian,
+   and Portuguese. English remains the
+   anchor language. This supersedes the earlier "no language picker" and
+   "Spanish only until monetized" restrictions.
+2. **Language is a session parameter.** The last selection is remembered in
+   the browser, stored with the session plan, and signed into worker dispatch.
+   Voice, STT, corrections, translation, and study prompts use that selection.
+   Historical plans without a language continue to mean Spanish. Deterministic
+   conjugation tables remain Spanish-only; other languages need live quality
+   checks before launch claims imply equal maturity.
+3. **Launch readiness is tracked in `audit-2026-09-06.md`.** The minute meter
+   exists; purchases do not. Five-minute purchase increments still apply,
+   with usage metered in seconds and study holds free.
+4. **Five free minutes at signup, not ten** (Yash, 2026-09-06). One constant,
+   `SIGNUP_GRANT_SECONDS` in `frontend/lib/billing.ts`; every surface that
+   promises the grant reads it.
+5. **Ask answers in English, with the target phrases quoted** (Yash,
+   2026-09-10, reversing 2026-09-06). An Ask answer in the target language
+   was one more thing to translate mid-pause. Ask writes in the anchor
+   language, pitched to the self-reported level, and puts every target-
+   language word or phrase the learner should say in quotes — what to say
+   and when. Correction *explanations* stay in English too.
+6. **The opening is in English; the conversation is not** (Yash,
+   2026-09-09). The greeting and the one goal confirmation are in the anchor
+   language, and the first question after the goal is agreed is in the
+   target language. Opening in the target language (decision #4 above,
+   2026-08-24) left a learner at this product's level translating the first
+   thing the tutor said, every session. `TUTOR_GOAL_LANG` defaults to
+   `anchor`; the switch is the worker's, not a setting the learner sees.
+7. **History rows are titled by the goal** (Yash, 2026-09-09), not by the
+   worker's "about" line, which changed the title a minute after the row
+   appeared. The about line lives inside the record as "what it became".
+8. **The pre-flight remembers the language and the level only.** Topic,
+   focus and note are today's answers and start empty each session.
+
 ## The Conversation Surface
 
 The working mental model for the screen (to be pressure-tested in design exploration, not final):
@@ -384,3 +423,5 @@ That loop is the product primitive. When deciding whether something belongs in t
 > **Does this make the live language-learning conversation meaningfully better?**
 
 If not, it belongs later.
+
+2026-09-06 follow-up: Self-reported level belongs to the session language, selected in preflight, not account settings or signup. All preflight answers reach the tutor prompt; its pace and scaffolding use this level as a starting point and adapt to speech. Korean, Japanese, and Mandarin are excluded from the launch selection.

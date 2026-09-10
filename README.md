@@ -1,21 +1,31 @@
-# Next.js template
+# tutor
 
-This is a Next.js template with shadcn/ui.
+Live voice conversation practice with an AI language tutor. `frontend/` is the
+Next.js app (and the Convex backend under `frontend/convex/`); `backend/` is
+the Python LiveKit agent worker. Product direction lives in
+`plans/product-vision.md`.
 
-## Adding components
+## Checks
 
-To add components to your app, run the following command:
+Frontend, from `frontend/`:
 
 ```bash
-npx shadcn@latest add button
+pnpm install
+pnpm typecheck
+pnpm lint
+pnpm test
 ```
 
-This will place the ui components in the `components` directory.
+Backend, from `backend/`:
 
-## Using components
-
-To use the components in your app, import them as follows:
-
-```tsx
-import { Button } from "@/components/ui/button";
+```bash
+uv sync
+uv run ruff check src tests
+uv run ruff format --check src tests
+uv run pytest -q
 ```
+
+CI (`.github/workflows/ci.yml`) runs exactly these on every pull request and on
+pushes to `main`, as two jobs. `pnpm build` is not in CI — it needs real Clerk
+and Convex environment variables to prerender, so the build is verified by the
+deploy instead. Run it locally before shipping anything that touches rendering.

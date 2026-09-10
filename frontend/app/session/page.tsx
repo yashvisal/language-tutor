@@ -11,65 +11,39 @@
  * declares a plan, the connection lifecycle, and the summary the session ends
  * into. Three states, in the order a learner meets them: plan, talk, look back.
  *
- * `/home` is the same pre-flight inside the app shell, so it hands off with
- * `?start=1`: the plan is already persisted, and this page connects straight
- * away instead of asking the same questions a second time. Without the flag
- * (a direct visit, a bookmark) the page still opens on its own pre-flight.
+ * The pre-flight is `/home`'s Start dialog, which hands off through
+ * `lib/session/handoff` with the plan it was given, and this page connects
+ * straight away. Without a hand-off — a direct visit, a bookmark, a reload —
+ * there is nothing to start, and the page goes back to `/home` rather than
+ * showing a second copy of the form (Yash, 2026-09-09).
  */
 
-import {
-  Suspense,
-  useEffect,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react"
-import Link from "next/link"
-import { useRouter, useSearchParams } from "next/navigation"
-import { ArrowLeft } from "lucide-react"
+import { useEffect, useRef, useState } from "react"
+import { useRouter } from "next/navigation"
 import { RoomAudioRenderer } from "@livekit/components-react"
 
+import { SessionLanguageProvider } from "@/components/session/session-language"
 import { ConversationStage } from "@/components/session/conversation-stage"
 import { OutOfMinutesScreen } from "@/components/session/out-of-minutes"
-import { SessionPreflight } from "@/components/session/session-preflight"
 import { SessionSummary } from "@/components/session/session-summary"
+import { StartFailedScreen } from "@/components/session/start-failed"
+import { TutorUnavailableScreen } from "@/components/session/tutor-unavailable"
 import { STAGE_AURA_CLASS, TutorAura } from "@/components/session/tutor-aura"
-import type { SessionPlan } from "@/lib/session/contract"
+import { startRequested, takeStartRequest } from "@/lib/session/handoff"
 import { useLiveSession } from "@/lib/session/live-producer"
-import {
-  planSnapshot,
-  savePlan,
-  serverPlanSnapshot,
-  subscribeToPlan,
-} from "@/lib/session/plan"
 
 export default function SessionPage() {
-  // `useSearchParams` needs a boundary to fall back to during prerender.
-  return (
-    <Suspense fallback={null}>
-      <Session />
-    </Suspense>
-  )
-}
-
-function Session() {
   const live = useLiveSession()
   const { connect } = live
   const router = useRouter()
-  const autostart = useSearchParams().get("start") === "1"
-
   /**
-   * The plan. The last session's is the starting point (an external store, so
-   * that a client-only value never contradicts the prerendered markup — see
-   * `plan.ts`); edits layer on top and win from the first keystroke.
+   * The hand-off from `/home`, as a render-time fact: true from the first
+   * paint so the learner sees the stage warming up rather than the form they
+   * just filled in, and false again the moment the start has settled into a
+   * connection state, an error, or a refusal. Read without spending — the
+   * effect below spends it, once.
    */
-  const stored = useSyncExternalStore(
-    subscribeToPlan,
-    planSnapshot,
-    serverPlanSnapshot
-  )
-  const [edited, setEdited] = useState<SessionPlan | null>(null)
-  const plan = edited ?? stored
+  const [handoff, setHandoff] = useState(startRequested)
 
   /**
    * The hand-off from `/home`, fired once and then erased. The ref makes it
@@ -80,14 +54,37 @@ function Session() {
    */
   const handedOff = useRef(false)
   useEffect(() => {
-    if (!autostart || handedOff.current) return
+    if (handedOff.current) return
+    const requested = takeStartRequest()
+    if (requested === null) return
     handedOff.current = true
-    connect(planSnapshot())
-    // And the flag is spent: it survives in the address bar otherwise, so a
-    // reload — or a shared link — would silently open a second billed session.
-    // The ref only guards this mount.
-    router.replace("/session")
-  }, [autostart, connect, router])
+    connect(requested)
+  }, [connect])
+
+  // The hand-off screen ends when the start has an answer of any kind. Set
+  // during render rather than in an effect: it is derived from `live`, and
+  // React re-renders immediately without painting the stale frame.
+  const settled =
+    live.connection !== "idle" ||
+    live.error !== null ||
+    live.outOfMinutes ||
+    live.tutorFailed !== null ||
+    live.outcome !== null
+  if (handoff && settled) setHandoff(false)
+
+  // Nothing to start and nothing to show: back to the one pre-flight. In an
+  // effect because it navigates; the condition is every branch below being
+  // false, spelled out so a new branch cannot fall through to a redirect.
+  const idle =
+    !handoff &&
+    live.connection === "idle" &&
+    live.error === null &&
+    !live.outOfMinutes &&
+    live.tutorFailed === null &&
+    live.outcome === null
+  useEffect(() => {
+    if (idle) router.replace("/home")
+  }, [idle, router])
 
   // The summary outlives the room, so it wins over the connection state: a
   // session ended by the clock disconnects us, and dropping straight back to
@@ -96,7 +93,27 @@ function Session() {
     return (
       <SessionSummary
         outcome={live.outcome}
-        onStartAnother={live.clearOutcome}
+        // The pre-flight is on `/home`; "another" means going there.
+        onStartAnother={() => {
+          live.clearOutcome()
+          router.push("/home")
+        }}
+      />
+    )
+  }
+
+  // The room came up without a tutor in it (audit B6). Above the pre-flight
+  // and above the connecting screen, because a failed start that fell back to
+  // either would look exactly like the session never being attempted. Try
+  // again dials the same plan — `connect` clears the failure itself.
+  if (live.tutorFailed) {
+    return (
+      <TutorUnavailableScreen
+        reason={live.tutorFailed}
+        onRetry={() => {
+          if (live.plan) live.connect(live.plan)
+          else router.push("/home")
+        }}
       />
     )
   }
@@ -111,70 +128,69 @@ function Session() {
   // Handed off from the dashboard, or already dialling: the learner chose to
   // start, so the only honest screen is the stage warming up — not the form
   // they just filled in flashing past on its way to the conversation.
-  if (autostart || live.connection === "connecting") {
+  if (handoff || live.connection === "connecting") {
+    // The same box, the same size and the same vertical position as the
+    // stage gives its aura (`conversation-stage.tsx`), so the orb does not
+    // jump when the conversation arrives under it (live, 2026-09-10).
     return (
-      <div className="flex h-svh flex-col items-center justify-center gap-6 bg-background">
-        <TutorAura state="connecting" className={STAGE_AURA_CLASS} />
-        <p className="text-sm text-muted-foreground">Connecting…</p>
+      <div className="h-svh bg-background">
+        <div className="flex h-full flex-col items-center justify-center px-8 pb-24">
+          <div className="flex w-full shrink-0 justify-center">
+            <TutorAura
+              state="connecting"
+              size="lg"
+              className={STAGE_AURA_CLASS}
+            />
+          </div>
+          <p className="mt-10 text-sm text-muted-foreground">Connecting…</p>
+        </div>
       </div>
     )
   }
 
-  if (live.connection !== "live") {
+  // The token route refused or the connect died before there was a room:
+  // the sentence with the fix in it, and the same plan to redial.
+  if (live.error !== null) {
+    const plan = live.plan
     return (
-      <SessionPreflight
-        above={
-          // Reached without the hand-off — a bookmark, a reload — so this is
-          // the only screen the learner can see. It needs a way back.
-          <Link
-            href="/home"
-            className="mb-8 inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors duration-200 hover:text-foreground"
-          >
-            <ArrowLeft className="size-3.5" />
-            Back to home
-          </Link>
-        }
-        plan={plan}
-        onChange={setEdited}
-        // Never true here — a connecting session rendered the stage above.
-        connecting={false}
+      <StartFailedScreen
         error={live.error}
-        onStart={(finalPlan) => {
-          // Persisted at the moment of use, so a repeat session opens on the
-          // plan that was actually spoken — not on an abandoned edit.
-          savePlan(finalPlan)
-          live.connect(finalPlan)
-        }}
+        onRetry={plan ? () => live.connect(plan) : null}
       />
     )
   }
 
+  // Idle with nothing to show: the effect above is on its way to `/home`.
+  if (live.connection !== "live") return null
+
   return (
-    <div className="h-svh">
-      {/* Without this the tutor is inaudible: nothing else attaches remote
+    <SessionLanguageProvider language={live.plan?.targetLanguage}>
+      <div className="h-svh">
+        {/* Without this the tutor is inaudible: nothing else attaches remote
           audio tracks to the page. */}
-      <RoomAudioRenderer room={live.room} />
-      <ConversationStage
-        state={live.state}
-        dispatch={live.dispatch}
-        muted={live.muted}
-        onToggleMute={live.toggleMute}
-        onEnd={live.disconnect}
-        elapsedSeconds={live.elapsedSeconds}
-        remainingSeconds={live.remainingSeconds}
-        outOfMinutes={live.outOfMinutes}
-        translate={live.translate}
-        study={live.study}
-        focusTenses={live.plan?.tenses}
-        renderAura={(auraState) => (
-          <TutorAura
-            state={auraState}
-            audioTrack={live.agentAudioTrack}
-            size="lg"
-            className={STAGE_AURA_CLASS}
-          />
-        )}
-      />
-    </div>
+        <RoomAudioRenderer room={live.room} />
+        <ConversationStage
+          state={live.state}
+          dispatch={live.dispatch}
+          muted={live.muted}
+          onToggleMute={live.toggleMute}
+          onEnd={live.disconnect}
+          elapsedSeconds={live.elapsedSeconds}
+          remainingSeconds={live.remainingSeconds}
+          outOfMinutes={live.outOfMinutes}
+          translate={live.translate}
+          study={live.study}
+          focusTenses={live.plan?.tenses}
+          renderAura={(auraState) => (
+            <TutorAura
+              state={auraState}
+              audioTrack={live.agentAudioTrack}
+              size="lg"
+              className={STAGE_AURA_CLASS}
+            />
+          )}
+        />
+      </div>
+    </SessionLanguageProvider>
   )
 }

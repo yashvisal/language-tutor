@@ -11,67 +11,74 @@
  */
 
 import { useMemo, type ReactNode } from "react"
-import { motion } from "motion/react"
+import { motion, useReducedMotion } from "motion/react"
 
 import {
   CorrectionMark,
   segmentTurn,
 } from "@/components/session/correction-mark"
 import type { Correction, Turn } from "@/lib/session/contract"
+import { useSessionLanguage } from "./session-language"
 import { wordsOf } from "@/lib/session/reducer"
-import { cn } from "@/lib/utils"
 
 export function HeroWords({
   turn,
   live,
   marksActive,
+  reducedMotion = false,
   onCorrectionOpenChange,
 }: {
   turn: Turn
   /** Still being transcribed — only then is the trailing word "new". */
   live: boolean
   marksActive: boolean
+  /**
+   * `prefers-reduced-motion`, resolved by the stage. A word that blurs and
+   * rises into place is the surface's smallest animation and the one that
+   * repeats most often; under the setting the word simply appears.
+   */
+  reducedMotion?: boolean | null
   /** The correction is passed through so a hold can name what is being read. */
   onCorrectionOpenChange: (open: boolean, correction: Correction) => void
 }) {
+  const language = useSessionLanguage()
   const segments = useMemo(() => segmentTurn(turn), [turn])
   const wordCount = wordsOf(turn.target).length
-  const arriving = live ? wordCount - 1 : -1
+  const arriving = live && !reducedMotion ? wordCount - 1 : -1
 
   let index = 0
   const nodes: ReactNode[] = []
 
   for (const seg of segments) {
-    const words = wordsOf(seg.text)
-    const start = index
-    index += words.length
-    if (words.length === 0) continue
-
-    const wordNodes = words.map((word, i) => (
-      <motion.span
-        key={`${turn.id}-${start + i}`}
-        // Once marks are active the words sit inline so the parent's underline
-        // can run through them (it doesn't reach inline-blocks).
-        className={cn(
-          seg.correction && marksActive ? "inline" : "inline-block"
-        )}
-        initial={
-          start + i === arriving
-            ? { opacity: 0, y: 6, filter: "blur(5px)" }
-            : false
-        }
-        animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-        transition={{ duration: 0.35, ease: "easeOut" }}
-      >
-        {word}
-      </motion.span>
-    ))
-
-    const interleaved: ReactNode[] = []
-    wordNodes.forEach((node, i) => {
-      interleaved.push(node)
-      if (i < wordNodes.length - 1) interleaved.push(" ")
-    })
+    // Split on the text's own whitespace and keep it: a correction span can
+    // start or end inside a word, and inventing a separator there would put a
+    // space inside the word.
+    const interleaved = seg.text
+      .split(/(\s+)/u)
+      .filter(Boolean)
+      .map((part, i) => {
+        if (/^\s+$/u.test(part)) return part
+        const wordIndex = index++
+        return (
+          <motion.span
+            key={`${turn.id}-${i}`}
+            // Once marks are active the words sit inline so the parent's
+            // underline can run through them (it doesn't reach inline-blocks).
+            className={
+              seg.correction && marksActive ? "inline" : "inline-block"
+            }
+            initial={
+              wordIndex === arriving
+                ? { opacity: 0, y: 6, filter: "blur(5px)" }
+                : false
+            }
+            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+            transition={{ duration: reducedMotion ? 0 : 0.35, ease: "easeOut" }}
+          >
+            {part}
+          </motion.span>
+        )
+      })
 
     nodes.push(
       seg.correction ? (
@@ -87,10 +94,9 @@ export function HeroWords({
         <span key={seg.key}>{interleaved}</span>
       )
     )
-    nodes.push(" ")
   }
 
-  return <>{nodes}</>
+  return <span lang={language}>{nodes}</span>
 }
 
 /**
@@ -101,15 +107,20 @@ export function HeroWords({
  * state. The dimmed surface and the Aura's breathing ring already carry
  * "held" — the caret just stops breathing.
  */
-export function Caret({ paused }: { paused: boolean }) {
+export function Caret({ paused }: { paused?: boolean }) {
+  // Read here rather than passed in: the caret renders on the stage, in the
+  // landing demo and in the design playground, and a blinking bar that never
+  // stops is exactly what the setting is for on every one of them.
+  const reducedMotion = useReducedMotion()
+  const blink = !paused && !reducedMotion
   return (
     <span className="ml-1.5 inline-flex h-[1.05em] translate-y-[0.16em] items-stretch align-baseline">
       <motion.span
-        animate={{ opacity: paused ? 0.55 : [0.15, 0.7, 0.15] }}
+        animate={{ opacity: blink ? [0.15, 0.7, 0.15] : 0.55 }}
         transition={
-          paused
-            ? { duration: 0.4 }
-            : { duration: 1.4, repeat: Infinity, ease: "easeInOut" }
+          blink
+            ? { duration: 1.4, repeat: Infinity, ease: "easeInOut" }
+            : { duration: reducedMotion ? 0 : 0.4 }
         }
         className="block w-[3px] rounded-full bg-primary"
       />

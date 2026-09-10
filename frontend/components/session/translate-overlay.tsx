@@ -28,14 +28,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import { AnimatePresence, motion } from "motion/react"
+import { useSessionLanguage } from "./session-language"
 
 import type { Speaker, TranslateFn, Turn } from "@/lib/session/contract"
 import { cn } from "@/lib/utils"
-import {
-  ANCHOR_LANGUAGE,
-  MAX_SPAN_CHARS,
-  TARGET_LANGUAGE,
-} from "@/lib/session/protocol"
+import { ANCHOR_LANGUAGE, MAX_SPAN_CHARS } from "@/lib/session/protocol"
 
 const TURN_ATTR = "data-translate-turn"
 const SPEAKER_ATTR = "data-translate-speaker"
@@ -63,7 +60,8 @@ export function translatableProps(turn: Pick<Turn, "id" | "speaker">) {
 /**
  * Below this, a selection is a slipped click rather than a question — one or
  * two letters caught while clicking a correction mark. A single short word
- * ("es") is still a legitimate ask, so the floor is characters, not words.
+ * ("es", "je", "da") is still a legitimate ask, so the floor is characters,
+ * not words.
  */
 const MIN_SPAN_CHARS = 2
 
@@ -125,6 +123,7 @@ export function SelectionTranslator({
   /** Called when it closes. Must be referentially stable. */
   onRelease: () => void
 }) {
+  const language = useSessionLanguage()
   const [anchor, setAnchor] = useState<SelectionAnchor | null>(null)
   const [resolved, setResolved] = useState<Resolved | null>(null)
   const cardRef = useRef<HTMLDivElement>(null)
@@ -211,6 +210,10 @@ export function SelectionTranslator({
     dismiss()
   }, [open, held, dismiss])
 
+  // Bumped by Try again: the same selection, asked once more. In the effect's
+  // dependencies so a retry re-runs it without pretending the anchor moved.
+  const [attempt, setAttempt] = useState(0)
+
   useEffect(() => {
     if (!anchor) return
     const { key, text, speaker, turnId } = anchor
@@ -227,7 +230,7 @@ export function SelectionTranslator({
     return () => {
       cancelled = true
     }
-  }, [anchor, translate])
+  }, [anchor, translate, attempt])
 
   // Derived rather than stored: a result that isn't this selection's is still
   // in flight. Keeps the loading state out of an effect.
@@ -258,7 +261,7 @@ export function SelectionTranslator({
             {/* Each run declares its language: two languages sit side by side
                 here, and screen readers pronounce by the nearest lang. */}
             <div
-              lang={TARGET_LANGUAGE}
+              lang={language}
               className="line-clamp-2 text-xs text-muted-foreground/70 italic"
             >
               {anchor.text}
@@ -272,7 +275,22 @@ export function SelectionTranslator({
               </p>
             ) : result?.failed ? (
               <p className="mt-2 text-xs text-muted-foreground/70">
-                Couldn’t translate — try again
+                Couldn’t translate.{" "}
+                {/* The sentence used to say "try again" and offer no way to:
+                    the card is inside the overlay marker, so a click here is
+                    not a dismissal, and the selection is still on screen. */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    // Back to the shimmer first, so the button is gone while
+                    // the request runs and cannot start a second one.
+                    setResolved(null)
+                    setAttempt((n) => n + 1)
+                  }}
+                  className="text-foreground underline decoration-foreground/30 underline-offset-4 transition-colors duration-200 outline-none hover:decoration-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+                >
+                  Try again
+                </button>
               </p>
             ) : (
               <Shimmer />

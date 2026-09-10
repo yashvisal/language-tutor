@@ -12,5 +12,5 @@ import { viewerOnServer } from "@/lib/viewer-server"
 export default async function GoPage() {
   const viewer = await viewerOnServer()
   if (!viewer) redirect("/")
-  redirect(viewer.level ? "/home" : "/welcome")
+  redirect(viewer.onboarded ? "/home" : "/welcome")
 }

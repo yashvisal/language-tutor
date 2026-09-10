@@ -48,7 +48,7 @@ import {
 } from "@/components/ui/tooltip"
 import type {
   AskExchange,
-  ReviewMaterial,
+  ReviewState,
   StudyTab,
   Turn,
 } from "@/lib/session/contract"
@@ -66,7 +66,8 @@ export function StudyOverlay({
   tab,
   onTabChange,
   onAsk,
-  fetchReview,
+  review,
+  goal,
   focusTenses,
   heroTurnId,
   outOfMinutes = false,
@@ -79,7 +80,14 @@ export function StudyOverlay({
   tab: StudyTab
   onTabChange: (tab: StudyTab) => void
   onAsk: (question: string, turnId: string | null) => void
-  fetchReview: () => Promise<ReviewMaterial | null>
+  /** This session's material and how fresh it is; see `ReviewState`. */
+  review: ReviewState
+  /**
+   * The confirmed goal, one line. It appears on the Review tab and nowhere
+   * else: the stage during a conversation carries the current moment, and a
+   * standing line of intent above it would be furniture.
+   */
+  goal?: string | null
   focusTenses?: readonly string[]
   heroTurnId: string | null
   /**
@@ -140,10 +148,13 @@ export function StudyOverlay({
       role="dialog"
       aria-modal="true"
       aria-label="Study"
-      initial={{ opacity: 0, y: -12 }}
+      initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -12 }}
       animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -12 }}
-      transition={{ duration: 0.3, ease: [0.32, 0.72, 0, 1] }}
+      exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -12 }}
+      transition={{
+        duration: reducedMotion ? 0.15 : 0.3,
+        ease: [0.32, 0.72, 0, 1],
+      }}
       className="absolute inset-0 z-20 bg-background/92 backdrop-blur-xl"
     >
       <Tabs
@@ -172,7 +183,7 @@ export function StudyOverlay({
                     size="icon-sm"
                     onClick={onClose}
                     aria-label="Close and resume"
-                    className="absolute top-3 right-4 rounded-full text-muted-foreground/60 hover:text-foreground"
+                    className="absolute top-3 right-4 rounded-full text-muted-foreground hover:text-foreground"
                   >
                     <X />
                   </Button>
@@ -198,15 +209,27 @@ export function StudyOverlay({
         )}
 
         <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-6 pb-16">
-          {/* Same grid as the stage, so every tab reads as the same document. */}
-          <StageGrid className="h-full">
+          {/* Same grid as the stage, so every tab reads as the same document.
+              `min-h-full`, not `h-full`: a fixed-height grid inside a scroll
+              container lets a long transcript overflow its own box, and the
+              container's bottom padding then sits behind the overflow rather
+              than after it — the "no gap at the bottom" (live, 2026-09-09). */}
+          <StageGrid className="flex min-h-full flex-col">
             <TabsContent value="transcript">
               <TranscriptTab turns={turns} thread={thread} />
             </TabsContent>
             <TabsContent value="review">
-              <ReviewTab fetchReview={fetchReview} focusTenses={focusTenses} />
+              <ReviewTab
+                review={review}
+                goal={goal}
+                focusTenses={focusTenses}
+              />
             </TabsContent>
-            <TabsContent value="ask" className="h-full">
+            {/* The Ask tab fills the column so its composer sits at the
+                bottom; `h-full` on it had nothing to be full of once the grid
+                became `min-h-full`, and the empty state showed the composer
+                floating mid-screen (live, 2026-09-10). */}
+            <TabsContent value="ask" className="flex flex-1 flex-col">
               <AskTab
                 thread={thread}
                 onAsk={onAsk}
@@ -241,9 +264,7 @@ function TranscriptTab({
 
   if (turns.length === 0) {
     return (
-      <p className="pt-16 text-sm text-muted-foreground/60">
-        Nothing to review yet.
-      </p>
+      <p className="pt-16 text-sm text-muted-foreground">Nothing said yet.</p>
     )
   }
 
@@ -259,7 +280,7 @@ function TranscriptTab({
                 "text-base tracking-[-0.011em]",
                 ROW_LEADING,
                 turn.speaker === "tutor"
-                  ? "text-foreground/55"
+                  ? "text-muted-foreground"
                   : "text-foreground/90"
               )}
             >
@@ -314,4 +335,3 @@ function TranscriptTab({
     </div>
   )
 }
-

@@ -1,34 +1,9 @@
 "use client"
 
-/**
- * The pre-flight: the one thing between a learner and speaking.
- *
- * It is a short conversation, not a form. Three questions, one on screen at a
- * time, each answered by typing — because what the learner types is what the
- * tutor carries into the session. "when to use he comido vs comí" is worth more
- * than any chip could be, and a grid of chips only ever asked the learner to
- * configure a session before they had said anything.
- *
- * So: one prominent question, one text field, `1 / 3` in the footer, Skip and
- * Continue. Answered questions collapse into quiet rows above the current one,
- * which is what makes the card read as a conversation rather than a wizard —
- * and clicking a row goes back to it. Nothing is required: skipping all three
- * is a legitimate plan (free conversation), and the last step's button never
- * disables.
- *
- * The three answers land in `plan.topic`, `plan.focusNote` and `plan.note`.
- * `scenario` and `tenses` stay in the contract — the catalogs and `suggestPlan`
- * still use them — but this screen never sets them, and the level is whatever
- * the learner's profile says.
- *
- * Two hosts: the dashboard's modal (`components/home/start-session.tsx`) and
- * `/session`'s own pre-connect state (`SessionPreflight` below). Both render
- * `PlanCards` — the questions are exported rather than copied so the two can
- * never ask the same thing two ways.
- *
- * Nothing here is Spanish-specific: the focus example comes from the
- * per-language catalog in `plan.ts`, and the language is named through
- * `TARGET_LANGUAGE_NAME`.
+/** The pre-flight: language and self-reported level, then three optional
+ * questions passed directly into the session plan. Lives in the dashboard's
+ * Start dialog (`components/home/start-session.tsx`) and nowhere else —
+ * `/session` reached without the hand-off goes back to `/home`.
  */
 
 import {
@@ -41,12 +16,12 @@ import {
 } from "react"
 import { AnimatePresence, motion, useReducedMotion } from "motion/react"
 
-import { Overline } from "@/components/overline"
+import { LanguagePicker, LevelPicker } from "@/components/session/plan-pickers"
 import { Button } from "@/components/ui/button"
 import type { SessionPlan } from "@/lib/session/contract"
 import {
   PLAN_LIMITS,
-  TARGET_LANGUAGE_NAME,
+  targetLanguage,
   focusNotePlaceholder,
 } from "@/lib/session/plan"
 import { cn } from "@/lib/utils"
@@ -81,6 +56,7 @@ export function PlanCards({
   onStart,
   starting = false,
   startLabel = "Start",
+  notice,
   className,
   bodyClassName,
   footerClassName,
@@ -93,6 +69,10 @@ export function PlanCards({
   onStart: (plan: SessionPlan) => void
   starting?: boolean
   startLabel?: string
+  /** One line directly above the Start button — where a failed start is said.
+   * Here rather than at the bottom of the host's column because the learner is
+   * looking at the button they just pressed, not under the fold. */
+  notice?: ReactNode
   className?: string
   bodyClassName?: string
   footerClassName?: string
@@ -105,14 +85,14 @@ export function PlanCards({
       field: "topic",
       question: "What do you want to be ready to talk about?",
       placeholder:
-        "A trip to Oaxaca next month, a call with my grandmother, ordering at a restaurant…",
+        "A trip next month, a call with my grandmother, ordering at a restaurant…",
       maxLength: PLAN_LIMITS.topicChars,
     },
     {
       field: "focusNote",
       question: "Anything you want the tutor to push you on?",
       hint: "Tenses, phrases, a habit you want to break.",
-      placeholder: focusNotePlaceholder(),
+      placeholder: focusNotePlaceholder(targetLanguage(plan.targetLanguage)),
       maxLength: PLAN_LIMITS.focusNoteChars,
     },
     {
@@ -135,6 +115,7 @@ export function PlanCards({
    * as a half-typed thought.
    */
   const advance = (keep: boolean) => {
+    if (starting || !plan.level) return
     const raw = keep ? plan[current.field] : null
     const next: SessionPlan = { ...plan, [current.field]: raw?.trim() || null }
     onChange(next)
@@ -149,6 +130,35 @@ export function PlanCards({
   return (
     <div className={cn("flex flex-col", className)}>
       <div className={bodyClassName}>
+        {/* Language and level, in the account menu's dropdown. The level
+            resets with the language: "comfortable" in Spanish says nothing
+            about French, and the focus note may name a Spanish form. */}
+        <div className="mb-6 flex flex-wrap items-center gap-2">
+          <LanguagePicker
+            value={targetLanguage(plan.targetLanguage)}
+            disabled={starting}
+            onChange={(language) => {
+              if (language === targetLanguage(plan.targetLanguage)) return
+              patch({
+                targetLanguage: language,
+                level: null,
+                tenses: [],
+                focusNote: null,
+              })
+            }}
+          />
+          <LevelPicker
+            value={plan.level}
+            language={targetLanguage(plan.targetLanguage)}
+            disabled={starting}
+            onChange={(level) => patch({ level })}
+          />
+          {!plan.level && (
+            <p className="w-full text-xs text-muted-foreground">
+              Pick your level to continue. The questions below are optional.
+            </p>
+          )}
+        </div>
         {/* Answered questions, in the order they were asked. Quiet enough that
             the live question is the only thing with weight on screen, and
             clickable because "wait, I want to change that" is the whole reason
@@ -219,6 +229,8 @@ export function PlanCards({
         </AnimatePresence>
       </div>
 
+      {notice}
+
       <div
         className={cn(
           "flex items-center justify-between gap-4 border-t border-foreground/[0.06] dark:border-white/10",
@@ -249,12 +261,16 @@ export function PlanCards({
             variant="ghost"
             size="sm"
             onClick={() => advance(false)}
-            disabled={starting}
+            disabled={starting || !plan.level}
             className="text-muted-foreground"
           >
             Skip
           </Button>
-          <Button size="lg" onClick={() => advance(true)} disabled={starting}>
+          <Button
+            size="lg"
+            onClick={() => advance(true)}
+            disabled={starting || !plan.level}
+          >
             {last ? (starting ? "Connecting…" : startLabel) : "Continue"}
           </Button>
         </div>
@@ -319,67 +335,5 @@ function AnswerField({
       style={{ maxHeight: FIELD_MAX_HEIGHT }}
       className="mt-4 block w-full resize-none rounded-xl bg-foreground/[0.04] px-4 py-3 text-[15px] leading-6 text-foreground transition-[box-shadow,background-color] duration-200 outline-none placeholder:text-muted-foreground/70 focus-visible:bg-foreground/[0.06] focus-visible:ring-2 focus-visible:ring-primary/30 dark:bg-white/[0.06] dark:focus-visible:bg-white/[0.08]"
     />
-  )
-}
-
-/**
- * `/session`'s own pre-flight: the same three questions, in a page-width
- * column, reached only without the dashboard hand-off (a bookmark, a reload).
- */
-export function SessionPreflight({
-  plan,
-  onChange,
-  onStart,
-  connecting,
-  error,
-  above,
-  className,
-}: {
-  plan: SessionPlan
-  onChange: (plan: SessionPlan) => void
-  onStart: (plan: SessionPlan) => void
-  connecting: boolean
-  error: string | null
-  /** Rendered above the first question, inside the same column — `/session`
-   * puts its way back to `/home` here. */
-  above?: ReactNode
-  /** For hosts that already provide their own page frame. */
-  className?: string
-}) {
-  return (
-    <div
-      className={cn(
-        "flex min-h-svh justify-center bg-background px-8 py-[clamp(3rem,12vh,7rem)]",
-        className
-      )}
-    >
-      <div className="w-full max-w-xl">
-        {above}
-        <Overline>Before you start</Overline>
-        <p className="mt-3 max-w-sm text-sm leading-relaxed text-muted-foreground">
-          {TARGET_LANGUAGE_NAME} out loud, with corrections when you finish a
-          thought. Three quick questions first — skip any.
-        </p>
-
-        <PlanCards
-          plan={plan}
-          onChange={onChange}
-          onStart={onStart}
-          starting={connecting}
-          startLabel="Start talking"
-          className="mt-8"
-          footerClassName="mt-8 pt-6"
-        />
-
-        <p className="mt-4 text-xs text-muted-foreground">
-          Microphone required. Pausing to study doesn’t use your minutes.
-        </p>
-        {error && (
-          <p role="alert" className="mt-3 text-xs text-destructive">
-            {error}
-          </p>
-        )}
-      </div>
-    </div>
   )
 }
