@@ -30,7 +30,6 @@
  */
 
 import Link from "next/link"
-import { useQuery } from "convex/react"
 
 import { SessionLanguageProvider } from "./session-language"
 import { Overline } from "@/components/overline"
@@ -50,6 +49,7 @@ import {
 import { TranscriptRecord } from "@/components/session/transcript-record"
 import { Button } from "@/components/ui/button"
 import { api } from "@/convex/_generated/api"
+import { useAuthedQuery } from "@/lib/use-authed-query"
 import { formatClock } from "@/lib/billing"
 import {
   CATEGORY_LABELS,
@@ -73,7 +73,7 @@ export function SessionSummary({
    * story. Reactive: the teardown report lands after `finish` does, and this
    * screen is already on the learner's monitor when it arrives.
    */
-  const record = useQuery(
+  const record = useAuthedQuery(
     api.sessions.byRoom,
     outcome.room === null ? "skip" : { room: outcome.room }
   )

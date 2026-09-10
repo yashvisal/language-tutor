@@ -3,7 +3,6 @@
 /** Account details. Language and level belong to each session. */
 
 import { useUser } from "@clerk/nextjs"
-import { useQuery } from "convex/react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -14,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { api } from "@/convex/_generated/api"
+import { useViewer } from "@/lib/use-authed-query"
 
 export function SettingsDialog({
   open,
@@ -23,7 +23,7 @@ export function SettingsDialog({
   onOpenChange: (open: boolean) => void
 }) {
   const { user } = useUser()
-  const viewer = useQuery(api.users.viewer)
+  const viewer = useViewer()
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

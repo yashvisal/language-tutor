@@ -16,7 +16,6 @@
  */
 
 import { useState } from "react"
-import { useQuery } from "convex/react"
 
 import {
   ReviewMaterialView,
@@ -38,7 +37,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import type { FunctionReturnType } from "convex/server"
+
 import { api } from "@/convex/_generated/api"
+import { useAuthedQuery } from "@/lib/use-authed-query"
 import { formatClock } from "@/lib/billing"
 import {
   CATEGORY_LABELS,
@@ -49,16 +51,14 @@ import { SessionLanguageProvider } from "@/components/session/session-language"
 import { LANGUAGE_NAMES, targetLanguage } from "@/lib/session/plan"
 
 /** One finished conversation, as `sessions.history` returns it. */
-type HistoryEntry = NonNullable<
-  ReturnType<typeof useQuery<typeof api.sessions.history>>
->[number]
+type HistoryEntry = FunctionReturnType<typeof api.sessions.history>[number]
 
 /** The plan as STORED — `SessionPlan` with the two back-compat notes optional
  * (`sessionPlanValidator`), because rows predate them. */
 type StoredPlan = HistoryEntry["plan"]
 
 export function History() {
-  const sessions = useQuery(api.sessions.history)
+  const sessions = useAuthedQuery(api.sessions.history, {})
   const [openId, setOpenId] = useState<string | null>(null)
 
   const selected = sessions?.find((entry) => entry.id === openId) ?? null
@@ -139,7 +139,7 @@ function SessionDialog({
    * the post-session summary uses, so one conversation has one appearance.
    */
   const room = entry?.room ?? null
-  const record = useQuery(
+  const record = useAuthedQuery(
     api.sessions.byRoom,
     room === null ? "skip" : { room }
   )

@@ -13,7 +13,6 @@
  * at least say so.
  */
 
-import { useQuery } from "convex/react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -23,6 +22,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { api } from "@/convex/_generated/api"
+import { useAuthedQuery, useViewer } from "@/lib/use-authed-query"
 import { MINUTE_PACKS, formatClock } from "@/lib/billing"
 import { cn } from "@/lib/utils"
 
@@ -33,8 +33,8 @@ export function BillingDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
-  const viewer = useQuery(api.users.viewer)
-  const ledger = useQuery(api.users.ledger)
+  const viewer = useViewer()
+  const ledger = useAuthedQuery(api.users.ledger, {})
 
   const seconds = viewer?.seconds
   const known = seconds !== undefined

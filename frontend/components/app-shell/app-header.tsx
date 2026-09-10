@@ -14,7 +14,6 @@
 import { useState } from "react"
 import Link from "next/link"
 import { useClerk, useUser } from "@clerk/nextjs"
-import { useQuery } from "convex/react"
 import { CreditCard, LogOut, Settings } from "lucide-react"
 
 import { BillingDialog } from "@/components/app-shell/billing-dialog"
@@ -32,9 +31,10 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { api } from "@/convex/_generated/api"
 import { formatClock } from "@/lib/billing"
+import { useViewer } from "@/lib/use-authed-query"
 
 export function AppHeader() {
-  const viewer = useQuery(api.users.viewer)
+  const viewer = useViewer()
 
   return (
     <header className="flex h-14 w-full shrink-0 items-center justify-between px-6 sm:px-8">

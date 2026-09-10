@@ -19,7 +19,6 @@
 import { useState, useSyncExternalStore } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { useQuery } from "convex/react"
 
 import { PlanCards } from "@/components/session/session-preflight"
 import { CARD_CLASS } from "@/components/surface"
@@ -37,6 +36,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { api } from "@/convex/_generated/api"
+import { useViewer } from "@/lib/use-authed-query"
 import { LOW_BALANCE_SECONDS, formatClock } from "@/lib/billing"
 import type { SessionPlan } from "@/lib/session/contract"
 import { requestStart } from "@/lib/session/handoff"
@@ -50,7 +50,7 @@ import { cn } from "@/lib/utils"
 
 export function StartSession() {
   const router = useRouter()
-  const viewer = useQuery(api.users.viewer)
+  const viewer = useViewer()
 
   const stored = useSyncExternalStore(
     subscribeToPlan,
