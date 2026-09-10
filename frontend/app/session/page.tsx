@@ -74,9 +74,11 @@ export default function SessionPage() {
    */
   const handedOff = useRef(false)
   useEffect(() => {
-    if (handedOff.current || !takeStartRequest()) return
+    if (handedOff.current) return
+    const requested = takeStartRequest()
+    if (requested === null) return
     handedOff.current = true
-    connect(planSnapshot())
+    connect(requested)
   }, [connect])
 
   // The hand-off screen ends when the start has an answer of any kind. Set

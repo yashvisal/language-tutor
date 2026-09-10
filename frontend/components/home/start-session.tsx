@@ -168,7 +168,7 @@ export function StartSession() {
             footerClassName="px-6 py-4"
             onStart={(finalPlan) => {
               savePlan(finalPlan)
-              requestStart()
+              requestStart(finalPlan)
               router.push("/session")
             }}
           />

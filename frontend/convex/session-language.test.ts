@@ -12,23 +12,48 @@ import {
 
 const modules = import.meta.glob("./**/*.*s")
 
-test("blocked browser storage does not lose the language on the start handoff", async () => {
+test("the browser remembers the language and the level, and not today's questions", async () => {
   const { savePlan, planSnapshot } = await import("../lib/session/plan")
+  const store = new Map<string, string>()
   vi.stubGlobal("window", {
     localStorage: {
-      setItem: () => {
-        throw new Error("Storage blocked")
-      },
+      setItem: (k: string, v: string) => void store.set(k, v),
+      getItem: (k: string) => store.get(k) ?? null,
     },
   })
   try {
-    savePlan({ ...EMPTY_PLAN, targetLanguage: "fr" })
-    expect(planSnapshot().targetLanguage).toBe("fr")
+    savePlan({
+      ...EMPTY_PLAN,
+      targetLanguage: "fr",
+      level: "beginner",
+      topic: "a trip to Portugal",
+      focusNote: "the past tenses",
+      note: "go slow",
+      tenses: ["preterite"],
+    })
+    const next = planSnapshot()
+    expect(next.targetLanguage).toBe("fr")
+    expect(next.level).toBe("beginner")
+    expect(next.topic).toBeNull()
+    expect(next.focusNote).toBeNull()
+    expect(next.note).toBeNull()
+    expect(next.tenses).toEqual([])
   } finally {
-    vi.stubGlobal("window", { localStorage: { setItem: () => {} } })
-    savePlan(EMPTY_PLAN)
     vi.unstubAllGlobals()
   }
+})
+
+test("the hand-off carries the whole plan to the session, once", async () => {
+  const { requestStart, startRequested, takeStartRequest } =
+    await import("../lib/session/handoff")
+  const plan = { ...EMPTY_PLAN, targetLanguage: "fr", topic: "a trip" }
+  expect(startRequested()).toBe(false)
+  requestStart(plan)
+  expect(startRequested()).toBe(true)
+  expect(takeStartRequest()).toEqual(plan)
+  // Spent: a reload, or a second mount, gets nothing and opens the pre-flight.
+  expect(takeStartRequest()).toBeNull()
+  expect(startRequested()).toBe(false)
 })
 
 test("language survives normalization and a stored session round trip", async () => {

@@ -1,3 +1,5 @@
+import type { SessionPlan } from "./contract"
+
 /**
  * The `/home` → `/session` hand-off.
  *
@@ -9,27 +11,30 @@
  * "another form", and an "already open in another tab" behind it
  * (live, 2026-09-08).
  *
- * So the flag is in memory instead: set by the dashboard immediately before
- * it navigates, read once by `/session` on mount. A reload or a shared link
- * has no flag and opens on the pre-flight, which is exactly the guard the
- * URL version was trying to keep.
+ * So the hand-off is in memory instead: the dashboard hands over the PLAN it
+ * was just given, immediately before it navigates, and `/session` takes it
+ * once on mount. A reload or a shared link has nothing waiting and opens on
+ * the pre-flight, which is exactly the guard the URL version was trying to
+ * keep. The plan travels here rather than through storage because storage
+ * remembers only the language and the level (`plan.ts`): what the learner
+ * wants to talk about today is today's, and must not be pre-filled tomorrow.
  */
 
-let requested = false
+let pending: SessionPlan | null = null
 
-/** The dashboard's Start: connect as soon as `/session` mounts. */
-export function requestStart(): void {
-  requested = true
+/** The dashboard's Start: connect with this plan as soon as `/session` mounts. */
+export function requestStart(plan: SessionPlan): void {
+  pending = plan
 }
 
 /** Whether a start is waiting, without spending it — for the first render. */
 export function startRequested(): boolean {
-  return requested
+  return pending !== null
 }
 
-/** Spend the request. Returns whether there was one. */
-export function takeStartRequest(): boolean {
-  const was = requested
-  requested = false
-  return was
+/** Spend the request: the plan to connect with, or `null` if none is waiting. */
+export function takeStartRequest(): SessionPlan | null {
+  const plan = pending
+  pending = null
+  return plan
 }

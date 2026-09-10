@@ -293,8 +293,6 @@ const STORAGE_KEY = "tutor.session-plan.v2"
 const listeners = new Set<() => void>()
 let cachedRaw: string | null = null
 let cachedPlan: SessionPlan = EMPTY_PLAN
-// Keep a navigation handoff working when storage is blocked or full.
-let unsavedPlan: SessionPlan | null = null
 
 function notify() {
   for (const listener of listeners) listener()
@@ -311,9 +309,9 @@ export function subscribeToPlan(listener: () => void): () => void {
   }
 }
 
-/** The learner's last plan, so a second session starts pre-filled. */
+/** What the learner chose last time — the language and their level in it —
+ * so the next pre-flight opens there. Never the questions: see `savePlan`. */
 export function planSnapshot(): SessionPlan {
-  if (unsavedPlan !== null) return unsavedPlan
   let raw: string | null = null
   try {
     raw = window.localStorage.getItem(STORAGE_KEY)
@@ -336,14 +334,27 @@ export function serverPlanSnapshot(): SessionPlan {
   return EMPTY_PLAN
 }
 
+/**
+ * Remember the language and the level, and nothing else. The topic, the
+ * focus and the note are today's answers: pre-filling tomorrow's pre-flight
+ * with "a trip to Portugal" made every session look like the last one
+ * (live, 2026-09-09). The session being started right now gets the whole
+ * plan through the hand-off (`handoff.ts`), not through here.
+ *
+ * Private mode, quota, a disabled store: the memory is a convenience, and
+ * losing it costs the learner two taps next time.
+ */
 export function savePlan(plan: SessionPlan): void {
   if (typeof window === "undefined") return
+  const remembered: SessionPlan = {
+    ...EMPTY_PLAN,
+    targetLanguage: plan.targetLanguage,
+    level: plan.level,
+  }
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(plan))
-    unsavedPlan = null
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(remembered))
   } catch {
-    // The next route must still use the selected language for this session.
-    unsavedPlan = boundPlan(plan)
+    // Nothing to do: see above.
   }
   notify()
 }
