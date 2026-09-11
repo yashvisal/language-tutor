@@ -20,6 +20,7 @@ import random
 import ssl
 import sys
 import time
+import unicodedata
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any
@@ -154,6 +155,46 @@ def _spawn(coro: Coroutine[Any, Any, None], name: str) -> asyncio.Task[None]:
     return task
 
 
+_SENTENCE_END = (".", "?", "!", "…")
+
+
+def learner_text(text: str) -> str:
+    """A learner turn as the stored transcript and the analyzer should read it.
+
+    Two things the transcriber does that are not the learner's:
+
+    - Every STT fragment starts a sentence, so a turn joined from several reads
+      "Sí, después de Levantarme Yo desayuno" (live, 2026-09-10). A capital
+      that follows a word which did not end a sentence is lowered, unless the
+      word is all capitals (an acronym). Proper nouns lose their capital too —
+      the same rule, and the same trade, as the stage's join
+      (`frontend/lib/session/reducer.ts`), so the two never disagree.
+    - With the transcriber biased to one language, a syllable it cannot place
+      can come out in another script entirely ("Me gusta どうも café"). Every
+      language we offer is written in Latin script, so anything else is noise.
+    """
+    kept = "".join(
+        ch
+        for ch in text
+        if ch.isascii()
+        or unicodedata.name(ch, "").startswith("LATIN")
+        or unicodedata.category(ch)[0] in "PZNS"
+    )
+    words = kept.split()
+    out: list[str] = []
+    for word in words:
+        if (
+            out
+            and not out[-1].endswith(_SENTENCE_END)
+            and len(word) >= 1
+            and word[0].isupper()
+            and (len(word) == 1 or not word[1:2].isupper())
+        ):
+            word = word[0].lower() + word[1:]
+        out.append(word)
+    return " ".join(out)
+
+
 def _publish_turn_commit(room: rtc.Room, state: SessionState) -> None:
     """Announce that a learner turn just committed, as a monotonic counter.
 
@@ -272,7 +313,12 @@ class TutorAgent(Agent):
         # So `session.history` held only the tutor's lines — the stored
         # transcript, the Review and the about line were all written from half
         # a conversation (live, 2026-09-10, in every session before it too).
-        # Inserted by creation time, so it lands where it was said.
+        # Inserted by creation time, so it lands where it was said — and in
+        # the shape the stage shows: fragment capitals lowered, stray scripts
+        # dropped (see `learner_text`).
+        cleaned = learner_text(new_message.text_content or "")
+        if cleaned != (new_message.text_content or ""):
+            new_message.content = [cleaned]
         self.session.history.insert(new_message)
 
         # How a sentence was cut, as a number (from the GPT-Live spike, kept):

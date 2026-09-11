@@ -199,3 +199,15 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def test_learner_text_lowers_fragment_capitals_and_drops_other_scripts() -> None:
+    from agent import learner_text
+
+    assert (
+        learner_text("Sí, después de Levantarme Yo desayuno. Y me gusta Café")
+        == "Sí, después de levantarme yo desayuno. Y me gusta café"
+    )
+    assert learner_text("Me gusta どうも café con hielo") == "Me gusta café con hielo"
+    # An acronym keeps its capitals; a one-letter word does not.
+    assert learner_text("Trabajo en IA Y en la web") == "Trabajo en IA y en la web"
