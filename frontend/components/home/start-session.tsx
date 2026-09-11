@@ -101,12 +101,16 @@ export function StartSession() {
             {missing ? (
               <>
                 We haven&rsquo;t finished setting up your account.{" "}
-                <Link
-                  href="/home"
-                  className="text-foreground underline decoration-foreground/30 underline-offset-4 transition-colors duration-200 hover:decoration-foreground"
+                {/* A refresh, not a link to the route we are on: a same-route
+                    Link is a no-op, and it is the server layout that makes
+                    the row (`ensureViewerOnServer`). */}
+                <button
+                  type="button"
+                  onClick={() => router.refresh()}
+                  className="cursor-pointer text-foreground underline decoration-foreground/30 underline-offset-4 transition-colors duration-200 hover:decoration-foreground"
                 >
                   Finish setup
-                </Link>
+                </button>
                 .
               </>
             ) : empty ? (
