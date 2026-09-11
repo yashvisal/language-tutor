@@ -624,6 +624,16 @@ async def tutor(ctx: JobContext) -> None:
                 )
             except Exception:
                 logger.warning("billing report failed", exc_info=True)
+            # A hold-flushed turn is tidied a moment after it lands; a
+            # shutdown inside that moment would store the raw one. Bounded,
+            # and the task times itself out anyway.
+            if state.hold_normalize is not None and not state.hold_normalize.done():
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(state.hold_normalize), HOLD_NORMALIZE_WAIT_S
+                    )
+                except Exception:
+                    pass
             try:
                 # The after-session record (phase 7 step 2): what this was
                 # about, the transcript, the Review material and the
@@ -1421,7 +1431,9 @@ async def _flush_open_user_turn(
         # turn-commit signal has to be published here too — otherwise the first
         # words after a resume land in the pre-hold bubble.
         _publish_turn_commit(room, state)
-        _spawn(_normalize_flushed_turn(session, text), "tutor-hold-normalize")
+        state.hold_normalize = _spawn(
+            _normalize_flushed_turn(session, text), "tutor-hold-normalize"
+        )
         # The turn is owed an answer, which the conversational re-entry gives on
         # resume — unless a resume raced this flush, in which case it has already
         # decided how to re-enter and the flag would only leak into the next
