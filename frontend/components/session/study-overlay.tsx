@@ -170,6 +170,19 @@ export function StudyOverlay({
     if (!outOfMinutes) setReading(false)
   }
 
+  /**
+   * Ask is a question to the tutor, and the tutor is not on the clock any
+   * more: the worker answers Ask on the same model the minutes paid for, and
+   * nothing below the overlay checks the balance. So out of minutes the tab
+   * is off, a selection already on it moves to Review (the transcript and
+   * review are what the modal invites reading), and a submit that slips
+   * through anyway is dropped here.
+   */
+  const askOff = outOfMinutes
+  useEffect(() => {
+    if (askOff && tab === "ask") onTabChange("review")
+  }, [askOff, tab, onTabChange])
+
   return (
     <motion.div
       role="dialog"
@@ -204,7 +217,12 @@ export function StudyOverlay({
         <div className="relative flex shrink-0 items-center justify-center px-4 pt-3">
           <TabsList variant="line" className="h-8">
             {TABS.map(({ value, label }) => (
-              <TabsTrigger key={value} value={value} className="px-3">
+              <TabsTrigger
+                key={value}
+                value={value}
+                className="px-3"
+                disabled={askOff && value === "ask"}
+              >
                 {label}
               </TabsTrigger>
             ))}
@@ -257,7 +275,7 @@ export function StudyOverlay({
             <TabsContent value="ask" className="flex flex-1 flex-col">
               <AskTab
                 thread={thread}
-                onAsk={onAsk}
+                onAsk={askOff ? () => undefined : onAsk}
                 heroTurnId={heroTurnId}
                 turns={turns}
               />
