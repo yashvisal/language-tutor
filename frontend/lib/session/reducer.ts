@@ -110,10 +110,23 @@ const FILLERS_STRIPPED_IN = new Set(["es", "fr", "it"])
  */
 const CAPITALIZES_NOUNS = new Set(["de"])
 
+/**
+ * With the transcriber biased to one language, a syllable it cannot place can
+ * come out in another script entirely ("Me gusta どうも café", live
+ * 2026-09-10). Every language offered is written in Latin script, so a
+ * character from any other script is noise. Common and Inherited cover
+ * punctuation, digits, spaces and combining accents.
+ */
+const FOREIGN_SCRIPT = /[^\p{Script=Latin}\p{Script=Common}\p{Script=Inherited}]+/gu
+
 function normalizeTranscript(text: string, language: string): string {
+  // A space, not nothing: a glyph wedged between two words must not glue
+  // them ("holaどうもamigo" is two words). The whitespace collapse below
+  // tidies the rest.
+  const latin = text.replace(FOREIGN_SCRIPT, " ")
   const stripped = FILLERS_STRIPPED_IN.has(language)
-    ? text.replace(FILLER, " ")
-    : text
+    ? latin.replace(FILLER, " ")
+    : latin
   return stripped.replace(/\s+/g, " ").trim()
 }
 
@@ -136,7 +149,11 @@ function joinTargetFragments(fragments: string[], language: string): string {
     if (
       !CAPITALIZES_NOUNS.has(language) &&
       !/[.?!…]$/.test(out) &&
-      /^\p{Lu}\p{Ll}/u.test(next)
+      // A capital followed by a lower-case letter, a space or the end: "Ahora",
+      // "Y fue", "Y". Not a capital followed by another capital, which could
+      // be an acronym. The one-letter case was missed at first, and every
+      // Spanish "y" that started a fragment stayed "Y" (live, 2026-09-10).
+      /^\p{Lu}(?:\p{Ll}|\s|$)/u.test(next)
     ) {
       next = next[0]!.toLocaleLowerCase(language) + next.slice(1)
     }

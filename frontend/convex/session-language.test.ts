@@ -190,6 +190,42 @@ test("Spanish fragments join in sentence case and drop English fillers", async (
     text: "Para crear cosas.",
   })
   expect(next.current?.target).toBe("Ahora trabajo, para crear cosas.")
+  // A syllable the transcriber placed in another script is dropped.
+  const glyph = sessionReducer(INITIAL_SESSION_STATE, {
+    type: "transcript.delta",
+    segmentId: "g",
+    speaker: "learner",
+    language: "target",
+    text: "Me gusta どうも café con hielo",
+  })
+  expect(glyph.current?.target).toBe("Me gusta café con hielo")
+  // A glyph glued between two words does not glue the words together.
+  const glued = sessionReducer(INITIAL_SESSION_STATE, {
+    type: "transcript.delta",
+    segmentId: "h",
+    speaker: "learner",
+    language: "target",
+    text: "holaどうもamigo",
+  })
+  expect(glued.current?.target).toBe("hola amigo")
+  // A one-letter fragment start is a word too: "Y" mid-sentence is "y".
+  const third = sessionReducer(next, {
+    type: "transcript.delta",
+    segmentId: "c",
+    speaker: "learner",
+    language: "target",
+    text: "Fui a Bali",
+  })
+  const fourth = sessionReducer(third, {
+    type: "transcript.delta",
+    segmentId: "d",
+    speaker: "learner",
+    language: "target",
+    text: "Y a la India.",
+  })
+  expect(fourth.current?.target).toBe(
+    "Ahora trabajo, para crear cosas. Fui a Bali y a la India."
+  )
   // The language survives the reset that precedes a new room.
   expect(
     sessionReducer(next, { type: "session.reset" }).language

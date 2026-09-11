@@ -92,17 +92,28 @@ export function History() {
                       record landed, and a row renaming itself a minute later
                       read as a glitch (Yash, 2026-09-09). The plan's topic
                       stands in for a row with no goal. */}
+                  {/* Date first, at a fixed width, so every row's columns
+                      line up whatever the date's length; the language pill
+                      sits at the far right for the same reason. The fix count
+                      is gone from the row — it is inside, and it read as a
+                      score (Yash, 2026-09-10). */}
+                  <span className="w-14 shrink-0 text-xs text-muted-foreground tabular-nums">
+                    {formatDate(entry.startedAt)}
+                  </span>
                   <span className="min-w-0 flex-1 truncate text-sm text-foreground">
                     {entry.goal?.trim() || titleFor(entry.plan)}
-                  </span>
-                  <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-                    {formatDate(entry.startedAt)}
                   </span>
                   <span className="w-12 shrink-0 text-right text-sm text-foreground tabular-nums">
                     {formatClock(entry.secondsTalked)}
                   </span>
-                  <span className="w-16 shrink-0 text-right text-xs text-muted-foreground tabular-nums">
-                    {fixes(entry.corrections.length)}
+                  <span className="w-20 shrink-0 text-right">
+                    <span className="rounded-full bg-foreground/[0.05] px-2 py-0.5 text-[11px] text-muted-foreground dark:bg-white/10">
+                      {
+                        LANGUAGE_NAMES[
+                          targetLanguage(entry.plan.targetLanguage)
+                        ]
+                      }
+                    </span>
                   </span>
                 </button>
               </li>
@@ -345,11 +356,6 @@ function tenseLabel(value: string, language: string): string {
  * category prints itself rather than blanking out. */
 function categoryLabel(category: string): string {
   return CATEGORY_LABELS[category as CorrectionCategory] ?? category
-}
-
-function fixes(count: number): string {
-  if (count === 0) return "no fixes"
-  return `${count} ${count === 1 ? "fix" : "fixes"}`
 }
 
 /** Short and local: "Aug 24" — the same date the Billing dialog prints. */

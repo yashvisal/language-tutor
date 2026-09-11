@@ -38,8 +38,14 @@ import {
   OVERLAY_ATTR,
   OVERLAY_OPEN,
 } from "@/components/session/translate-overlay"
-import { OutOfMinutesCard } from "@/components/session/out-of-minutes"
 import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Tooltip,
@@ -71,6 +77,7 @@ export function StudyOverlay({
   focusTenses,
   heroTurnId,
   outOfMinutes = false,
+  onEnd,
   onClose,
   restoreFocusTo,
 }: {
@@ -91,13 +98,17 @@ export function StudyOverlay({
   focusTenses?: readonly string[]
   heroTurnId: string | null
   /**
-   * The balance ran out and the worker is holding here. The surface stays
-   * exactly what it was — the conversation, the review, the questions — with
-   * one card over it and no way to close: closing is resuming, and there is
+   * The balance ran out and the worker is holding here. A modal says so and
+   * offers the one door — End — and nothing else works until it is taken. The
+   * learner may set the modal aside to read the transcript and review
+   * underneath (the most useful things on screen at that moment), but the
+   * surface itself still cannot be closed: closing is resuming, and there is
    * nothing to resume into until there are minutes again.
    */
   outOfMinutes?: boolean
   onClose: () => void
+  /** Out of minutes, the one action: end the session as End does. */
+  onEnd?: () => void
   /**
    * What opened the surface, captured by the caller at interaction time (a ref,
    * so nothing reads it during render). Null when there is nothing to go back
@@ -131,17 +142,46 @@ export function StudyOverlay({
    * or a learner who opened this from the control bar loses their place.
    */
   const closeRef = useRef<HTMLButtonElement>(null)
-  const homeRef = useRef<HTMLAnchorElement>(null)
+  const endRef = useRef<HTMLButtonElement>(null)
+  const barEndRef = useRef<HTMLButtonElement>(null)
   useEffect(() => {
     // Read on mount, not on close: whatever opened this surface is the thing to
     // return to, whatever the ref happens to hold by then.
     const trigger = restoreFocusTo?.current
-    // Out of minutes the close button is gone; the way home takes its place.
-    ;(closeRef.current ?? homeRef.current)?.focus()
+    // Out of minutes the close button is gone. The modal moves focus to its
+    // own End button when it opens; if it has been set aside, the bar's End is
+    // the surface's one control.
+    ;(closeRef.current ?? barEndRef.current)?.focus()
     return () => {
       if (trigger?.isConnected) trigger.focus()
     }
   }, [restoreFocusTo])
+
+  /**
+   * "Read the review" sets the modal aside without letting the learner out:
+   * the overlay stays, the close button stays gone, and a bar at the top keeps
+   * End in view. The flag is cleared the moment minutes exist again, so the
+   * next zero is announced the same way as the first.
+   */
+  const [reading, setReading] = useState(false)
+  const [wasOut, setWasOut] = useState(outOfMinutes)
+  if (wasOut !== outOfMinutes) {
+    setWasOut(outOfMinutes)
+    if (!outOfMinutes) setReading(false)
+  }
+
+  /**
+   * Ask is a question to the tutor, and the tutor is not on the clock any
+   * more: the worker answers Ask on the same model the minutes paid for, and
+   * nothing below the overlay checks the balance. So out of minutes the tab
+   * is off, a selection already on it moves to Review (the transcript and
+   * review are what the modal invites reading), and a submit that slips
+   * through anyway is dropped here.
+   */
+  const askOff = outOfMinutes
+  useEffect(() => {
+    if (askOff && tab === "ask") onTabChange("review")
+  }, [askOff, tab, onTabChange])
 
   return (
     <motion.div
@@ -162,17 +202,34 @@ export function StudyOverlay({
         onValueChange={(value) => onTabChange(value as StudyTab)}
         className="flex h-full min-h-0 flex-col gap-0"
       >
+        {/* The exit stays visible once the modal has been set aside: a learner
+            who put it away to read should not have to go looking for the
+            door when they are done. */}
+        {outOfMinutes && reading && (
+          <div className="flex shrink-0 items-center justify-between gap-3 border-b border-foreground/[0.06] bg-primary/[0.06] px-4 py-2">
+            <p className="text-sm text-foreground/80">Out of minutes</p>
+            <Button size="sm" ref={barEndRef} onClick={onEnd}>
+              End session
+            </Button>
+          </div>
+        )}
+
         <div className="relative flex shrink-0 items-center justify-center px-4 pt-3">
           <TabsList variant="line" className="h-8">
             {TABS.map(({ value, label }) => (
-              <TabsTrigger key={value} value={value} className="px-3">
+              <TabsTrigger
+                key={value}
+                value={value}
+                className="px-3"
+                disabled={askOff && value === "ask"}
+              >
                 {label}
               </TabsTrigger>
             ))}
           </TabsList>
-          {/* No way out while the balance is zero: the only door is the card
-              below, and a close button that resumed into a held session would
-              be a button that does nothing. */}
+          {/* No way out while the balance is zero: the only door is End, and a
+              close button that resumed into a held session would be a button
+              that does nothing. */}
           {!outOfMinutes && (
             <Tooltip>
               <TooltipTrigger
@@ -193,20 +250,6 @@ export function StudyOverlay({
             </Tooltip>
           )}
         </div>
-
-        {/* On top of the tabs, not instead of them: the session has not gone
-            anywhere, and the transcript and review are the most useful things
-            on the screen at the moment a learner runs out. */}
-        {outOfMinutes && (
-          <motion.div
-            initial={reducedMotion ? false : { opacity: 0, y: -8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.3, ease: [0.32, 0.72, 0, 1] }}
-            className="shrink-0 px-6 pt-5"
-          >
-            <OutOfMinutesCard className="mx-auto max-w-md" linkRef={homeRef} />
-          </motion.div>
-        )}
 
         <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-6 pb-16">
           {/* Same grid as the stage, so every tab reads as the same document.
@@ -232,7 +275,7 @@ export function StudyOverlay({
             <TabsContent value="ask" className="flex flex-1 flex-col">
               <AskTab
                 thread={thread}
-                onAsk={onAsk}
+                onAsk={askOff ? () => undefined : onAsk}
                 heroTurnId={heroTurnId}
                 turns={turns}
               />
@@ -240,6 +283,47 @@ export function StudyOverlay({
           </StageGrid>
         </div>
       </Tabs>
+
+      {/* A modal, not a card wedged above the tabs: running out is a stop, and
+          a stop should look like one. It cannot be dismissed by Escape, the
+          backdrop, or a close button — the only way to close it and stay is
+          "Read the review", which leaves the bar above. The Escape and close
+          guards on the overlay itself hold either way. */}
+      <Dialog
+        open={outOfMinutes && !reading}
+        // `open` is fully controlled and only the two buttons change it, so
+        // every close Base UI asks for (Escape, and the backdrop even with
+        // pointer dismissal off) is declined here.
+        onOpenChange={() => undefined}
+        disablePointerDismissal
+      >
+        <DialogContent
+          showCloseButton={false}
+          initialFocus={endRef}
+          // Set aside rather than closed, so focus goes to the bar's End
+          // (rendered in the same commit) instead of back to `<body>`.
+          finalFocus={barEndRef}
+          className="gap-0 overflow-hidden p-0 sm:max-w-md"
+        >
+          <DialogHeader className="px-6 pt-5 pb-5 text-left">
+            <DialogTitle className="text-base">
+              You&rsquo;re out of minutes.
+            </DialogTitle>
+            <DialogDescription className="leading-relaxed">
+              Buying more will land here. For now, end the session — this
+              conversation and its review go to your history.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex items-center justify-end gap-2 border-t border-foreground/[0.06] px-6 py-4">
+            <Button variant="ghost" onClick={() => setReading(true)}>
+              Read the review
+            </Button>
+            <Button ref={endRef} onClick={onEnd}>
+              End session
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </motion.div>
   )
 }

@@ -127,7 +127,22 @@ export interface ConversationStageProps {
   study?: StudySession
   /** The plan's focus forms, so Review leads with what is being practiced. */
   focusTenses?: readonly string[]
+  /**
+   * Where the session is on its way in. The stage renders the same from the
+   * first paint — aura, controls, everything in place — so nothing jumps when
+   * the conversation arrives; until `"live"` the controls are inert, the stop
+   * gestures do nothing, and a quiet line in the corner says what is
+   * happening. Absent (replay) means live.
+   */
+  status?: "connecting" | "joining" | "live"
 }
+
+/** What the corner says on the way in. Nothing once the tutor is here. */
+const STATUS_LINE = {
+  connecting: "Connecting…",
+  joining: "Tutor joining…",
+  live: "",
+} as const
 
 /** Stable no-study fallbacks, so the overlay's props never change identity. */
 const EMPTY_THREAD: AskExchange[] = []
@@ -156,8 +171,10 @@ export function ConversationStage({
   translate,
   study,
   focusTenses,
+  status = "live",
 }: ConversationStageProps) {
   const { phase, holds } = state
+  const live = status === "live"
 
   /**
    * `prefers-reduced-motion`. The surface keeps every state it expresses —
@@ -202,13 +219,18 @@ export function ConversationStage({
    * blurred to `<body>` and the trigger is unrecoverable.
    */
   const studyTrigger = useRef<HTMLElement | null>(null)
-  /** Every deliberate stop, whatever gesture asked for it. */
+  /**
+   * Every deliberate stop, whatever gesture asked for it. Nothing to stop
+   * before the tutor is here, so on the way in every gesture is a no-op —
+   * the one guard covers the wheel, Space and both buttons.
+   */
   const openStudy = useCallback(() => {
+    if (!live) return
     const active = document.activeElement
     studyTrigger.current =
       active instanceof HTMLElement && active !== document.body ? active : null
     hold("history")
-  }, [hold])
+  }, [hold, live])
 
   // Space toggles the stop — a quiet keyboard affordance for the same pair of
   // gestures the control bar offers: study on the way in, resume on the way out
@@ -447,6 +469,7 @@ export function ConversationStage({
             // not just this one — the surface must never close onto a session
             // that is still held by something the learner can no longer see.
             outOfMinutes={outOfMinutes}
+            onEnd={onEnd}
             onClose={() => holds.forEach(release)}
             restoreFocusTo={studyTrigger}
           />
@@ -467,6 +490,17 @@ export function ConversationStage({
         />
       )}
 
+      {/* The way in, said once and quietly: bottom-right, clear of the
+          centered controls, and gone the moment the tutor is live. Always
+          mounted so the live region announces each step rather than
+          appearing mid-sentence. */}
+      <p
+        aria-live="polite"
+        className="pointer-events-none absolute right-6 bottom-8 z-10 text-xs text-muted-foreground"
+      >
+        {STATUS_LINE[status]}
+      </p>
+
       <div inert={studyOpen}>
         <SessionClock
           elapsedSeconds={elapsedSeconds ?? null}
@@ -474,6 +508,7 @@ export function ConversationStage({
           held={paused}
         />
         <SessionControls
+          disabled={!live}
           paused={paused}
           studyOpen={studyOpen}
           muted={muted}

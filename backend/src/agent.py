@@ -17,12 +17,15 @@ import asyncio
 import json
 import logging
 import random
+import ssl
 import sys
 import time
+import unicodedata
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any
 
+import openai as openai_sdk
 from dotenv import load_dotenv
 from livekit import agents, rtc
 from livekit.agents import (
@@ -152,6 +155,54 @@ def _spawn(coro: Coroutine[Any, Any, None], name: str) -> asyncio.Task[None]:
     return task
 
 
+_SENTENCE_END = (".", "?", "!", "…")
+
+
+def learner_text(text: str) -> str:
+    """A learner turn as the stored transcript and the analyzer should read it.
+
+    Two things the transcriber does that are not the learner's:
+
+    - Every STT fragment starts a sentence, so a turn joined from several reads
+      "Sí, después de Levantarme Yo desayuno" (live, 2026-09-10). A capital
+      that follows a word which did not end a sentence is lowered, unless the
+      word is all capitals (an acronym). Proper nouns lose their capital too —
+      the same rule, and the same trade, as the stage's join
+      (`frontend/lib/session/reducer.ts`), so the two never disagree.
+    - With the transcriber biased to one language, a syllable it cannot place
+      can come out in another script entirely ("Me gusta どうも café"). Every
+      language we offer is written in Latin script, so anything else is noise.
+
+    Composed first (NFC): a decomposed accent is a combining mark whose name is
+    not "LATIN …", and the filter below would strip it and turn "café" into
+    "cafe". Composed, the é is one Latin letter and passes.
+    """
+    text = unicodedata.normalize("NFC", text)
+    # A dropped character leaves a space, not nothing: "holaどうもamigo" is two
+    # words, and the split below would otherwise read it as "holaamigo".
+    kept = "".join(
+        ch
+        if ch.isascii()
+        or unicodedata.name(ch, "").startswith("LATIN")
+        or unicodedata.category(ch)[0] in "PZNS"
+        else " "
+        for ch in text
+    )
+    words = kept.split()
+    out: list[str] = []
+    for word in words:
+        if (
+            out
+            and not out[-1].endswith(_SENTENCE_END)
+            and len(word) >= 1
+            and word[0].isupper()
+            and (len(word) == 1 or not word[1:2].isupper())
+        ):
+            word = word[0].lower() + word[1:]
+        out.append(word)
+    return " ".join(out)
+
+
 def _publish_turn_commit(room: rtc.Room, state: SessionState) -> None:
     """Announce that a learner turn just committed, as a monotonic counter.
 
@@ -184,7 +235,7 @@ def _context_turns(turn_ctx: llm.ChatContext, new_message: llm.ChatMessage) -> l
     contain `new_message`."""
     turns = transcript_turns(turn_ctx)
     text = " ".join((new_message.text_content or "").split())
-    if text:
+    if text and not (turns and turns[-1] == {"role": "learner", "text": text}):
         turns.append({"role": "learner", "text": text})
     return turns
 
@@ -207,6 +258,7 @@ class TutorAgent(Agent):
         self._state = state
         self._room = room
         self._goals = goals
+        self._last_commit_at: float | None = None
 
     # The session's one tool (phase 7 step 3). It exists because the goal the
     # conversation is aimed at should be what the learner AGREED to, not what a
@@ -262,12 +314,44 @@ class TutorAgent(Agent):
         # suppresses the tutor's reply.
         _publish_turn_commit(self._room, self._state)
 
+        # The learner's words, into the session's history ourselves. With a
+        # realtime model the framework never adds them: it expects the model's
+        # own input transcription to produce the user item, and we turned that
+        # off in favour of the parallel STT (`config.build_realtime_model`).
+        # So `session.history` held only the tutor's lines — the stored
+        # transcript, the Review and the about line were all written from half
+        # a conversation (live, 2026-09-10, in every session before it too).
+        # Inserted by creation time, so it lands where it was said — and in
+        # the shape the stage shows: fragment capitals lowered, stray scripts
+        # dropped (see `learner_text`).
+        cleaned = learner_text(new_message.text_content or "")
+        if cleaned != (new_message.text_content or ""):
+            new_message.content = [cleaned]
+        self.session.history.insert(new_message)
+
+        # How a sentence was cut, as a number (from the GPT-Live spike, kept):
+        # a run of short commits a second or two apart is one sentence in
+        # pieces, and that is the thing to compare when endpointing changes.
+        now = time.monotonic()
+        logger.info(
+            "turn committed",
+            extra={
+                "chars": len(new_message.text_content or ""),
+                "gap_s": round(now - self._last_commit_at, 2) if self._last_commit_at else None,
+            },
+        )
+        self._last_commit_at = now
+
         # The goal's safety net: by the third committed turn the opening
         # exchange has happened, and if the tool never fired the session still
         # needs a goal (see `goal.py`). No-op once one exists.
+        # Context for the goal and the analyzer comes from the session's
+        # history, which now carries both voices; `turn_ctx` is the agent's own
+        # copy and never had the learner's.
+        history = self.session.history
         if self._goals is not None:
             try:
-                self._goals.maybe_extract(_context_turns(turn_ctx, new_message))
+                self._goals.maybe_extract(_context_turns(history, new_message))
             except Exception:
                 logger.warning("goal extraction trigger failed", exc_info=True)
 
@@ -276,7 +360,7 @@ class TutorAgent(Agent):
             self._analyzer.analyze_in_background(
                 turn_id=new_message.id,
                 text=text,
-                context=recent_context(turn_ctx, exclude_id=new_message.id),
+                context=recent_context(history, exclude_id=new_message.id),
             )
 
         # A turn already in flight when the learner paused (STT finals lag the
@@ -356,6 +440,26 @@ def _prewarm(proc: JobProcess) -> None:
     except Exception:
         logger.warning("prewarm failed; sessions will build their own", exc_info=True)
 
+    # The OpenAI SDK builds its pydantic models on first use, and the first
+    # use is a job's first Responses call — the analyzer, the Review, the goal
+    # tool — which stalled the agent's event loop for up to 0.9 s while it
+    # imported and validated schemas (live, 2026-09-10). Touching those
+    # modules here, and building one client, pays that once per process,
+    # before any audio is in flight.
+    try:
+        import openai.lib.streaming.responses  # noqa: F401
+        import openai.types.beta  # noqa: F401
+        import openai.types.responses  # noqa: F401
+
+        # The default SSL context costs ~0.5 s on first build (live,
+        # 2026-09-10); the SDK's client builds it on the job's first request.
+        ssl.create_default_context()
+        # `openai_sdk`, because `openai` in this module is the LiveKit plugin.
+        openai_client = openai_sdk.AsyncOpenAI(api_key="prewarm")
+        _ = openai_client.responses  # the lazy resource, and its models
+    except Exception:
+        logger.debug("OpenAI SDK prewarm skipped", exc_info=True)
+
 
 server = AgentServer(num_idle_processes=NUM_IDLE_PROCESSES)
 server.setup_fnc = _prewarm
@@ -422,11 +526,15 @@ async def tutor(ctx: JobContext) -> None:
         # console smoke test, a simulated job, and any process whose prewarm
         # failed.
         vad=_prewarmed(ctx, "vad", lambda: inference.VAD(model="silero")),
-        # Parallel STT owns every transcript the UI shows. Both languages are
-        # listed because code-switching is expected in a tutoring session.
+        # Parallel STT owns every transcript the UI shows. The TARGET language
+        # only: with both languages open, a hesitant Spanish syllable was a
+        # coin flip — "hay" came out "I", "fun" came out "fan" — and 40% of a
+        # learner's turns read as English to the analyzer (live, 2026-09-10).
+        # The setting is a bias, not a wall: a real switch into the anchor
+        # language still comes through, and the prompt says how to write it.
         stt=openai.STT(
             model=cfg.stt_model,
-            language=[cfg.target_lang, cfg.anchor_lang],
+            language=[cfg.target_lang],
             prompt=stt_prompt(cfg),
         ),
         # ONE turn clock: the semantic turn detector owns endpointing for the
@@ -1299,9 +1407,12 @@ async def _flush_open_user_turn(
             # The committed message reaches the chat context a moment later (the
             # framework's end-of-turn task), so the context here excludes it
             # already and needs no `exclude_id`.
+            # The same shape a normal commit gives the analyzer (fragment
+            # capitals lowered, stray scripts dropped), so a turn cut by a hold
+            # is not corrected for a capital the transcriber put there.
             analyzer.analyze_in_background(
                 turn_id=utils.shortuuid("item_"),
-                text=text,
+                text=learner_text(text),
                 context=recent_context(session.history),
             )
 

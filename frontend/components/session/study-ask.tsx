@@ -107,10 +107,12 @@ export function AskTab({
             rows={2}
             placeholder="Ask a question"
             aria-label="Ask the coach a question"
-            // Grows with the question up to a few lines, then scrolls with a
-            // thin bar: a two-row box with a full scrollbar inside it read as
-            // a bug (live, 2026-09-09).
-            className="max-h-40 w-full resize-none rounded-lg border border-border/60 bg-background/60 py-2 pr-12 pl-3 text-sm leading-6 transition-colors outline-none [field-sizing:content] [scrollbar-width:thin] placeholder:text-muted-foreground focus:border-border"
+            // Rests at three lines or so and grows with the question up to a
+            // few more, then scrolls with a thin bar: a two-row box read as
+            // too small to be for asking anything (Yash, 2026-09-10), and one
+            // with a full scrollbar inside it read as a bug (live,
+            // 2026-09-09).
+            className="[field-sizing:content] max-h-40 min-h-16 w-full resize-none [scrollbar-width:thin] rounded-lg border border-border/60 bg-background/60 py-2 pr-12 pl-3 text-sm leading-6 transition-colors outline-none placeholder:text-muted-foreground focus:border-border"
           />
           <Button
             type="button"

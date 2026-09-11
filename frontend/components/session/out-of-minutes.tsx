@@ -1,22 +1,20 @@
 "use client"
 
 /**
- * Out of minutes: one card, one line, one door.
+ * Out of minutes before a session: one card, one line, one door.
  *
- * The same card in the two places the fact can appear — over a conversation the
- * worker is holding at zero, and in front of a session that never started
- * because the token route said 402. One component because it is one sentence,
- * and the learner should not be able to tell that the two moments are different
- * code paths.
+ * This is the 402 path — the token route refused before a room existed, so
+ * there is no conversation and no review to promise a place in History, and
+ * home is the only door. The other place the fact appears, over a conversation
+ * the worker is holding at zero, is a modal inside the study surface
+ * (`study-overlay.tsx`): that one offers End, which writes the outcome and
+ * puts the row in History at once. "Back to home" used to be a plain link
+ * there too, and an in-app navigation never told the session it was over:
+ * nothing was written until the worker's own close half a minute later, and
+ * History looked empty (Yash, 2026-09-10).
  *
  * Buying more will land in this card. Until then the only honest offer is the
- * way home, so that is the only button: an offer nobody can accept is worse
- * than no offer.
- *
- * The second line used to promise the transcript and review were "saved in
- * this session", which was true only until the tab closed. Since the worker
- * writes both to the `sessions` row at teardown (`sessions.recordSummary`) and
- * History renders them, the promise is now the one the code keeps.
+ * way out.
  */
 
 import type { RefObject } from "react"
@@ -45,7 +43,7 @@ export function OutOfMinutesCard({
       </h2>
       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
         {hasSession
-          ? "Buying more will land here. For now, head home — this conversation and its review are saved to your history."
+          ? "Buying more will land here. For now, end the session — this conversation and its review go to your history."
           : "You need minutes to start a conversation. Buying more will land here; for now, head home."}
       </p>
       <Button
