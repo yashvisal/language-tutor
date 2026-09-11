@@ -215,7 +215,10 @@ export default function LandingPage() {
                 />
                 <AmbientAura state="listening" className="h-full" />
               </div>
-              <h2 className="mt-8 text-3xl font-semibold tracking-tight text-balance sm:text-4xl">
+              {/* The same voice as the hero's headline: medium weight, a size
+                  under it. Bolder here read as a second, louder billboard
+                  (Yash, 2026-09-11). */}
+              <h2 className="mt-8 text-2xl font-medium tracking-tight text-balance sm:text-3xl">
                 Practice with a tutor that lets you finish.
               </h2>
               <p className="mt-3 max-w-md text-muted-foreground">
