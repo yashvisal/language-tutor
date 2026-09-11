@@ -66,7 +66,12 @@ export default function LandingPage() {
             className="mt-16 w-full max-w-2xl sm:mt-20"
           />
 
-          <div className="mt-8">
+          {/* The correction line under the demo is laid out whether or not it
+              is visible, so the space under the demo reads as generous until
+              the correction fades in and then as tight. This gap is the
+              middle: it holds up with the line showing and does not gape
+              without it (Yash, 2026-09-11). */}
+          <div className="mt-10">
             <PrimaryCta />
           </div>
         </section>
