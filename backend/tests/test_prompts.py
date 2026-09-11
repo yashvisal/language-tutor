@@ -215,3 +215,41 @@ def test_learner_text_lowers_fragment_capitals_and_drops_other_scripts() -> None
     assert learner_text("Trabajo en IA Y en la web") == "Trabajo en IA y en la web"
     # A decomposed accent (e + combining acute) is composed, not stripped.
     assert learner_text("Me gusta el café") == "Me gusta el café"
+
+
+def test_hold_flush_normalizes_the_turn_before_analysis() -> None:
+    """A turn committed by a hold bypasses `on_user_turn_completed`; the
+    analyzer must still see it as `learner_text` shapes it."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from livekit.agents import llm
+
+    from agent import _flush_open_user_turn
+    from state import SessionState
+
+    seen: list[str] = []
+
+    class Analyzer:
+        def analyze_in_background(self, *, turn_id: str, text: str, context: object) -> None:
+            seen.append(text)
+
+    async def commit_user_turn(**_: object) -> str:
+        return "Sí, después de Levantarme どうも Yo desayuno"
+
+    async def set_attributes(_: dict[str, str]) -> None:
+        return None
+
+    session = SimpleNamespace(
+        user_state="listening",
+        history=llm.ChatContext.empty(),
+        commit_user_turn=commit_user_turn,
+    )
+    room = SimpleNamespace(local_participant=SimpleNamespace(set_attributes=set_attributes))
+
+    async def run() -> None:
+        await _flush_open_user_turn(session, SessionState(), Analyzer(), room)  # type: ignore[arg-type]
+        await asyncio.sleep(0)
+
+    asyncio.run(run())
+    assert seen == ["Sí, después de levantarme yo desayuno"]

@@ -1407,9 +1407,12 @@ async def _flush_open_user_turn(
             # The committed message reaches the chat context a moment later (the
             # framework's end-of-turn task), so the context here excludes it
             # already and needs no `exclude_id`.
+            # The same shape a normal commit gives the analyzer (fragment
+            # capitals lowered, stray scripts dropped), so a turn cut by a hold
+            # is not corrected for a capital the transcriber put there.
             analyzer.analyze_in_background(
                 turn_id=utils.shortuuid("item_"),
-                text=text,
+                text=learner_text(text),
                 context=recent_context(session.history),
             )
 
