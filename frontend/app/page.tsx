@@ -66,7 +66,7 @@ export default function LandingPage() {
             className="mt-16 w-full max-w-2xl sm:mt-20"
           />
 
-          <div className="mt-12 sm:mt-14">
+          <div className="mt-8">
             <PrimaryCta />
           </div>
         </section>
