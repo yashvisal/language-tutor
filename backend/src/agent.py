@@ -178,12 +178,15 @@ def learner_text(text: str) -> str:
     "cafe". Composed, the é is one Latin letter and passes.
     """
     text = unicodedata.normalize("NFC", text)
+    # A dropped character leaves a space, not nothing: "holaどうもamigo" is two
+    # words, and the split below would otherwise read it as "holaamigo".
     kept = "".join(
         ch
-        for ch in text
         if ch.isascii()
         or unicodedata.name(ch, "").startswith("LATIN")
         or unicodedata.category(ch)[0] in "PZNS"
+        else " "
+        for ch in text
     )
     words = kept.split()
     out: list[str] = []

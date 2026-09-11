@@ -209,6 +209,8 @@ def test_learner_text_lowers_fragment_capitals_and_drops_other_scripts() -> None
         == "Sí, después de levantarme yo desayuno. Y me gusta café"
     )
     assert learner_text("Me gusta どうも café con hielo") == "Me gusta café con hielo"
+    # A glyph glued between two words does not glue the words together.
+    assert learner_text("holaどうもamigo") == "hola amigo"
     # An acronym keeps its capitals; a one-letter word does not.
     assert learner_text("Trabajo en IA Y en la web") == "Trabajo en IA y en la web"
     # A decomposed accent (e + combining acute) is composed, not stripped.
