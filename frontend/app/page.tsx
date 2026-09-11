@@ -38,8 +38,12 @@ export default function LandingPage() {
       <MarketingHeader />
 
       <main className="flex-1">
-        {/* Hero — sized to the first screen, CTA included. */}
-        <section className="relative mx-auto flex min-h-[calc(100svh-3.5rem)] w-full max-w-4xl flex-col items-center justify-center px-6 py-10 text-center">
+        {/* Hero — sized to the first screen, CTA included. The stack is not
+            centred in the box: centring a tight stack in a tall box piles the
+            slack above and below and leaves the pieces cramped in the middle
+            (Yash, laptop, 2026-09-11). It starts a fixed distance under the
+            header and the room goes between the pieces. */}
+        <section className="relative mx-auto flex min-h-[calc(100svh-3.5rem)] w-full max-w-4xl flex-col items-center px-6 pt-16 pb-16 text-center sm:pt-20">
           <div
             aria-hidden
             className="pointer-events-none absolute top-[55%] left-1/2 -z-10 h-[40rem] w-[40rem] -translate-x-1/2 -translate-y-1/2 rounded-full bg-blue-400/25 blur-[120px] dark:bg-blue-500/15"
@@ -52,14 +56,17 @@ export default function LandingPage() {
           <h1 className="text-3xl leading-tight font-medium tracking-tight text-balance sm:text-4xl lg:text-[2.75rem]">
             Your next language, out loud.
           </h1>
-          <p className="mt-3 max-w-md text-base leading-relaxed text-balance text-muted-foreground">
+          <p className="mt-4 max-w-md text-base leading-relaxed text-balance text-muted-foreground">
             A tutor that answers naturally and never talks over you. The
             corrections wait until you have finished the thought.
           </p>
 
-          <DemoConversation size="hero" className="mt-12 w-full max-w-2xl" />
+          <DemoConversation
+            size="hero"
+            className="mt-16 w-full max-w-2xl sm:mt-20"
+          />
 
-          <div className="mt-10">
+          <div className="mt-12 sm:mt-14">
             <PrimaryCta />
           </div>
         </section>

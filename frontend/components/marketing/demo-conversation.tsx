@@ -28,7 +28,11 @@ type Beat =
   | { kind: "hold"; ms: number }
 
 const SCRIPT: Beat[] = [
-  { kind: "tutor", text: "¿Qué tal tu fin de semana? Cuéntame qué hiciste.", ms: 2600 },
+  {
+    kind: "tutor",
+    text: "¿Qué tal tu fin de semana? Cuéntame qué hiciste.",
+    ms: 2600,
+  },
   { kind: "learner", text: "Ayer yo fue al supermercado.", ms: 2000 },
   { kind: "settle", ms: 1100 },
   { kind: "correct", ms: 2600 },
@@ -61,7 +65,8 @@ export function DemoConversation({
   useEffect(() => {
     if (reducedMotion) return
     const next = setTimeout(
-      () => setStep((s) => ({ index: (s.index + 1) % SCRIPT.length, words: 0 })),
+      () =>
+        setStep((s) => ({ index: (s.index + 1) % SCRIPT.length, words: 0 })),
       beat.ms
     )
     if (beat.kind !== "tutor" && beat.kind !== "learner") {
@@ -70,7 +75,8 @@ export function DemoConversation({
     const total = beat.text.split(" ").length
     const perWord = Math.max(120, (beat.ms - 500) / total)
     const typer = setInterval(
-      () => setStep((s) => (s.words >= total ? s : { ...s, words: s.words + 1 })),
+      () =>
+        setStep((s) => (s.words >= total ? s : { ...s, words: s.words + 1 })),
       perWord
     )
     return () => {
@@ -116,7 +122,7 @@ export function DemoConversation({
       aria-label="A short example of a session"
       role="img"
     >
-      <div className={cn("relative", hero ? "h-44 sm:h-52" : "h-36")}>
+      <div className={cn("relative", hero ? "h-48 sm:h-56" : "h-36")}>
         {/* The glow is the stage light, not decoration: it is where the
             orb's own color lands on the surface around it. */}
         <div
@@ -128,8 +134,8 @@ export function DemoConversation({
 
       <div
         className={cn(
-          "mt-6 w-full text-center",
-          hero ? "min-h-[5.5rem]" : "min-h-[4rem]"
+          "w-full text-center",
+          hero ? "mt-8 min-h-[5.5rem]" : "mt-6 min-h-[4rem]"
         )}
       >
         <div className="mb-2 text-[10px] font-medium tracking-[0.22em] text-muted-foreground/60 uppercase">
