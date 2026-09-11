@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, type ComponentPropsWithoutRef } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, type ComponentPropsWithoutRef } from 'react';
 
 const PRECISIONS = ['lowp', 'mediump', 'highp'];
 const FS_MAIN_SHADER = `\nvoid main(void){
@@ -426,6 +426,14 @@ export interface ReactShaderToyProps {
    * something like e.g. hide the canvas until textures are done loading.
    */
   onDoneLoadingTextures?: () => void;
+  /**
+   * Called once, right after the first frame has been drawn. A WebGL canvas
+   * is on screen from the moment it mounts, and on Chromium/Edge an
+   * accelerated canvas with no frame yet can composite as a solid white box
+   * for a frame or two; a caller that keeps the canvas invisible until this
+   * fires never shows that box.
+   */
+  onFirstFrame?: (canvas: HTMLCanvasElement) => void;
 
   /** Custom callback to handle errors. Defaults to `console.error`. */
   onError?: (error: string) => void;
@@ -453,6 +461,7 @@ export function ReactShaderToy({
   lerp = 1,
   devicePixelRatio = 1,
   onDoneLoadingTextures,
+  onFirstFrame,
   onError = console.error,
   onWarning = console.warn,
   animateWhenNotVisible = false,
@@ -467,6 +476,7 @@ export function ReactShaderToy({
   const animFrameIdRef = useRef<number | undefined>(undefined);
   const initFrameIdRef = useRef<number | undefined>(undefined);
   const isVisibleRef = useRef(true);
+  const firstFrameDrawnRef = useRef(false);
   const animateWhenNotVisibleRef = useRef(animateWhenNotVisible);
   const mousedownRef = useRef(false);
   const canvasPositionRef = useRef<DOMRect | undefined>(undefined);
@@ -590,12 +600,21 @@ export function ReactShaderToy({
     const realToCSSPixels = devicePixelRatio;
     const displayWidth = Math.floor((canvasPositionRef.current?.width ?? 1) * realToCSSPixels);
     const displayHeight = Math.floor((canvasPositionRef.current?.height ?? 1) * realToCSSPixels);
-    gl.canvas.width = displayWidth;
-    gl.canvas.height = displayHeight;
+    // Assigning even the same dimensions clears the drawing buffer, so the
+    // size is only written when it changes — but the resolution uniform is
+    // uploaded either way: at device pixel ratio 1 the init has already sized
+    // the canvas, and a shader that divides by iResolution drew a flat square
+    // at zero (the blue box, 2026-09-11).
+    const resized = gl.canvas.width !== displayWidth || gl.canvas.height !== displayHeight;
+    if (resized) {
+      gl.canvas.width = displayWidth;
+      gl.canvas.height = displayHeight;
+    }
     if (uniformsRef.current.iResolution?.isNeeded && shaderProgramRef.current) {
       const rUniform = gl.getUniformLocation(shaderProgramRef.current, UNIFORM_RESOLUTION);
       gl.uniform2fv(rUniform, [gl.canvas.width, gl.canvas.height]);
     }
+    if (resized && firstFrameDrawnRef.current) drawScene(lastTimeRef.current, false);
   };
 
   const createShader = (type: number, shaderCodeAsText: string) => {
@@ -624,6 +643,8 @@ export function ReactShaderToy({
     gl.attachShader(shaderProgramRef.current, vertexShaderObj);
     gl.attachShader(shaderProgramRef.current, fragmentShaderObj);
     gl.linkProgram(shaderProgramRef.current);
+    gl.deleteShader(fragmentShaderObj);
+    gl.deleteShader(vertexShaderObj);
     if (!gl.getProgramParameter(shaderProgramRef.current, gl.LINK_STATUS)) {
       onError?.(
         log(
@@ -813,15 +834,19 @@ export function ReactShaderToy({
     }
   };
 
-  const drawScene = (timestamp: number) => {
+  const drawScene = (timestamp: number, scheduleNextFrame = true) => {
     const gl = glRef.current;
-    if (!gl) return;
+    if (!gl || !shaderProgramRef.current || gl.isContextLost()) return;
     gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     gl.bindBuffer(gl.ARRAY_BUFFER, squareVerticesBufferRef.current);
     gl.vertexAttribPointer(vertexPositionAttributeRef.current ?? 0, 3, gl.FLOAT, false, 0, 0);
     setUniforms(timestamp);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    if (!firstFrameDrawnRef.current) {
+      firstFrameDrawnRef.current = true;
+      if (onFirstFrame && canvasRef.current) onFirstFrame(canvasRef.current);
+    }
     const mouseValue = uniformsRef.current.iMouse?.value;
     if (uniformsRef.current.iMouse?.isNeeded && lerp !== 1 && Array.isArray(mouseValue)) {
       const currentX = mouseValue[0] ?? 0;
@@ -829,7 +854,7 @@ export function ReactShaderToy({
       mouseValue[0] = lerpVal(currentX, lastMouseArrRef.current[0] ?? 0, lerp);
       mouseValue[1] = lerpVal(currentY, lastMouseArrRef.current[1] ?? 0, lerp);
     }
-    if (animateWhenNotVisibleRef.current || isVisibleRef.current) {
+    if (scheduleNextFrame && (animateWhenNotVisibleRef.current || isVisibleRef.current)) {
       animFrameIdRef.current = requestAnimationFrame(drawScene);
     }
   };
@@ -895,7 +920,8 @@ export function ReactShaderToy({
         for (const entry of entries) {
           isVisibleRef.current = entry.isIntersecting;
           if (entry.isIntersecting) {
-            requestAnimationFrame(drawScene);
+            cancelAnimationFrame(animFrameIdRef.current ?? 0);
+            animFrameIdRef.current = requestAnimationFrame(drawScene);
           }
         }
       },
@@ -907,8 +933,16 @@ export function ReactShaderToy({
   }, [animateWhenNotVisible]);
 
   // Main effect for initialization and cleanup
-  useEffect(() => {
+  useLayoutEffect(() => {
     const textures = texturesArrRef.current;
+    const canvas = canvasRef.current;
+    const initialVisibility = style?.visibility ?? '';
+    firstFrameDrawnRef.current = false;
+    lastTimeRef.current = 0;
+    if (canvas) {
+      canvas.style.visibility = initialVisibility;
+      canvas.style.opacity = style?.opacity === undefined ? '' : String(style.opacity);
+    }
 
     function init() {
       initWebGL();
@@ -925,9 +959,13 @@ export function ReactShaderToy({
         processTextures();
         initShaders(preProcessFragment(fs || BASIC_FS), vs || BASIC_VS);
         initBuffers();
-        requestAnimationFrame(drawScene);
         addEventListeners();
         onResize();
+        // The first frame in the same task as the context, not a frame later:
+        // between a WebGL context being created and its first draw the
+        // compositor showed the canvas as a solid white box (Edge, 2026-09-11).
+        // `drawScene` schedules its own next frame.
+        drawScene(performance.now());
       }
     }
 
@@ -935,11 +973,17 @@ export function ReactShaderToy({
 
     // Cleanup function
     return () => {
+      // Hide before releasing the GPU surface, including when React hides a
+      // cached route. Passive cleanup can run after the next paint.
+      if (canvas) canvas.style.visibility = 'hidden';
+      cancelAnimationFrame(initFrameIdRef.current ?? 0);
+      cancelAnimationFrame(animFrameIdRef.current ?? 0);
+      removeEventListeners();
       const gl = glRef.current;
       if (gl) {
-        gl.getExtension('WEBGL_lose_context')?.loseContext();
         gl.useProgram(null);
         gl.deleteProgram(shaderProgramRef.current ?? null);
+        gl.deleteBuffer(squareVerticesBufferRef.current);
         if (textures.length > 0) {
           for (const texture of textures as Texture[]) {
             gl.deleteTexture(texture._webglTexture);
@@ -947,9 +991,11 @@ export function ReactShaderToy({
         }
         shaderProgramRef.current = null;
       }
-      removeEventListeners();
-      cancelAnimationFrame(initFrameIdRef.current ?? 0);
-      cancelAnimationFrame(animFrameIdRef.current ?? 0);
+      // Keep the context reusable for Strict Mode and cached-route restores.
+      // Explicitly losing it makes a still-mounted canvas unusable on setup.
+      glRef.current = null;
+      squareVerticesBufferRef.current = null;
+      texturesArrRef.current = [];
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Empty dependency array to run only once on mount

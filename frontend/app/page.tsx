@@ -14,7 +14,6 @@ import { PrimaryCta } from "@/components/marketing/primary-cta"
 import { Reveal } from "@/components/marketing/reveal"
 import { SIGNUP_GRANT_MINUTES } from "@/lib/billing"
 import { LANGUAGE_NAMES, TARGET_LANGUAGES } from "@/lib/session/plan"
-import { cn } from "@/lib/utils"
 
 export const metadata: Metadata = {
   title: "tutor — practice languages, uninterrupted",
@@ -25,7 +24,6 @@ export const metadata: Metadata = {
 const LANGUAGES = TARGET_LANGUAGES.map(({ code, native }) => ({
   name: LANGUAGE_NAMES[code],
   native,
-  available: true,
 }))
 
 /**
@@ -40,28 +38,42 @@ export default function LandingPage() {
       <MarketingHeader />
 
       <main className="flex-1">
-        {/* Hero — sized to the first screen, CTA included. */}
-        <section className="relative mx-auto flex min-h-[calc(100svh-3.5rem)] w-full max-w-4xl flex-col items-center justify-center px-6 py-10 text-center">
+        {/* Hero — sized to the first screen, CTA included. The stack is not
+            centred in the box: centring a tight stack in a tall box piles the
+            slack above and below and leaves the pieces cramped in the middle
+            (Yash, laptop, 2026-09-11). It starts a fixed distance under the
+            header and the room goes between the pieces. */}
+        <section className="relative mx-auto flex min-h-[calc(100svh-3.5rem)] w-full max-w-4xl flex-col items-center px-6 pt-16 pb-16 text-center sm:pt-20">
           <div
             aria-hidden
             className="pointer-events-none absolute top-[55%] left-1/2 -z-10 h-[40rem] w-[40rem] -translate-x-1/2 -translate-y-1/2 rounded-full bg-blue-400/25 blur-[120px] dark:bg-blue-500/15"
           />
-          <h1 className="text-4xl leading-[1.05] font-semibold tracking-tight text-balance sm:text-5xl lg:text-6xl">
-            Your next language, out loud. Pay for the minutes you talk.
+          {/* The demo is the hero; the headline introduces it. One clause,
+              medium weight, a size down from a billboard — the first cut was
+              two sentences at 60px and nothing else on the screen registered
+              (Yash, 2026-09-11). The pricing half of the old line is gone:
+              there is nothing to buy until payments land. */}
+          <h1 className="text-3xl leading-tight font-medium tracking-tight text-balance sm:text-4xl lg:text-[2.75rem]">
+            Your next language, out loud.
           </h1>
-          <p className="mt-4 max-w-lg text-base leading-relaxed text-balance text-muted-foreground sm:text-lg">
+          <p className="mt-4 max-w-md text-base leading-relaxed text-balance text-muted-foreground">
             A tutor that answers naturally and never talks over you. The
             corrections wait until you have finished the thought.
           </p>
 
-          <DemoConversation size="hero" className="mt-10 w-full max-w-2xl" />
+          <DemoConversation
+            size="hero"
+            className="mt-16 w-full max-w-2xl sm:mt-20"
+          />
 
-          <div className="mt-8">
+          {/* The correction line under the demo is laid out whether or not it
+              is visible, so the space under the demo reads as generous until
+              the correction fades in and then as tight. This gap is the
+              middle: it holds up with the line showing and does not gape
+              without it (Yash, 2026-09-11). */}
+          <div className="mt-10">
             <PrimaryCta />
           </div>
-          <p className="mt-3 text-xs text-muted-foreground">
-            Choose your language. Runs in your browser — no app to install.
-          </p>
         </section>
 
         {/* How it works — the same stage, three moments. */}
@@ -110,14 +122,15 @@ export default function LandingPage() {
                       {step.stage}
                     </div>
                     <div className="px-1 pt-5">
-                      <div className="flex items-baseline gap-3">
-                        <span className="text-xs font-medium text-primary tabular-nums">
+                      {/* The number at the title's own size: a 12px numeral
+                          on an 18px baseline read as floating (Yash,
+                          2026-09-11). */}
+                      <h3 className="flex items-center gap-3 text-lg font-medium tracking-tight">
+                        <span className="text-primary tabular-nums">
                           {step.n}
                         </span>
-                        <h3 className="text-lg font-medium tracking-tight">
-                          {step.title}
-                        </h3>
-                      </div>
+                        {step.title}
+                      </h3>
                       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
                         {step.body}
                       </p>
@@ -136,43 +149,30 @@ export default function LandingPage() {
         >
           <div className="mx-auto w-full max-w-6xl px-6 py-20">
             <Reveal>
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-                <div>
-                  <h2
-                    id="languages-heading"
-                    className="text-xs font-medium tracking-[0.18em] text-muted-foreground uppercase"
-                  >
-                    Languages
-                  </h2>
-                  <p className="mt-3 text-2xl font-medium tracking-tight">
-                    Choose the language you want to speak.
-                  </p>
-                </div>
-                <p className="text-sm text-muted-foreground">
-                  Explanations and coaching in English.
-                </p>
-              </div>
-              <ul className="mt-8 flex flex-wrap gap-2.5">
-                {LANGUAGES.map((lang) => {
-                  const available = "available" in lang && lang.available
-                  return (
-                    <li
-                      key={lang.name}
-                      className={cn(
-                        "flex items-baseline gap-2 rounded-full border px-4 py-2 text-sm",
-                        available
-                          ? "border-primary/50 text-foreground"
-                          : "border-border/70 text-muted-foreground"
-                      )}
-                    >
-                      <span className="font-medium">{lang.native}</span>
-                      <span className="text-xs text-muted-foreground">
-                        {lang.name}
-                        {available ? " · now" : " · soon"}
-                      </span>
-                    </li>
-                  )
-                })}
+              <h2
+                id="languages-heading"
+                className="text-xs font-medium tracking-[0.18em] text-muted-foreground uppercase"
+              >
+                Languages
+              </h2>
+              <p className="mt-3 max-w-xl text-2xl font-medium tracking-tight text-balance">
+                Five languages to speak. The coaching is in English.
+              </p>
+              {/* Each language in its own name, large and unadorned, with the
+                  English underneath. Every one is live, so the old "· now"
+                  tag said nothing, and a row of bordered pills looked like a
+                  filter bar with no list under it (Yash, 2026-09-11). */}
+              <ul className="mt-10 grid grid-cols-2 gap-x-6 gap-y-8 sm:grid-cols-3 lg:grid-cols-5">
+                {LANGUAGES.map((lang) => (
+                  <li key={lang.name} className="flex flex-col gap-1">
+                    <span className="text-2xl font-medium tracking-tight">
+                      {lang.native}
+                    </span>
+                    <span className="text-sm text-muted-foreground">
+                      {lang.name}
+                    </span>
+                  </li>
+                ))}
               </ul>
             </Reveal>
           </div>
@@ -215,7 +215,10 @@ export default function LandingPage() {
                 />
                 <AmbientAura state="listening" className="h-full" />
               </div>
-              <h2 className="mt-8 text-3xl font-semibold tracking-tight text-balance sm:text-4xl">
+              {/* The same voice as the hero's headline: medium weight, a size
+                  under it. Bolder here read as a second, louder billboard
+                  (Yash, 2026-09-11). */}
+              <h2 className="mt-8 text-2xl font-medium tracking-tight text-balance sm:text-3xl">
                 Practice with a tutor that lets you finish.
               </h2>
               <p className="mt-3 max-w-md text-muted-foreground">

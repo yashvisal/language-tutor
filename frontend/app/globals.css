@@ -129,4 +129,16 @@
   html {
     @apply font-sans;
     }
+  /* No rubber-banding past the page in any direction: a trackpad flick past
+     the edge dragged the fixed layers (the session stage, the sticky header,
+     the blur behind the hero) with it and left the layout torn until the next
+     paint (Yash, laptop, 2026-09-11). Horizontal overflow is clipped rather
+     than hidden so nothing becomes a scroll container. */
+  html,
+  body {
+    overscroll-behavior: none;
+    }
+  body {
+    overflow-x: clip;
+    }
 }

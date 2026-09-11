@@ -12,7 +12,7 @@
  */
 
 import { useState } from "react"
-import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { useClerk, useUser } from "@clerk/nextjs"
 import { CreditCard, LogOut, Settings } from "lucide-react"
 
@@ -35,6 +35,7 @@ import { useViewer } from "@/lib/use-authed-query"
 
 export function AppHeader() {
   const viewer = useViewer()
+  const router = useRouter()
 
   return (
     <header className="flex h-14 w-full shrink-0 items-center justify-between px-6 sm:px-8">
@@ -45,12 +46,15 @@ export function AppHeader() {
             (`null`): say so and offer the door, rather than silently omitting
             the balance forever (audit §4.13). Otherwise: the number. */}
         {viewer === null ? (
-          <Link
-            href="/welcome"
-            className="mr-2 text-sm text-muted-foreground underline decoration-muted-foreground/30 underline-offset-4 transition-colors duration-200 hover:text-foreground"
+          // A refresh, not a link: the server layout makes the row, and a
+          // Link to the route we are already on is a no-op.
+          <button
+            type="button"
+            onClick={() => router.refresh()}
+            className="mr-2 cursor-pointer text-sm text-muted-foreground underline decoration-muted-foreground/30 underline-offset-4 transition-colors duration-200 hover:text-foreground"
           >
             Finish setup
-          </Link>
+          </button>
         ) : (
           viewer?.seconds !== undefined && (
             <span className="mr-2 text-sm text-muted-foreground tabular-nums">
@@ -63,6 +67,16 @@ export function AppHeader() {
       </div>
     </header>
   )
+}
+
+/**
+ * The same avatar and menu, for a page outside the signed-in shell: the
+ * landing shows it to a returning visitor. Clerk's `<UserButton/>` did that
+ * job there and looked like another product's menu next to ours.
+ */
+export function AccountButton() {
+  const viewer = useViewer()
+  return <AccountMenu email={viewer?.email ?? null} />
 }
 
 /** Who you are, the two rooms where the account is changed, and the way out.

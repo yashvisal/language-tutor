@@ -5,8 +5,6 @@ Next.js app: the conversation surface, plus the LiveKit token endpoint.
 | Route                         | What it is                                                          |
 | ----------------------------- | ------------------------------------------------------------------- |
 | `/`                           | Landing page — signed out                                           |
-| `/go`                         | Post-auth router: to `/welcome` or `/home` depending on the account |
-| `/welcome`                    | Onboarding: declare a level, receive the signup grant               |
 | `/home`                       | The dashboard — balance, the plan pre-flight, History               |
 | `/session`                    | The real session — live LiveKit adapter                             |
 | `/terms`, `/privacy`          | Legal (currently stubs)                                             |
@@ -36,8 +34,8 @@ each provider's dashboard:
 | `CLERK_SECRET_KEY`                                | Clerk server key (never exposed to the client)           |
 | `NEXT_PUBLIC_CLERK_SIGN_IN_URL`                   | Where Clerk sends users to sign in                       |
 | `NEXT_PUBLIC_CLERK_SIGN_UP_URL`                   | Where Clerk sends users to sign up                       |
-| `NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL` | Landing route after sign-in when there is no return path |
-| `NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL` | Landing route after sign-up when there is no return path |
+| `NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL` | Route after sign-in when there is no return path (`/home`) |
+| `NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL` | Route after sign-up when there is no return path (`/home`) |
 | `CONVEX_DEPLOYMENT`                               | Which Convex deployment the CLI talks to                 |
 | `NEXT_PUBLIC_CONVEX_URL`                          | Convex websocket URL the React client connects to        |
 
