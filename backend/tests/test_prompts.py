@@ -211,3 +211,5 @@ def test_learner_text_lowers_fragment_capitals_and_drops_other_scripts() -> None
     assert learner_text("Me gusta どうも café con hielo") == "Me gusta café con hielo"
     # An acronym keeps its capitals; a one-letter word does not.
     assert learner_text("Trabajo en IA Y en la web") == "Trabajo en IA y en la web"
+    # A decomposed accent (e + combining acute) is composed, not stripped.
+    assert learner_text("Me gusta el café") == "Me gusta el café"

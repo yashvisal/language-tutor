@@ -172,7 +172,12 @@ def learner_text(text: str) -> str:
     - With the transcriber biased to one language, a syllable it cannot place
       can come out in another script entirely ("Me gusta どうも café"). Every
       language we offer is written in Latin script, so anything else is noise.
+
+    Composed first (NFC): a decomposed accent is a combining mark whose name is
+    not "LATIN …", and the filter below would strip it and turn "café" into
+    "cafe". Composed, the é is one Latin letter and passes.
     """
+    text = unicodedata.normalize("NFC", text)
     kept = "".join(
         ch
         for ch in text
