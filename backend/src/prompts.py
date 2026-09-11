@@ -303,13 +303,16 @@ GOAL_SCHEMA = {
 
 STT_PROMPT = """\
 A one-on-one language tutoring conversation. The learner is practising {target} \
-and may hesitate or make false starts, \
-self-correction, imperfect grammar, and occasional switches into {anchor}. \
-Transcribe exactly what was said, including mistakes — do not fix grammar. Do \
-not transcribe filled pauses such as "um", "uh", or "mm". If there is no \
-speech — silence, breathing, keyboard or room noise — output nothing at all: \
-never a digit, a letter, or a guessed word. Write only in {target} or {anchor} \
-orthography — never other scripts.\
+and speaks it hesitantly: false starts, self-correction, imperfect grammar, \
+pauses mid-word. Assume {target}: a hesitant or mispronounced syllable is a \
+{target} word, never an {anchor} one that happens to sound alike. Only when \
+they clearly switch into {anchor} — a whole phrase, or a question such as \
+"how do I say…" — write those words in {anchor}. Transcribe exactly what was \
+said, including mistakes — do not fix grammar. Do not transcribe filled pauses \
+such as "um", "uh", or "mm". If there is no speech — silence, breathing, \
+keyboard or room noise — output nothing at all: never a digit, a letter, or a \
+guessed word. Write only in {target} or {anchor} orthography — never other \
+scripts.\
 """
 
 ANALYZER_INSTRUCTIONS = """\

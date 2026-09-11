@@ -472,11 +472,15 @@ async def tutor(ctx: JobContext) -> None:
         # console smoke test, a simulated job, and any process whose prewarm
         # failed.
         vad=_prewarmed(ctx, "vad", lambda: inference.VAD(model="silero")),
-        # Parallel STT owns every transcript the UI shows. Both languages are
-        # listed because code-switching is expected in a tutoring session.
+        # Parallel STT owns every transcript the UI shows. The TARGET language
+        # only: with both languages open, a hesitant Spanish syllable was a
+        # coin flip — "hay" came out "I", "fun" came out "fan" — and 40% of a
+        # learner's turns read as English to the analyzer (live, 2026-09-10).
+        # The setting is a bias, not a wall: a real switch into the anchor
+        # language still comes through, and the prompt says how to write it.
         stt=openai.STT(
             model=cfg.stt_model,
-            language=[cfg.target_lang, cfg.anchor_lang],
+            language=[cfg.target_lang],
             prompt=stt_prompt(cfg),
         ),
         # ONE turn clock: the semantic turn detector owns endpointing for the
