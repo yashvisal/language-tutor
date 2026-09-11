@@ -327,16 +327,27 @@ function AuraShader({
         onWarning={(warning) => {
           console.warn('Shader warning:', warning);
         }}
-        // Invisible until the first frame is drawn. Mounted visible, the
-        // canvas flashed as a white box where the orb was about to be, on
-        // Edge, every time the landing was entered from the dashboard
-        // (Yash, 2026-09-11). The reveal is set on the element directly, not
-        // through state: it happens inside the draw loop, and a re-render for
-        // it would be a frame late.
+        // Hidden until the first frame is drawn. Mounted visible, the canvas
+        // flashed as a white box where the orb was about to be, on Edge,
+        // every time the landing was entered from the dashboard and on
+        // reload (Yash, 2026-09-11). `visibility: hidden`, not opacity 0:
+        // the compositor still builds a layer for a transparent element and
+        // the flash is that layer before its first frame, while a hidden
+        // element gets no layer at all — and it still has a size, which the
+        // WebGL init needs. The reveal is set on the element directly, not
+        // through state: it happens inside the draw loop, and a re-render
+        // for it would be a frame late.
         onFirstFrame={(canvas) => {
+          canvas.style.visibility = 'visible';
           canvas.style.opacity = '1';
         }}
-        style={{ width: '100%', height: '100%', opacity: 0, transition: 'opacity 150ms ease-out' }}
+        style={{
+          width: '100%',
+          height: '100%',
+          visibility: 'hidden',
+          opacity: 0,
+          transition: 'opacity 150ms ease-out',
+        }}
       />
     </div>
   );

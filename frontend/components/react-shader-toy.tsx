@@ -939,9 +939,13 @@ export function ReactShaderToy({
         processTextures();
         initShaders(preProcessFragment(fs || BASIC_FS), vs || BASIC_VS);
         initBuffers();
-        requestAnimationFrame(drawScene);
         addEventListeners();
         onResize();
+        // The first frame in the same task as the context, not a frame later:
+        // between a WebGL context being created and its first draw the
+        // compositor showed the canvas as a solid white box (Edge, 2026-09-11).
+        // `drawScene` schedules its own next frame.
+        drawScene(performance.now());
       }
     }
 
