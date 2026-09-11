@@ -164,6 +164,21 @@ class GoalKeeper:
             except Exception:
                 logger.warning("pushing the goal into the standing instructions failed")
 
+        # 1b. The transcriber's ear. The goal names the forms the learner is
+        #     about to reach for ("me despierto", "desayuno"); handed to the
+        #     STT as literal terms to expect, they are recognised as
+        #     themselves rather than as whatever anchor-language words they
+        #     sound like. Only the live-transcribe models take keywords, and
+        #     the plugin raises for the rest, so this is best-effort.
+        if agent is not None and goal.forms:
+            try:
+                stt = agent.session.stt
+                if stt is not None and hasattr(stt, "update_options"):
+                    stt.update_options(keywords=list(goal.forms))
+                    logger.info("transcriber keywords set", extra={"count": len(goal.forms)})
+            except Exception:
+                logger.warning("handing the goal's forms to the transcriber failed", exc_info=True)
+
         # 2. The analyzer's focus.
         if self._analyzer is not None:
             try:
