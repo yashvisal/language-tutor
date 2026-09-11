@@ -65,6 +65,16 @@ export function AppHeader() {
   )
 }
 
+/**
+ * The same avatar and menu, for a page outside the signed-in shell: the
+ * landing shows it to a returning visitor. Clerk's `<UserButton/>` did that
+ * job there and looked like another product's menu next to ours.
+ */
+export function AccountButton() {
+  const viewer = useViewer()
+  return <AccountMenu email={viewer?.email ?? null} />
+}
+
 /** Who you are, the two rooms where the account is changed, and the way out.
  * A menu rather than a page: none of this is navigation, and the two rooms are
  * modal by design — a learner opens them, changes one thing, and is back.
