@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import random
+import ssl
 import sys
 import time
 from collections.abc import Callable, Coroutine
@@ -396,6 +397,9 @@ def _prewarm(proc: JobProcess) -> None:
         import openai.types.beta  # noqa: F401
         import openai.types.responses  # noqa: F401
 
+        # The default SSL context costs ~0.5 s on first build (live,
+        # 2026-09-10); the SDK's client builds it on the job's first request.
+        ssl.create_default_context()
         # `openai_sdk`, because `openai` in this module is the LiveKit plugin.
         openai_client = openai_sdk.AsyncOpenAI(api_key="prewarm")
         _ = openai_client.responses  # the lazy resource, and its models
