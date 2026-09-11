@@ -136,7 +136,11 @@ function joinTargetFragments(fragments: string[], language: string): string {
     if (
       !CAPITALIZES_NOUNS.has(language) &&
       !/[.?!…]$/.test(out) &&
-      /^\p{Lu}\p{Ll}/u.test(next)
+      // A capital followed by a lower-case letter, a space or the end: "Ahora",
+      // "Y fue", "Y". Not a capital followed by another capital, which could
+      // be an acronym. The one-letter case was missed at first, and every
+      // Spanish "y" that started a fragment stayed "Y" (live, 2026-09-10).
+      /^\p{Lu}(?:\p{Ll}|\s|$)/u.test(next)
     ) {
       next = next[0]!.toLocaleLowerCase(language) + next.slice(1)
     }
