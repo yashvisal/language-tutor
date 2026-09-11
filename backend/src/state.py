@@ -22,6 +22,7 @@ evidence that is *observed*.
 
 from __future__ import annotations
 
+import asyncio
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -248,6 +249,11 @@ class SessionState:
     tutor_was_speaking: bool = False
     reply_was_pending: bool = False
     learner_was_speaking: bool = False
+    # The tidy-up still owed to the last hold-flushed turn (`agent.
+    # _normalize_flushed_turn`), so a shutdown that comes within seconds of a
+    # hold waits for it before snapshotting the history. One at a time: a
+    # second hold replaces the first, whose turn has long since landed.
+    hold_normalize: asyncio.Task[None] | None = None
 
     @property
     def clock_held(self) -> bool:
