@@ -190,6 +190,15 @@ test("Spanish fragments join in sentence case and drop English fillers", async (
     text: "Para crear cosas.",
   })
   expect(next.current?.target).toBe("Ahora trabajo, para crear cosas.")
+  // A syllable the transcriber placed in another script is dropped.
+  const glyph = sessionReducer(INITIAL_SESSION_STATE, {
+    type: "transcript.delta",
+    segmentId: "g",
+    speaker: "learner",
+    language: "target",
+    text: "Me gusta どうも café con hielo",
+  })
+  expect(glyph.current?.target).toBe("Me gusta café con hielo")
   // A one-letter fragment start is a word too: "Y" mid-sentence is "y".
   const third = sessionReducer(next, {
     type: "transcript.delta",

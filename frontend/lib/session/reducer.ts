@@ -110,10 +110,20 @@ const FILLERS_STRIPPED_IN = new Set(["es", "fr", "it"])
  */
 const CAPITALIZES_NOUNS = new Set(["de"])
 
+/**
+ * With the transcriber biased to one language, a syllable it cannot place can
+ * come out in another script entirely ("Me gusta どうも café", live
+ * 2026-09-10). Every language offered is written in Latin script, so a
+ * character from any other script is noise. Common and Inherited cover
+ * punctuation, digits, spaces and combining accents.
+ */
+const FOREIGN_SCRIPT = /[^\p{Script=Latin}\p{Script=Common}\p{Script=Inherited}]+/gu
+
 function normalizeTranscript(text: string, language: string): string {
+  const latin = text.replace(FOREIGN_SCRIPT, "")
   const stripped = FILLERS_STRIPPED_IN.has(language)
-    ? text.replace(FILLER, " ")
-    : text
+    ? latin.replace(FILLER, " ")
+    : latin
   return stripped.replace(/\s+/g, " ").trim()
 }
 
