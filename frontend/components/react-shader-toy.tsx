@@ -359,6 +359,11 @@ type TextureParams = {
   flipY?: number;
 };
 
+/** The animation clock, read outside a render: the resize handler repaints
+ * with it, and the React compiler's purity check only trusts a call it can see
+ * is not part of a render. */
+const frameTime = () => performance.now();
+
 export interface ReactShaderToyProps {
   /** Fragment shader GLSL code. */
   fs: string;
@@ -600,12 +605,20 @@ export function ReactShaderToy({
     const realToCSSPixels = devicePixelRatio;
     const displayWidth = Math.floor((canvasPositionRef.current?.width ?? 1) * realToCSSPixels);
     const displayHeight = Math.floor((canvasPositionRef.current?.height ?? 1) * realToCSSPixels);
+    // Assigning width or height clears the drawing buffer — even to the same
+    // value. The ResizeObserver fires once right after mount, so this ran
+    // unconditionally a moment after the first frame, wiped it, and the
+    // compositor showed a solid white box until the next animation frame
+    // (Edge, on warm reloads, 2026-09-11). Resize only on a real change, and
+    // repaint in the same task so no cleared buffer is ever presented.
+    if (gl.canvas.width === displayWidth && gl.canvas.height === displayHeight) return;
     gl.canvas.width = displayWidth;
     gl.canvas.height = displayHeight;
     if (uniformsRef.current.iResolution?.isNeeded && shaderProgramRef.current) {
       const rUniform = gl.getUniformLocation(shaderProgramRef.current, UNIFORM_RESOLUTION);
       gl.uniform2fv(rUniform, [gl.canvas.width, gl.canvas.height]);
     }
+    if (shaderProgramRef.current) renderFrame(frameTime());
   };
 
   const createShader = (type: number, shaderCodeAsText: string) => {
@@ -823,7 +836,8 @@ export function ReactShaderToy({
     }
   };
 
-  const drawScene = (timestamp: number) => {
+  /** One frame, drawn now. `drawScene` is this plus the next frame's booking. */
+  const renderFrame = (timestamp: number) => {
     const gl = glRef.current;
     if (!gl) return;
     gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
@@ -843,6 +857,11 @@ export function ReactShaderToy({
       mouseValue[0] = lerpVal(currentX, lastMouseArrRef.current[0] ?? 0, lerp);
       mouseValue[1] = lerpVal(currentY, lastMouseArrRef.current[1] ?? 0, lerp);
     }
+  };
+
+  const drawScene = (timestamp: number) => {
+    if (!glRef.current) return;
+    renderFrame(timestamp);
     if (animateWhenNotVisibleRef.current || isVisibleRef.current) {
       animFrameIdRef.current = requestAnimationFrame(drawScene);
     }
