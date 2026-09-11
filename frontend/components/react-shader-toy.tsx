@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, type ComponentPropsWithoutRef } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, type ComponentPropsWithoutRef } from 'react';
 
 const PRECISIONS = ['lowp', 'mediump', 'highp'];
 const FS_MAIN_SHADER = `\nvoid main(void){
@@ -600,12 +600,15 @@ export function ReactShaderToy({
     const realToCSSPixels = devicePixelRatio;
     const displayWidth = Math.floor((canvasPositionRef.current?.width ?? 1) * realToCSSPixels);
     const displayHeight = Math.floor((canvasPositionRef.current?.height ?? 1) * realToCSSPixels);
+    // Assigning even the same dimensions clears the drawing buffer.
+    if (gl.canvas.width === displayWidth && gl.canvas.height === displayHeight) return;
     gl.canvas.width = displayWidth;
     gl.canvas.height = displayHeight;
     if (uniformsRef.current.iResolution?.isNeeded && shaderProgramRef.current) {
       const rUniform = gl.getUniformLocation(shaderProgramRef.current, UNIFORM_RESOLUTION);
       gl.uniform2fv(rUniform, [gl.canvas.width, gl.canvas.height]);
     }
+    if (firstFrameDrawnRef.current) drawScene(lastTimeRef.current, false);
   };
 
   const createShader = (type: number, shaderCodeAsText: string) => {
@@ -634,6 +637,8 @@ export function ReactShaderToy({
     gl.attachShader(shaderProgramRef.current, vertexShaderObj);
     gl.attachShader(shaderProgramRef.current, fragmentShaderObj);
     gl.linkProgram(shaderProgramRef.current);
+    gl.deleteShader(fragmentShaderObj);
+    gl.deleteShader(vertexShaderObj);
     if (!gl.getProgramParameter(shaderProgramRef.current, gl.LINK_STATUS)) {
       onError?.(
         log(
@@ -823,9 +828,9 @@ export function ReactShaderToy({
     }
   };
 
-  const drawScene = (timestamp: number) => {
+  const drawScene = (timestamp: number, scheduleNextFrame = true) => {
     const gl = glRef.current;
-    if (!gl) return;
+    if (!gl || !shaderProgramRef.current || gl.isContextLost()) return;
     gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     gl.bindBuffer(gl.ARRAY_BUFFER, squareVerticesBufferRef.current);
@@ -843,7 +848,7 @@ export function ReactShaderToy({
       mouseValue[0] = lerpVal(currentX, lastMouseArrRef.current[0] ?? 0, lerp);
       mouseValue[1] = lerpVal(currentY, lastMouseArrRef.current[1] ?? 0, lerp);
     }
-    if (animateWhenNotVisibleRef.current || isVisibleRef.current) {
+    if (scheduleNextFrame && (animateWhenNotVisibleRef.current || isVisibleRef.current)) {
       animFrameIdRef.current = requestAnimationFrame(drawScene);
     }
   };
@@ -909,7 +914,8 @@ export function ReactShaderToy({
         for (const entry of entries) {
           isVisibleRef.current = entry.isIntersecting;
           if (entry.isIntersecting) {
-            requestAnimationFrame(drawScene);
+            cancelAnimationFrame(animFrameIdRef.current ?? 0);
+            animFrameIdRef.current = requestAnimationFrame(drawScene);
           }
         }
       },
@@ -921,8 +927,16 @@ export function ReactShaderToy({
   }, [animateWhenNotVisible]);
 
   // Main effect for initialization and cleanup
-  useEffect(() => {
+  useLayoutEffect(() => {
     const textures = texturesArrRef.current;
+    const canvas = canvasRef.current;
+    const initialVisibility = style?.visibility ?? '';
+    firstFrameDrawnRef.current = false;
+    lastTimeRef.current = 0;
+    if (canvas) {
+      canvas.style.visibility = initialVisibility;
+      canvas.style.opacity = style?.opacity === undefined ? '' : String(style.opacity);
+    }
 
     function init() {
       initWebGL();
@@ -953,11 +967,17 @@ export function ReactShaderToy({
 
     // Cleanup function
     return () => {
+      // Hide before releasing the GPU surface, including when React hides a
+      // cached route. Passive cleanup can run after the next paint.
+      if (canvas) canvas.style.visibility = 'hidden';
+      cancelAnimationFrame(initFrameIdRef.current ?? 0);
+      cancelAnimationFrame(animFrameIdRef.current ?? 0);
+      removeEventListeners();
       const gl = glRef.current;
       if (gl) {
-        gl.getExtension('WEBGL_lose_context')?.loseContext();
         gl.useProgram(null);
         gl.deleteProgram(shaderProgramRef.current ?? null);
+        gl.deleteBuffer(squareVerticesBufferRef.current);
         if (textures.length > 0) {
           for (const texture of textures as Texture[]) {
             gl.deleteTexture(texture._webglTexture);
@@ -965,9 +985,11 @@ export function ReactShaderToy({
         }
         shaderProgramRef.current = null;
       }
-      removeEventListeners();
-      cancelAnimationFrame(initFrameIdRef.current ?? 0);
-      cancelAnimationFrame(animFrameIdRef.current ?? 0);
+      // Keep the context reusable for Strict Mode and cached-route restores.
+      // Explicitly losing it makes a still-mounted canvas unusable on setup.
+      glRef.current = null;
+      squareVerticesBufferRef.current = null;
+      texturesArrRef.current = [];
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Empty dependency array to run only once on mount
