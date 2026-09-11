@@ -185,7 +185,7 @@ def _context_turns(turn_ctx: llm.ChatContext, new_message: llm.ChatMessage) -> l
     contain `new_message`."""
     turns = transcript_turns(turn_ctx)
     text = " ".join((new_message.text_content or "").split())
-    if text:
+    if text and not (turns and turns[-1] == {"role": "learner", "text": text}):
         turns.append({"role": "learner", "text": text})
     return turns
 
@@ -264,6 +264,16 @@ class TutorAgent(Agent):
         # suppresses the tutor's reply.
         _publish_turn_commit(self._room, self._state)
 
+        # The learner's words, into the session's history ourselves. With a
+        # realtime model the framework never adds them: it expects the model's
+        # own input transcription to produce the user item, and we turned that
+        # off in favour of the parallel STT (`config.build_realtime_model`).
+        # So `session.history` held only the tutor's lines — the stored
+        # transcript, the Review and the about line were all written from half
+        # a conversation (live, 2026-09-10, in every session before it too).
+        # Inserted by creation time, so it lands where it was said.
+        self.session.history.insert(new_message)
+
         # How a sentence was cut, as a number (from the GPT-Live spike, kept):
         # a run of short commits a second or two apart is one sentence in
         # pieces, and that is the thing to compare when endpointing changes.
@@ -280,9 +290,13 @@ class TutorAgent(Agent):
         # The goal's safety net: by the third committed turn the opening
         # exchange has happened, and if the tool never fired the session still
         # needs a goal (see `goal.py`). No-op once one exists.
+        # Context for the goal and the analyzer comes from the session's
+        # history, which now carries both voices; `turn_ctx` is the agent's own
+        # copy and never had the learner's.
+        history = self.session.history
         if self._goals is not None:
             try:
-                self._goals.maybe_extract(_context_turns(turn_ctx, new_message))
+                self._goals.maybe_extract(_context_turns(history, new_message))
             except Exception:
                 logger.warning("goal extraction trigger failed", exc_info=True)
 
@@ -291,7 +305,7 @@ class TutorAgent(Agent):
             self._analyzer.analyze_in_background(
                 turn_id=new_message.id,
                 text=text,
-                context=recent_context(turn_ctx, exclude_id=new_message.id),
+                context=recent_context(history, exclude_id=new_message.id),
             )
 
         # A turn already in flight when the learner paused (STT finals lag the
