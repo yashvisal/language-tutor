@@ -253,3 +253,37 @@ def test_hold_flush_normalizes_the_turn_before_analysis() -> None:
 
     asyncio.run(run())
     assert seen == ["Sí, después de levantarme yo desayuno"]
+
+
+def test_hold_flushed_turn_is_normalized_in_history_once_it_lands() -> None:
+    import asyncio
+
+    from livekit.agents import llm
+
+    from agent import _normalize_flushed_turn
+
+    raw = "Sí, después de Levantarme Yo desayuno"
+    history = llm.ChatContext.empty()
+
+    async def run() -> None:
+        task = asyncio.create_task(_normalize_flushed_turn(_Session(history), raw))  # type: ignore[arg-type]
+        await asyncio.sleep(0.15)  # the framework appends a moment later
+        history.add_message(role="user", content=raw)
+        await task
+
+    class _Session:
+        def __init__(self, h: llm.ChatContext) -> None:
+            self.history = h
+
+    asyncio.run(run())
+    assert [m.text_content for m in history.items if m.type == "message"] == [
+        "Sí, después de levantarme yo desayuno"
+    ]
+
+
+def test_session_state_carries_the_hold_normalize_slot() -> None:
+    """The shutdown callback reads it off `SessionState` before any hold has
+    run; the field once landed on `SessionFacts` by mistake (PR #9)."""
+    from state import SessionState
+
+    assert SessionState().hold_normalize is None

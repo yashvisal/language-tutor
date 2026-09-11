@@ -624,6 +624,16 @@ async def tutor(ctx: JobContext) -> None:
                 )
             except Exception:
                 logger.warning("billing report failed", exc_info=True)
+            # A hold-flushed turn is tidied a moment after it lands; a
+            # shutdown inside that moment would store the raw one. Bounded,
+            # and the task times itself out anyway.
+            if state.hold_normalize is not None and not state.hold_normalize.done():
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(state.hold_normalize), HOLD_NORMALIZE_WAIT_S
+                    )
+                except Exception:
+                    pass
             try:
                 # The after-session record (phase 7 step 2): what this was
                 # about, the transcript, the Review material and the
@@ -1343,6 +1353,33 @@ HOLD_FLUSH_WAIT_S = 2.5
 HOLD_FLUSH_CEILING_S = 3.5
 
 
+HOLD_NORMALIZE_WAIT_S = 3.0
+
+
+async def _normalize_flushed_turn(session: AgentSession, raw: str) -> None:
+    """Give a hold-flushed learner turn the shape every other turn has.
+
+    On the flush path the framework appends the learner's message to the chat
+    context itself (`skip_reply` with a realtime model — the one case where it
+    does), a moment after `commit_user_turn` resolves and without passing
+    through `on_user_turn_completed`. So the stored transcript kept the
+    transcriber's fragment capitals and stray glyphs for exactly the turns a
+    hold cut. Wait for that append, then rewrite the item in place. Best
+    effort: if it never lands, nothing is lost but the tidying.
+    """
+    cleaned = learner_text(raw)
+    if cleaned == raw:
+        return
+    deadline = time.monotonic() + HOLD_NORMALIZE_WAIT_S
+    while time.monotonic() < deadline:
+        for item in reversed(session.history.items):
+            if item.type == "message" and item.role == "user" and item.text_content == raw:
+                item.content = [cleaned]
+                return
+        await asyncio.sleep(0.1)
+    logger.info("hold: flushed turn never reached the history; left as is")
+
+
 async def _flush_open_user_turn(
     session: AgentSession,
     state: SessionState,
@@ -1394,6 +1431,9 @@ async def _flush_open_user_turn(
         # turn-commit signal has to be published here too — otherwise the first
         # words after a resume land in the pre-hold bubble.
         _publish_turn_commit(room, state)
+        state.hold_normalize = _spawn(
+            _normalize_flushed_turn(session, text), "tutor-hold-normalize"
+        )
         # The turn is owed an answer, which the conversational re-entry gives on
         # resume — unless a resume raced this flush, in which case it has already
         # decided how to re-enter and the flag would only leak into the next
