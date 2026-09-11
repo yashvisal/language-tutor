@@ -112,14 +112,15 @@ export default function LandingPage() {
                       {step.stage}
                     </div>
                     <div className="px-1 pt-5">
-                      <div className="flex items-baseline gap-3">
-                        <span className="text-xs font-medium text-primary tabular-nums">
+                      {/* The number at the title's own size: a 12px numeral
+                          on an 18px baseline read as floating (Yash,
+                          2026-09-11). */}
+                      <h3 className="flex items-center gap-3 text-lg font-medium tracking-tight">
+                        <span className="text-primary tabular-nums">
                           {step.n}
                         </span>
-                        <h3 className="text-lg font-medium tracking-tight">
-                          {step.title}
-                        </h3>
-                      </div>
+                        {step.title}
+                      </h3>
                       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
                         {step.body}
                       </p>
