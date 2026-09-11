@@ -54,7 +54,7 @@ const PLAN: SessionPlanArg = {
 
 const GRANT = SIGNUP_GRANT_SECONDS
 
-/** A learner with a row and a signup grant — the state `/welcome` leaves. */
+/** A learner with a row and a signup grant — the state a first visit leaves. */
 async function makeLearner(
   t: TestConvex,
   clerkId: string
@@ -109,7 +109,12 @@ function openRoom(
   room: string,
   jobId = "job_1"
 ) {
-  return t.mutation(internal.sessions.open, { room, clerkId, jobId, plan: PLAN })
+  return t.mutation(internal.sessions.open, {
+    room,
+    clerkId,
+    jobId,
+    plan: PLAN,
+  })
 }
 
 /** This room's row, read straight out of the database. */

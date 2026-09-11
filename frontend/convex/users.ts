@@ -59,8 +59,9 @@ export const viewer = query({
       /** From the Clerk identity, falling back to the row. `null` for an
        * account Clerk has no email for — never `""`. */
       email: v.union(v.string(), v.null()),
-      /** Whether the account row exists — `/welcome` creates it. Language and
-       * level are chosen per session in the preflight, not stored here. */
+      /** Whether the account row exists — the first signed-in request makes
+       * it (`ensureViewerOnServer`). Language and level are chosen per
+       * session in the preflight, not stored here. */
       onboarded: v.boolean(),
       seconds: v.number(),
       minutes: v.number(),
@@ -93,8 +94,7 @@ export const viewer = query({
  * Read straight off `by_user` and reversed rather than sorted by `createdAt`:
  * the index is already in insertion order, which is the order the ledger was
  * written in, and 20 rows is the whole page. Signed out, or signed in with no
- * row yet, is an empty list rather than an error — the dialog is reachable
- * before `/welcome` has run.
+ * row yet, is an empty list rather than an error.
  */
 export const ledger = query({
   args: {},
@@ -130,11 +130,11 @@ export const ledger = query({
 })
 
 /**
- * Creates the learner's row and hands them their free minutes. Called from
- * `/welcome`, but written to survive being called from anywhere, any number of
- * times: the row is created once, and the signup grant is keyed on
- * `signup:<clerkId>` so a double-submit, a retry or a second visit to
- * `/welcome` cannot mint a second one.
+ * Creates the learner's row and hands them their free minutes. Called by the
+ * server on a new account's first signed-in request, but written to survive
+ * being called from anywhere, any number of times: the row is created once,
+ * and the signup grant is keyed on `signup:<clerkId>` so a retry or a race
+ * cannot mint a second one.
  */
 export const ensureUser = mutation({
   args: {},
@@ -209,7 +209,11 @@ export const balanceByClerkId = internalQuery({
  * one — not the clock, which two operators can share to the millisecond.
  */
 export const setBalance = internalMutation({
-  args: { clerkId: v.string(), seconds: v.number(), ref: v.optional(v.string()) },
+  args: {
+    clerkId: v.string(),
+    seconds: v.number(),
+    ref: v.optional(v.string()),
+  },
   returns: v.object({ before: v.number(), after: v.number() }),
   handler: async (ctx, args) => {
     const user = await userByClerkId(ctx, args.clerkId)

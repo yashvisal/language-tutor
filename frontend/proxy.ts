@@ -10,12 +10,7 @@ import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server"
  * non-document request with a 404, and a token endpoint owes its caller a 401.
  * The route does its own `await auth()` and says so.
  */
-const isProtectedRoute = createRouteMatcher([
-  "/go(.*)",
-  "/home(.*)",
-  "/welcome(.*)",
-  "/session(.*)",
-])
+const isProtectedRoute = createRouteMatcher(["/home(.*)", "/session(.*)"])
 
 export default clerkMiddleware(async (auth, req) => {
   if (isProtectedRoute(req)) await auth.protect()

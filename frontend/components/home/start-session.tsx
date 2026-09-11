@@ -67,7 +67,8 @@ export function StartSession() {
    * query in flight; `null` is a signed-in Clerk session with no `users` row
    * behind it — a webhook that never fired, a half-finished sign-up — and it
    * left Start permanently disabled with nothing on screen explaining why
-   * (audit §4.13). `/welcome` is where a row gets made, so that is the offer.
+   * (audit §4.13). The dashboard's layout makes the row on the way in, so a
+   * fresh request to it is the offer.
    */
   const loading = viewer === undefined
   const missing = viewer === null
@@ -101,7 +102,7 @@ export function StartSession() {
               <>
                 We haven&rsquo;t finished setting up your account.{" "}
                 <Link
-                  href="/welcome"
+                  href="/home"
                   className="text-foreground underline decoration-foreground/30 underline-offset-4 transition-colors duration-200 hover:decoration-foreground"
                 >
                   Finish setup

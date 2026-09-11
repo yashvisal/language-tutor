@@ -46,7 +46,7 @@ export function AppHeader() {
             the balance forever (audit §4.13). Otherwise: the number. */}
         {viewer === null ? (
           <Link
-            href="/welcome"
+            href="/home"
             className="mr-2 text-sm text-muted-foreground underline decoration-muted-foreground/30 underline-offset-4 transition-colors duration-200 hover:text-foreground"
           >
             Finish setup
