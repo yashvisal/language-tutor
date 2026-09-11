@@ -249,6 +249,11 @@ class SessionState:
     tutor_was_speaking: bool = False
     reply_was_pending: bool = False
     learner_was_speaking: bool = False
+    # The tidy-up still owed to the last hold-flushed turn (`agent.
+    # _normalize_flushed_turn`), so a shutdown that comes within seconds of a
+    # hold waits for it before snapshotting the history. One at a time: a
+    # second hold replaces the first, whose turn has long since landed.
+    hold_normalize: asyncio.Task[None] | None = None
 
     @property
     def clock_held(self) -> bool:
@@ -297,11 +302,6 @@ class SessionFacts:
     # (phase 7 step 2) — Convex's backstop for a tab that closed before its
     # `finish` ran, in which case the worker's copy is the only one left.
     corrections: list[dict[str, str]] = field(default_factory=list)
-    # The tidy-up still owed to the last hold-flushed turn (`agent.
-    # _normalize_flushed_turn`), so a shutdown that comes within seconds of a
-    # hold waits for it before snapshotting the history. One at a time: a
-    # second hold replaces the first, whose turn has long since landed.
-    hold_normalize: asyncio.Task[None] | None = None
 
     def set_goal(self, goal: SessionGoal | None) -> bool:
         """Adopt a goal. Returns whether it actually became the session's goal.

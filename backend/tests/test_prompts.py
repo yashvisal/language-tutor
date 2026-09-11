@@ -279,3 +279,11 @@ def test_hold_flushed_turn_is_normalized_in_history_once_it_lands() -> None:
     assert [m.text_content for m in history.items if m.type == "message"] == [
         "Sí, después de levantarme yo desayuno"
     ]
+
+
+def test_session_state_carries_the_hold_normalize_slot() -> None:
+    """The shutdown callback reads it off `SessionState` before any hold has
+    run; the field once landed on `SessionFacts` by mistake (PR #9)."""
+    from state import SessionState
+
+    assert SessionState().hold_normalize is None
