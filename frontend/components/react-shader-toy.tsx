@@ -426,6 +426,14 @@ export interface ReactShaderToyProps {
    * something like e.g. hide the canvas until textures are done loading.
    */
   onDoneLoadingTextures?: () => void;
+  /**
+   * Called once, right after the first frame has been drawn. A WebGL canvas
+   * is on screen from the moment it mounts, and on Chromium/Edge an
+   * accelerated canvas with no frame yet can composite as a solid white box
+   * for a frame or two; a caller that keeps the canvas invisible until this
+   * fires never shows that box.
+   */
+  onFirstFrame?: (canvas: HTMLCanvasElement) => void;
 
   /** Custom callback to handle errors. Defaults to `console.error`. */
   onError?: (error: string) => void;
@@ -453,6 +461,7 @@ export function ReactShaderToy({
   lerp = 1,
   devicePixelRatio = 1,
   onDoneLoadingTextures,
+  onFirstFrame,
   onError = console.error,
   onWarning = console.warn,
   animateWhenNotVisible = false,
@@ -467,6 +476,7 @@ export function ReactShaderToy({
   const animFrameIdRef = useRef<number | undefined>(undefined);
   const initFrameIdRef = useRef<number | undefined>(undefined);
   const isVisibleRef = useRef(true);
+  const firstFrameDrawnRef = useRef(false);
   const animateWhenNotVisibleRef = useRef(animateWhenNotVisible);
   const mousedownRef = useRef(false);
   const canvasPositionRef = useRef<DOMRect | undefined>(undefined);
@@ -822,6 +832,10 @@ export function ReactShaderToy({
     gl.vertexAttribPointer(vertexPositionAttributeRef.current ?? 0, 3, gl.FLOAT, false, 0, 0);
     setUniforms(timestamp);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    if (!firstFrameDrawnRef.current) {
+      firstFrameDrawnRef.current = true;
+      if (onFirstFrame && canvasRef.current) onFirstFrame(canvasRef.current);
+    }
     const mouseValue = uniformsRef.current.iMouse?.value;
     if (uniformsRef.current.iMouse?.isNeeded && lerp !== 1 && Array.isArray(mouseValue)) {
       const currentX = mouseValue[0] ?? 0;

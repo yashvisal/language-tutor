@@ -327,7 +327,16 @@ function AuraShader({
         onWarning={(warning) => {
           console.warn('Shader warning:', warning);
         }}
-        style={{ width: '100%', height: '100%' }}
+        // Invisible until the first frame is drawn. Mounted visible, the
+        // canvas flashed as a white box where the orb was about to be, on
+        // Edge, every time the landing was entered from the dashboard
+        // (Yash, 2026-09-11). The reveal is set on the element directly, not
+        // through state: it happens inside the draw loop, and a re-render for
+        // it would be a frame late.
+        onFirstFrame={(canvas) => {
+          canvas.style.opacity = '1';
+        }}
+        style={{ width: '100%', height: '100%', opacity: 0, transition: 'opacity 150ms ease-out' }}
       />
     </div>
   );
