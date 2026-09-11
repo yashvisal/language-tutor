@@ -202,6 +202,11 @@ export const balanceByClerkId = internalQuery({
  * test sessions (`npx convex run users:setBalance '{"clerkId":"user_…","seconds":600}'`)
  * and, later, support corrections — every change is a ledger row with a ref,
  * never an edit to a number.
+ *
+ * `ref` is the ledger's idempotency key (`by_ref`), so a ref that already
+ * names a row is refused rather than written twice: a support ticket number
+ * pasted into two commands applies once. Without a ref the row gets a random
+ * one — not the clock, which two operators can share to the millisecond.
  */
 export const setBalance = internalMutation({
   args: { clerkId: v.string(), seconds: v.number(), ref: v.optional(v.string()) },
@@ -209,6 +214,12 @@ export const setBalance = internalMutation({
   handler: async (ctx, args) => {
     const user = await userByClerkId(ctx, args.clerkId)
     if (user === null) throw new Error("No such user")
+    const ref = args.ref ?? `adjustment:${args.clerkId}:${crypto.randomUUID()}`
+    const used = await ctx.db
+      .query("creditLedger")
+      .withIndex("by_ref", (q) => q.eq("ref", ref))
+      .first()
+    if (used !== null) throw new Error(`Ledger ref already used: ${ref}`)
     const before = await secondsFor(ctx, user._id)
     const target = Math.max(0, Math.round(args.seconds))
     const delta = target - before
@@ -217,7 +228,7 @@ export const setBalance = internalMutation({
         userId: user._id,
         kind: "adjustment",
         seconds: delta,
-        ref: args.ref ?? `adjustment:${args.clerkId}:${Date.now()}`,
+        ref,
         createdAt: Date.now(),
       })
     }

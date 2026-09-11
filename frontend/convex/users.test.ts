@@ -127,6 +127,37 @@ describe("users.setBalance", () => {
       t.mutation(internal.users.setBalance, { clerkId: "user_nobody", seconds: 1 })
     ).rejects.toThrow("No such user")
   })
+
+  test("a ref names one row: the same ref again is refused, not applied twice", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner", { ledgerRows: 1, sessionRows: 0 })
+
+    expect(
+      await t.mutation(internal.users.setBalance, {
+        clerkId: "user_owner",
+        seconds: 900,
+        ref: "support:1234",
+      })
+    ).toEqual({ before: SIGNUP_GRANT_SECONDS, after: 900 })
+    await expect(
+      t.mutation(internal.users.setBalance, {
+        clerkId: "user_owner",
+        seconds: 1800,
+        ref: "support:1234",
+      })
+    ).rejects.toThrow("Ledger ref already used")
+
+    const rows = await t.run(async (ctx) =>
+      ctx.db
+        .query("creditLedger")
+        .withIndex("by_user", (q) => q.eq("userId", userId))
+        .collect()
+    )
+    expect(rows.map((row) => [row.kind, row.seconds])).toEqual([
+      ["signup_grant", SIGNUP_GRANT_SECONDS],
+      ["adjustment", 900 - SIGNUP_GRANT_SECONDS],
+    ])
+  })
 })
 
 describe("users.deleteByClerkId", () => {
