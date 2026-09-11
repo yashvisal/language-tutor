@@ -600,15 +600,21 @@ export function ReactShaderToy({
     const realToCSSPixels = devicePixelRatio;
     const displayWidth = Math.floor((canvasPositionRef.current?.width ?? 1) * realToCSSPixels);
     const displayHeight = Math.floor((canvasPositionRef.current?.height ?? 1) * realToCSSPixels);
-    // Assigning even the same dimensions clears the drawing buffer.
-    if (gl.canvas.width === displayWidth && gl.canvas.height === displayHeight) return;
-    gl.canvas.width = displayWidth;
-    gl.canvas.height = displayHeight;
+    // Assigning even the same dimensions clears the drawing buffer, so the
+    // size is only written when it changes — but the resolution uniform is
+    // uploaded either way: at device pixel ratio 1 the init has already sized
+    // the canvas, and a shader that divides by iResolution drew a flat square
+    // at zero (the blue box, 2026-09-11).
+    const resized = gl.canvas.width !== displayWidth || gl.canvas.height !== displayHeight;
+    if (resized) {
+      gl.canvas.width = displayWidth;
+      gl.canvas.height = displayHeight;
+    }
     if (uniformsRef.current.iResolution?.isNeeded && shaderProgramRef.current) {
       const rUniform = gl.getUniformLocation(shaderProgramRef.current, UNIFORM_RESOLUTION);
       gl.uniform2fv(rUniform, [gl.canvas.width, gl.canvas.height]);
     }
-    if (firstFrameDrawnRef.current) drawScene(lastTimeRef.current, false);
+    if (resized && firstFrameDrawnRef.current) drawScene(lastTimeRef.current, false);
   };
 
   const createShader = (type: number, shaderCodeAsText: string) => {
