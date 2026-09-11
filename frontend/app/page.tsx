@@ -14,7 +14,6 @@ import { PrimaryCta } from "@/components/marketing/primary-cta"
 import { Reveal } from "@/components/marketing/reveal"
 import { SIGNUP_GRANT_MINUTES } from "@/lib/billing"
 import { LANGUAGE_NAMES, TARGET_LANGUAGES } from "@/lib/session/plan"
-import { cn } from "@/lib/utils"
 
 export const metadata: Metadata = {
   title: "tutor — practice languages, uninterrupted",
@@ -25,7 +24,6 @@ export const metadata: Metadata = {
 const LANGUAGES = TARGET_LANGUAGES.map(({ code, native }) => ({
   name: LANGUAGE_NAMES[code],
   native,
-  available: true,
 }))
 
 /**
@@ -139,43 +137,30 @@ export default function LandingPage() {
         >
           <div className="mx-auto w-full max-w-6xl px-6 py-20">
             <Reveal>
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-                <div>
-                  <h2
-                    id="languages-heading"
-                    className="text-xs font-medium tracking-[0.18em] text-muted-foreground uppercase"
-                  >
-                    Languages
-                  </h2>
-                  <p className="mt-3 text-2xl font-medium tracking-tight">
-                    Choose the language you want to speak.
-                  </p>
-                </div>
-                <p className="text-sm text-muted-foreground">
-                  Explanations and coaching in English.
-                </p>
-              </div>
-              <ul className="mt-8 flex flex-wrap gap-2.5">
-                {LANGUAGES.map((lang) => {
-                  const available = "available" in lang && lang.available
-                  return (
-                    <li
-                      key={lang.name}
-                      className={cn(
-                        "flex items-baseline gap-2 rounded-full border px-4 py-2 text-sm",
-                        available
-                          ? "border-primary/50 text-foreground"
-                          : "border-border/70 text-muted-foreground"
-                      )}
-                    >
-                      <span className="font-medium">{lang.native}</span>
-                      <span className="text-xs text-muted-foreground">
-                        {lang.name}
-                        {available ? " · now" : " · soon"}
-                      </span>
-                    </li>
-                  )
-                })}
+              <h2
+                id="languages-heading"
+                className="text-xs font-medium tracking-[0.18em] text-muted-foreground uppercase"
+              >
+                Languages
+              </h2>
+              <p className="mt-3 max-w-xl text-2xl font-medium tracking-tight text-balance">
+                Five languages to speak. The coaching is in English.
+              </p>
+              {/* Each language in its own name, large and unadorned, with the
+                  English underneath. Every one is live, so the old "· now"
+                  tag said nothing, and a row of bordered pills looked like a
+                  filter bar with no list under it (Yash, 2026-09-11). */}
+              <ul className="mt-10 grid grid-cols-2 gap-x-6 gap-y-8 sm:grid-cols-3 lg:grid-cols-5">
+                {LANGUAGES.map((lang) => (
+                  <li key={lang.name} className="flex flex-col gap-1">
+                    <span className="text-2xl font-medium tracking-tight">
+                      {lang.native}
+                    </span>
+                    <span className="text-sm text-muted-foreground">
+                      {lang.name}
+                    </span>
+                  </li>
+                ))}
               </ul>
             </Reveal>
           </div>
