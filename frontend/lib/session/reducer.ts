@@ -120,7 +120,10 @@ const CAPITALIZES_NOUNS = new Set(["de"])
 const FOREIGN_SCRIPT = /[^\p{Script=Latin}\p{Script=Common}\p{Script=Inherited}]+/gu
 
 function normalizeTranscript(text: string, language: string): string {
-  const latin = text.replace(FOREIGN_SCRIPT, "")
+  // A space, not nothing: a glyph wedged between two words must not glue
+  // them ("holaどうもamigo" is two words). The whitespace collapse below
+  // tidies the rest.
+  const latin = text.replace(FOREIGN_SCRIPT, " ")
   const stripped = FILLERS_STRIPPED_IN.has(language)
     ? latin.replace(FILLER, " ")
     : latin

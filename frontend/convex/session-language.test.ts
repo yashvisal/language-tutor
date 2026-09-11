@@ -199,6 +199,15 @@ test("Spanish fragments join in sentence case and drop English fillers", async (
     text: "Me gusta どうも café con hielo",
   })
   expect(glyph.current?.target).toBe("Me gusta café con hielo")
+  // A glyph glued between two words does not glue the words together.
+  const glued = sessionReducer(INITIAL_SESSION_STATE, {
+    type: "transcript.delta",
+    segmentId: "h",
+    speaker: "learner",
+    language: "target",
+    text: "holaどうもamigo",
+  })
+  expect(glued.current?.target).toBe("hola amigo")
   // A one-letter fragment start is a word too: "Y" mid-sentence is "y".
   const third = sessionReducer(next, {
     type: "transcript.delta",
