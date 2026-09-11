@@ -280,7 +280,9 @@ function SessionDialog({
                         onClick={() => setShowTranscript(true)}
                         className="cursor-pointer text-sm text-muted-foreground underline-offset-4 transition-colors hover:text-foreground hover:underline"
                       >
-                        Show the transcript
+                        {transcript && transcript.length > 0
+                          ? "Show the transcript"
+                          : "Show what was asked and looked up"}
                       </button>
                     )}
                   </div>
