@@ -213,6 +213,11 @@ From reviewing the phase-1 layout explorations (aura-stage, split-columns, and t
    appeared. The about line lives inside the record as "what it became".
 8. **The pre-flight remembers the language and the level only.** Topic,
    focus and note are today's answers and start empty each session.
+9. **No onboarding page** (Yash, 2026-09-11). Sign-up lands on the dashboard
+   with the free minutes already granted; the account row is made on the
+   server on the first signed-in request. The landing is where the free
+   minutes are promised, and nothing stands between the promise and the
+   product.
 
 ## The Conversation Surface
 
