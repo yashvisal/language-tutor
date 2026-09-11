@@ -46,22 +46,24 @@ export default function LandingPage() {
             aria-hidden
             className="pointer-events-none absolute top-[55%] left-1/2 -z-10 h-[40rem] w-[40rem] -translate-x-1/2 -translate-y-1/2 rounded-full bg-blue-400/25 blur-[120px] dark:bg-blue-500/15"
           />
-          <h1 className="text-4xl leading-[1.05] font-semibold tracking-tight text-balance sm:text-5xl lg:text-6xl">
-            Your next language, out loud. Pay for the minutes you talk.
+          {/* The demo is the hero; the headline introduces it. One clause,
+              medium weight, a size down from a billboard — the first cut was
+              two sentences at 60px and nothing else on the screen registered
+              (Yash, 2026-09-11). The pricing half of the old line is gone:
+              there is nothing to buy until payments land. */}
+          <h1 className="text-3xl leading-tight font-medium tracking-tight text-balance sm:text-4xl lg:text-[2.75rem]">
+            Your next language, out loud.
           </h1>
-          <p className="mt-4 max-w-lg text-base leading-relaxed text-balance text-muted-foreground sm:text-lg">
+          <p className="mt-3 max-w-md text-base leading-relaxed text-balance text-muted-foreground">
             A tutor that answers naturally and never talks over you. The
             corrections wait until you have finished the thought.
           </p>
 
-          <DemoConversation size="hero" className="mt-10 w-full max-w-2xl" />
+          <DemoConversation size="hero" className="mt-12 w-full max-w-2xl" />
 
-          <div className="mt-8">
+          <div className="mt-10">
             <PrimaryCta />
           </div>
-          <p className="mt-3 text-xs text-muted-foreground">
-            Choose your language. Runs in your browser — no app to install.
-          </p>
         </section>
 
         {/* How it works — the same stage, three moments. */}
