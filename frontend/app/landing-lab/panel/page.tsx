@@ -20,7 +20,7 @@ import { LANGUAGE_NAMES, TARGET_LANGUAGES } from "@/lib/session/plan"
 import { cn } from "@/lib/utils"
 
 export const metadata: Metadata = {
-  title: "tutor — practice languages, uninterrupted",
+  title: "lengua — practice languages, uninterrupted",
   description:
     "A live language tutor that keeps the conversation going. Your words appear as you speak them, and after your turn settles you see what you should have said.",
 }

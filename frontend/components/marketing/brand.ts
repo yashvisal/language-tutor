@@ -1,6 +1,6 @@
 /**
- * Shared marketing constants. The product has no name yet, so the wordmark is
- * a plain lowercase placeholder; the accent is the Aura's blue (the same
+ * Shared marketing constants. The product is lengua (lengua.chat); the wordmark is
+ * plain lowercase; the accent is the Aura's blue (the same
  * `#3b82f6` / Tailwind blue-500 family `TutorAura` renders, and now the value
  * of `--primary`), used sparingly —
  * the CTA and one highlight per page, never a wash or a gradient.
@@ -8,7 +8,7 @@
 
 import { MINUTE_PACKS, SIGNUP_GRANT_MINUTES } from "@/lib/billing"
 
-export const WORDMARK = "tutor"
+export const WORDMARK = "lengua"
 
 /** Inline accent for the single highlight on each page. */
 export const ACCENT_TEXT = "text-primary"
