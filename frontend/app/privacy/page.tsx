@@ -106,12 +106,26 @@ export default function PrivacyPage() {
         of these records. We don&rsquo;t use them to train models.
       </p>
 
+      <h2>Cookies</h2>
+      <p>
+        Only the ones that make signing in work. Clerk sets session cookies so
+        the site knows you&rsquo;re you between pages; they are strictly
+        necessary, and without them there is no signed-in product. Two small
+        things are kept in your browser&rsquo;s local storage rather than in a
+        cookie and never reach us: your light/dark theme preference, and the
+        language and level you last chose, so the next session opens where you
+        left off. There are no advertising cookies and nothing that tracks you
+        across other websites. We run no analytics today &mdash; if we ever turn
+        on Vercel Analytics or anything like it, this section says so before it
+        goes live.
+      </p>
+
       <h2>Payments</h2>
       <p>
-        When payments launch, card details will be handled entirely by our
-        payment provider. We won&rsquo;t see or store your card number; we store
-        only the fact that a purchase happened and the minutes it added to your
-        balance.
+        Nothing can be bought yet. When payments launch, card details will be
+        handled entirely by our payment provider &mdash; we won&rsquo;t see or
+        store your card number &mdash; and this page will name that provider and
+        say what a purchase record holds before the first charge is possible.
       </p>
 
       <h2>Who else touches your data</h2>
@@ -136,8 +150,9 @@ export default function PrivacyPage() {
           routes.
         </li>
         <li>
-          <strong>A payment provider</strong> &mdash; not yet chosen; named here
-          before payments launch. (Provider: to set.)
+          <strong>An error-reporting service (Sentry)</strong> &mdash; we send
+          crash reports when something breaks, containing technical details and
+          your account id, never transcript text.
         </li>
       </ul>
       <p>
