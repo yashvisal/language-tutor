@@ -984,12 +984,20 @@ def _meter_from_first_tutor_audio(
     a reply is not the same event — the model can fail, the socket can die, and
     the audio can never arrive.
 
-    The watchdog does not end anything. It cannot: nothing has been billed (the
-    clock never started), so there is no money question — only an operational
-    one. It does now SAY so, to the learner as well as to the logs: a stage
-    that has been silent for twenty seconds is a failure the learner can act on
-    (reload), and until `tutor.error` existed they had no way to know that
-    (audit §4.2).
+    The watchdog both says so and ENDS the session (A1, 2026-09-14). Saying so
+    alone was not enough: the clock never started, so no clock path could ever
+    end this job, while `_renew_lease` went on holding the room's lease every
+    60 s. The learner saw `tutor_silent`, could not start another conversation
+    (the ledger refuses a second `open` while one is leased), and had to close
+    the tab and wait out the three-minute TTL. Ending through `_end_session`
+    runs the ordinary teardown: `tutor.session_over`, `ctx.shutdown`, the
+    shutdown callback cancels the renewal, and the final debit — for zero
+    seconds, because nothing was billed — closes the row immediately.
+
+    `_end_session` rather than starting the clock at session start: the smaller
+    and safer change. Gating accrual on first audio inside the clock would put
+    a second "has the tutor spoken" condition in the one component that decides
+    what a learner is charged, for a case that must bill nothing at all.
     """
 
     requested_at = time.monotonic()
@@ -1015,17 +1023,27 @@ def _meter_from_first_tutor_audio(
         await asyncio.sleep(FIRST_AUDIO_TIMEOUT_S)
         if clock.started:
             return
-        logger.error(
-            "the tutor has not spoken %.0fs after the session started; nothing is being "
-            "metered and the learner is looking at a silent stage",
-            FIRST_AUDIO_TIMEOUT_S,
+        report_error(
+            "tutor_silent",
+            "the tutor has not spoken "
+            f"{FIRST_AUDIO_TIMEOUT_S:.0f}s after the session started; nothing was "
+            "metered and the learner was looking at a silent stage",
+            room=ctx.room.name,
         )
+        # The code first, so the learner has the reason before the stage goes
+        # away: `tutor.session_over` follows a moment later from `_end_session`
+        # and the frontend latches the failure it already has.
         await _publish_error(ctx.room, ERROR_TUTOR_SILENT)
-        # Weak: this does not end anything (nothing was billed — the clock
-        # never started), but if the session ends without a better reason,
-        # "the tutor never spoke" is the honest one for History.
-        if billing is not None:
-            billing.set_end_reason("tutor_silent", weak=True)
+        # Not weak any more: this IS the ending, and `tutor_silent` is what the
+        # final debit reports. Nothing was billed, so the debit is for zero
+        # seconds and its only job is to close the row.
+        await _end_session(
+            ctx,
+            session,
+            reason="the tutor never spoke: no first audio",
+            code="tutor_silent",
+            billing=billing,
+        )
 
     _spawn(_watchdog(), "tutor-first-audio-watchdog")
 

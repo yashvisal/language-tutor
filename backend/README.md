@@ -294,7 +294,7 @@ refused for the same reason.
 | `tutor.review_version` (participant attribute) | An integer as a string, `"0"` at session start and bumped on every new Review snapshot — the tab refetches `tutor.review` when it rises |
 | `tutor.goal` (participant attribute) | The one line the learner agreed this session is for. Absent until the goal is captured |
 | `tutor.session_over` (participant attribute) | `"true"` immediately before the worker disconnects |
-| `tutor.error` (participant attribute) | `""` (nothing wrong, published at start), `"model"` (the realtime model died unrecoverably — the session is ending), or `"tutor_silent"` (no tutor audio 20s after the session started; nothing was billed) |
+| `tutor.error` (participant attribute) | `""` (nothing wrong, published at start), `"model"` (the realtime model died unrecoverably — the session is ending), or `"tutor_silent"` (no tutor audio 20s after the session started; nothing was billed and the session ends) |
 | `lk.agent.state` (participant attribute) | Agent state, published by the SDK                               |
 | RPC `tutor.pause` / `tutor.resume`       | Frontend → worker, one logical call per state change (retries are idempotent) |
 | RPC `tutor.translate`                    | Frontend → worker, one selected span → its anchor translation   |
@@ -555,7 +555,7 @@ displays its numbers and never computes its own.
 
 | Moment                          | What happens                                                |
 | ------------------------------- | ----------------------------------------------------------- |
-| first tutor audio frame          | The clock starts; `tutor.elapsed_s` / `tutor.remaining_s` published. **Not** when the greeting is *requested*: a session where the model never speaks must be billed nothing. The frame is `agent_state_changed` → `"speaking"`, which the framework flips from the playout task's first-frame callback. No tutor audio within 20s is logged at **error** level and published as `tutor.error` = `"tutor_silent"` — nothing has been billed, so this is an alarm the learner can act on (reload), not an ending |
+| first tutor audio frame          | The clock starts; `tutor.elapsed_s` / `tutor.remaining_s` published. **Not** when the greeting is *requested*: a session where the model never speaks must be billed nothing. The frame is `agent_state_changed` → `"speaking"`, which the framework flips from the playout task's first-frame callback. No tutor audio within 20s is logged at **error** level and published as `tutor.error` = `"tutor_silent"` — nothing has been billed, and the session ends with `tutor_silent` so the lease frees at once (2026-09-14) |
 | every 60 **active** seconds      | A debit for the seconds so far. Cumulative, so the ledger takes only the delta; a worker killed at minute 45 has lost at most a minute of revenue (audit §4.1) |
 | every 5s while unheld           | Both republished — a stopwatch counting up, not a countdown |
 | every pause and resume          | Republished immediately, so the stopwatch visibly stops and starts with the hold |
@@ -690,7 +690,7 @@ also carries `"reason"`, one of:
 | `learner_left` | The learner's participant left the room and did not come back inside the 60s grace. |
 | `model_error` | The realtime model died unrecoverably (`tutor.error="model"`). |
 | `ledger_failure` | Five consecutive failed debits: the clock is held and the session ends. (This debit does not go out either — the accepted under-bill.) |
-| `tutor_silent` | The first-audio watchdog fired and nothing better was ever recorded. Set *weakly*: any real ending overwrites it. |
+| `tutor_silent` | The first-audio watchdog fired: no tutor audio within 20 s. The session ends here (2026-09-14); nothing was billed. |
 
 Only the final debit carries it; a periodic or zero-hold debit has nothing to
 report, because nothing has ended. Before this, History could not tell a crash
