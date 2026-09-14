@@ -1,7 +1,7 @@
 import { convexTest } from "convex-test"
 import { describe, expect, test } from "vitest"
 
-import { internal } from "./_generated/api"
+import { api, internal } from "./_generated/api"
 import type { Id } from "./_generated/dataModel"
 import schema from "./schema"
 import type { sessionPlanValidator } from "./validators"
@@ -252,6 +252,118 @@ describe("users.deleteByClerkId", () => {
       ledger: 0,
       sessions: 0,
     })
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/*  The money entry point                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `ensureUser` is where every learner's balance comes from, and until now it
+ * had no tests at all (launch checklist C4). The free grant is the whole
+ * product for a beta with no checkout: minting two of them is money, and
+ * minting none of them is a learner who cannot start a conversation.
+ *
+ * The grant is keyed on `signup:<clerkId>` and checked against `by_ref`, so
+ * these are the three ways that key has to hold: called twice at once, called
+ * against a row that somehow has no grant, and called never (which is what
+ * `viewer` has to render).
+ */
+describe("users.ensureUser", () => {
+  test("grants the free minutes exactly once across two concurrent calls", async () => {
+    const t = setup()
+    const asLearner = t.withIdentity({
+      subject: "user_new",
+      email: "new@example.com",
+    })
+
+    // The real race: the server ensures the viewer on the first signed-in
+    // request, and a reload or a second tab fires the same call again before
+    // the first has committed.
+    await Promise.all([
+      asLearner.mutation(api.users.ensureUser, {}),
+      asLearner.mutation(api.users.ensureUser, {}),
+    ])
+
+    const rows = await t.run(async (ctx) => ({
+      users: await ctx.db.query("users").collect(),
+      ledger: await ctx.db.query("creditLedger").collect(),
+    }))
+    expect(rows.users).toHaveLength(1)
+    expect(rows.ledger).toHaveLength(1)
+    expect(rows.ledger[0].kind).toBe("signup_grant")
+    expect(rows.ledger[0].seconds).toBe(SIGNUP_GRANT_SECONDS)
+    expect(rows.ledger[0].ref).toBe("signup:user_new")
+    expect(await asLearner.query(api.users.viewer, {})).toMatchObject({
+      onboarded: true,
+      seconds: SIGNUP_GRANT_SECONDS,
+    })
+  })
+
+  test("an existing row with no grant still gets one", async () => {
+    const t = setup()
+    // An early tester, or a partial write: the row exists and the ledger is
+    // empty. The grant is deliberately not tied to row creation for this.
+    const userId = await t.run(async (ctx) =>
+      ctx.db.insert("users", {
+        clerkId: "user_rowonly",
+        email: "rowonly@example.com",
+        createdAt: Date.now(),
+      })
+    )
+
+    await t
+      .withIdentity({ subject: "user_rowonly", email: "rowonly@example.com" })
+      .mutation(api.users.ensureUser, {})
+
+    const rows = await t.run(async (ctx) => ({
+      users: await ctx.db.query("users").collect(),
+      ledger: await ctx.db
+        .query("creditLedger")
+        .withIndex("by_user", (q) => q.eq("userId", userId))
+        .collect(),
+    }))
+    // One grant, and no second `users` row alongside the one that was there.
+    expect(rows.users).toHaveLength(1)
+    expect(rows.users[0]._id).toBe(userId)
+    expect(rows.ledger.map((row) => [row.kind, row.seconds])).toEqual([
+      ["signup_grant", SIGNUP_GRANT_SECONDS],
+    ])
+
+    // ...and calling it again after that changes nothing.
+    await t
+      .withIdentity({ subject: "user_rowonly", email: "rowonly@example.com" })
+      .mutation(api.users.ensureUser, {})
+    expect(
+      await t.run(async (ctx) => ctx.db.query("creditLedger").collect())
+    ).toHaveLength(1)
+  })
+})
+
+describe("users.viewer", () => {
+  test("an identity with no row is onboarded: false with a zero balance", async () => {
+    const t = setup()
+
+    // The documented shape. `/home` creates the row on the server and
+    // redirects on `null`, so this is the state between signing up and the
+    // first ensured request — and it must render, not throw.
+    expect(
+      await t
+        .withIdentity({ subject: "user_rowless", email: "rowless@example.com" })
+        .query(api.users.viewer, {})
+    ).toEqual({
+      clerkId: "user_rowless",
+      email: "rowless@example.com",
+      onboarded: false,
+      seconds: 0,
+      minutes: 0,
+    })
+  })
+
+  test("is null signed out", async () => {
+    const t = setup()
+    expect(await t.query(api.users.viewer, {})).toBeNull()
   })
 })
 
