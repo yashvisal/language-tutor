@@ -540,6 +540,13 @@ def test_the_plans_prose_is_debug_only() -> None:
     # Still useful: how much plan there was, and at what level.
     assert plan.log_fields()["plan_present"] is True
     assert plan.log_fields()["plan_tenses"] == 1
+    # The level is free text on the wire, so only one of ours is logged as
+    # itself; anything else — "early intermediate" here, or a sentence — is
+    # "other" (CodeRabbit, PR #12).
+    assert plan.log_fields()["plan_level"] == "other"
+    assert "early intermediate" not in info
+    assert SessionPlan(level="beginner").log_fields()["plan_level"] == "beginner"
+    assert SessionPlan().log_fields()["plan_level"] is None
     # The prose is still reachable, at DEBUG.
     assert SECRET in repr(plan.debug_fields())
 
@@ -551,6 +558,24 @@ def test_the_goals_prose_is_debug_only() -> None:
     assert SECRET not in repr(goal.log_fields())
     assert goal.log_fields()["goal_chars"] == len(SECRET)
     assert SECRET in repr(goal.debug_fields())
+
+
+def test_scrub_fields_reaches_into_nested_values() -> None:
+    """A11/A12. A nested bag is scrubbed at every depth (CodeRabbit, PR #12)."""
+    from observability import scrub_fields
+
+    fields = {
+        "room": "room-1",
+        "transcript": SECRET,
+        "context": {"transcript": SECRET, "seq": 3, "plan_topic": SECRET},
+        "turns": [{"text": SECRET, "chars": 12}, SECRET],
+    }
+    scrubbed = scrub_fields(fields)
+    assert scrubbed["room"] == "room-1"
+    assert "transcript" not in scrubbed
+    assert scrubbed["context"] == {"seq": 3}
+    # A bare string in a list has no key to judge it by; the key above it does.
+    assert scrubbed["turns"][0] == {"chars": 12}
 
 
 # --- C6: the select-to-translate cap --------------------------------------
