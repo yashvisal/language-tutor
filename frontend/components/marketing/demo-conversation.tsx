@@ -497,7 +497,10 @@ function StepStage({
   children: React.ReactNode
 }) {
   return (
-    <div className="flex h-full flex-col items-center justify-center text-center">
+    // The orb's top is the line the other two feature tiles align to, so it is
+    // pinned rather than centred: the same 29px centring used to produce, now
+    // stated, so a change to this tile's height cannot move the others off it.
+    <div className="flex h-full flex-col items-center justify-start pt-[29px] text-center">
       <AmbientAura state={state} className="h-14" />
       <div className="mt-4 mb-1.5 text-[10px] font-medium tracking-[0.22em] text-muted-foreground/60 uppercase">
         {speaker}

@@ -86,15 +86,15 @@ export function TranslateFragment() {
     <motion.div
       onViewportEnter={start}
       viewport={{ once: true, amount: 0.6 }}
-      className="flex h-full flex-col items-center justify-center text-center"
+      // Pinned to the same top as the fix tile's orb (`FixFragment`), so the
+      // three tiles start on one line rather than each centring its own
+      // height (Yash, 2026-09-14).
+      className="flex h-full flex-col items-center justify-start pt-[29px] text-center"
     >
       <div className="mb-1.5 text-[10px] font-medium tracking-[0.22em] text-muted-foreground/60 uppercase">
         Tutor
       </div>
-      <p
-        lang="es"
-        className="text-lg leading-snug tracking-tight text-balance"
-      >
+      <p lang="es" className="text-lg leading-snug tracking-tight text-balance">
         Suena bien. ¿Y hoy,{" "}
         <SelectedSpan selected={selected}>cómo estás?</SelectedSpan>
       </p>
@@ -130,7 +130,8 @@ export function AskFragment() {
     <motion.div
       onViewportEnter={start}
       viewport={{ once: true, amount: 0.6 }}
-      className="flex h-full flex-col justify-center"
+      // The same top as the other two tiles; see `TranslateFragment`.
+      className="flex h-full flex-col justify-start pt-[29px]"
     >
       <div className="mb-3 text-center text-[10px] font-medium tracking-[0.22em] text-muted-foreground/60 uppercase">
         Ask
