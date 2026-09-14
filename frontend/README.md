@@ -38,6 +38,9 @@ each provider's dashboard:
 | `NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL` | Route after sign-up when there is no return path (`/home`) |
 | `CONVEX_DEPLOYMENT`                               | Which Convex deployment the CLI talks to                 |
 | `NEXT_PUBLIC_CONVEX_URL`                          | Convex websocket URL the React client connects to        |
+| `NEXT_PUBLIC_SENTRY_DSN`                          | Sentry DSN for the browser. **Unset = Sentry off** — no init, no network, nothing in `next dev` |
+| `SENTRY_DSN`                                      | Sentry DSN for the server and edge runtimes. Falls back to `NEXT_PUBLIC_SENTRY_DSN` |
+| `SENTRY_AUTH_TOKEN`                               | Build-time only, Vercel only. Uploads source maps; **a build without it still succeeds**, just with minified stack traces. `SENTRY_ORG` / `SENTRY_PROJECT` go with it |
 
 Required vars are read through `lib/env.ts`, so a missing one fails with its
 own name rather than somewhere downstream.

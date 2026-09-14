@@ -1,9 +1,10 @@
+import { withSentryConfig } from "@sentry/nextjs/config"
 import type { NextConfig } from "next"
 
 /**
  * Response headers every route carries.
  *
- * All four are one-liners that close a class of attack outright, which is the
+ * All five are one-liners that close a class of attack outright, which is the
  * only kind of hardening worth putting in a config file rather than a plan:
  *
  * - `Referrer-Policy` keeps the path of a session URL off third-party origins.
@@ -54,4 +55,18 @@ const nextConfig: NextConfig = {
   },
 }
 
-export default nextConfig
+/**
+ * Sentry wraps the config last so every header above survives it.
+ *
+ * Source maps are uploaded only when `SENTRY_AUTH_TOKEN` is set: a build
+ * without one (every local build, and any preview whose env is incomplete)
+ * must still succeed, just without readable stack traces. `SENTRY_ORG` and
+ * `SENTRY_PROJECT` come from the environment for the same reason.
+ */
+export default withSentryConfig(nextConfig, {
+  org: process.env.SENTRY_ORG,
+  project: process.env.SENTRY_PROJECT,
+  silent: !process.env.CI,
+  authToken: process.env.SENTRY_AUTH_TOKEN,
+  sourcemaps: { disable: !process.env.SENTRY_AUTH_TOKEN },
+})
