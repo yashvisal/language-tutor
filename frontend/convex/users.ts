@@ -10,6 +10,7 @@ import {
 } from "./_generated/server"
 import { internal } from "./_generated/api"
 import type { Doc } from "./_generated/dataModel"
+import { CodedError, ERROR_CODES } from "./errors"
 import { ledgerKindValidator } from "./validators"
 import { minutesFromSeconds, SIGNUP_GRANT_SECONDS } from "../lib/billing"
 
@@ -141,7 +142,8 @@ export const ensureUser = mutation({
   returns: v.null(),
   handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity()
-    if (identity === null) throw new Error("Not signed in")
+    if (identity === null)
+      throw new CodedError(ERROR_CODES.notSignedIn, "Not signed in")
 
     const clerkId = identity.subject
     const existing = await userByClerkId(ctx, clerkId)
@@ -217,13 +219,18 @@ export const setBalance = internalMutation({
   returns: v.object({ before: v.number(), after: v.number() }),
   handler: async (ctx, args) => {
     const user = await userByClerkId(ctx, args.clerkId)
-    if (user === null) throw new Error("No such user")
+    if (user === null)
+      throw new CodedError(ERROR_CODES.noAccount, "No such user")
     const ref = args.ref ?? `adjustment:${args.clerkId}:${crypto.randomUUID()}`
     const used = await ctx.db
       .query("creditLedger")
       .withIndex("by_ref", (q) => q.eq("ref", ref))
       .first()
-    if (used !== null) throw new Error(`Ledger ref already used: ${ref}`)
+    if (used !== null)
+      throw new CodedError(
+        ERROR_CODES.refUsed,
+        `Ledger ref already used: ${ref}`
+      )
     const before = await secondsFor(ctx, user._id)
     const target = Math.max(0, Math.round(args.seconds))
     const delta = target - before

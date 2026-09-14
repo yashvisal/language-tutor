@@ -9,6 +9,7 @@ import {
   type QueryCtx,
 } from "./_generated/server"
 import type { Doc } from "./_generated/dataModel"
+import { CodedError, ERROR_CODES } from "./errors"
 import { secondsFor, userByClerkId } from "./users"
 import {
   correctionValidator,
@@ -144,7 +145,8 @@ export const startCheck = query({
   ),
   handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity()
-    if (identity === null) throw new Error("Not signed in")
+    if (identity === null)
+      throw new CodedError(ERROR_CODES.notSignedIn, "Not signed in")
     const user = await userByClerkId(ctx, identity.subject)
     if (user === null) return "no_account"
     const now = Date.now()
@@ -206,7 +208,8 @@ export const open = internalMutation({
   ),
   handler: async (ctx, args) => {
     const user = await userByClerkId(ctx, args.clerkId)
-    if (user === null) throw new Error("No such user")
+    if (user === null)
+      throw new CodedError(ERROR_CODES.noAccount, "No such user")
     const now = Date.now()
 
     const existing = await ctx.db
@@ -214,7 +217,11 @@ export const open = internalMutation({
       .withIndex("by_room", (q) => q.eq("room", args.room))
       .unique()
     if (existing !== null) {
-      if (existing.userId !== user._id) throw new Error("Not this learner's room")
+      if (existing.userId !== user._id)
+        throw new CodedError(
+          ERROR_CODES.notYourRoom,
+          "Not this learner's room"
+        )
       if (existing.endedAt !== undefined) {
         return { ok: false as const, code: "closed" as const }
       }
@@ -309,7 +316,8 @@ export const debit = internalMutation({
   returns: v.object({ balanceSeconds: v.number() }),
   handler: async (ctx, args) => {
     const user = await userByClerkId(ctx, args.clerkId)
-    if (user === null) throw new Error("No such user")
+    if (user === null)
+      throw new CodedError(ERROR_CODES.noAccount, "No such user")
 
     let session: Doc<"sessions"> | null = await ctx.db
       .query("sessions")
@@ -318,7 +326,7 @@ export const debit = internalMutation({
     // Before the ref check, before the patch, before the ledger row: a room
     // this learner does not own is not a room this learner can be charged for.
     if (session !== null && session.userId !== user._id) {
-      throw new Error("Not this learner's room")
+      throw new CodedError(ERROR_CODES.notYourRoom, "Not this learner's room")
     }
 
     const ref = `${args.room}:${args.jobId}:${args.seq}`
@@ -481,10 +489,12 @@ export const finish = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity()
-    if (identity === null) throw new Error("Not signed in")
+    if (identity === null)
+      throw new CodedError(ERROR_CODES.notSignedIn, "Not signed in")
 
     const user = await userByClerkId(ctx, identity.subject)
-    if (user === null) throw new Error("No account yet")
+    if (user === null)
+      throw new CodedError(ERROR_CODES.noAccount, "No account yet")
 
     const session = await ctx.db
       .query("sessions")
@@ -573,14 +583,15 @@ export const recordSummary = internalMutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const user = await userByClerkId(ctx, args.clerkId)
-    if (user === null) throw new Error("No such user")
+    if (user === null)
+      throw new CodedError(ERROR_CODES.noAccount, "No such user")
 
     let session: Doc<"sessions"> | null = await ctx.db
       .query("sessions")
       .withIndex("by_room", (q) => q.eq("room", args.room))
       .unique()
     if (session !== null && session.userId !== user._id) {
-      throw new Error("Not this learner's room")
+      throw new CodedError(ERROR_CODES.notYourRoom, "Not this learner's room")
     }
     if (session === null) {
       const id = await ctx.db.insert("sessions", {
@@ -595,7 +606,8 @@ export const recordSummary = internalMutation({
         leaseUntil: Date.now() + LEASE_TTL_MS,
       })
       session = await ctx.db.get(id)
-      if (session === null) throw new Error("Session row vanished")
+      if (session === null)
+        throw new CodedError(ERROR_CODES.rowVanished, "Session row vanished")
     }
 
     const patch: {
