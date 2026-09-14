@@ -52,6 +52,15 @@ export default defineSchema({
      * Signed SECONDS: grants are positive, debits negative. Seconds, not
      * minutes, because the meter bills the seconds actually spoken — see
      * `lib/billing.ts`.
+     *
+     * **The invariant: `sum(seconds)` for a learner is never negative.**
+     * Enforced by the one writer that can push it down — `sessions.debit`
+     * clamps its row so the sum lands at exactly zero rather than below it,
+     * and reports the shortfall as `balance_floor` (launch checklist C1). The
+     * seconds the worker actually consumed are still recorded, on the session
+     * row's `secondsBilled`; the ledger records what was CHARGED, and what was
+     * charged can never exceed what the learner had. So a later grant is
+     * minutes the learner really has, never a deficit being quietly repaid.
      */
     seconds: v.number(),
     /**

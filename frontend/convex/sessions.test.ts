@@ -96,6 +96,20 @@ function debitsOf(t: TestConvex, userId: Id<"users">) {
   })
 }
 
+/** The balance the way the ledger defines it: the sum of every row. */
+function balanceOf(t: TestConvex, userId: Id<"users">) {
+  return t.run(async (ctx) => {
+    const rows = await ctx.db
+      .query("creditLedger")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect()
+    return rows.reduce(
+      (sum: number, row: Doc<"creditLedger">) => sum + row.seconds,
+      0
+    )
+  })
+}
+
 /**
  * The worker joining a room. This is the only thing that opens a session row
  * now: the token route signs a token and writes nothing, so every test that
@@ -549,7 +563,15 @@ describe("sessions.debit", () => {
       seconds: 100 + MAX_DELTA_PER_CALL_S,
       seq: 3,
     })
-    expect(result.balanceSeconds).toBe(GRANT - 100 - MAX_DELTA_PER_CALL_S)
+    // ...and it lands on the floor rather than through it (C1). The cap is an
+    // hour and the grant is five minutes, so the honest answer to "what is
+    // this learner's balance" is zero: the seconds were consumed and the mark
+    // records them, but the ledger never charges more than the learner had.
+    expect(result.balanceSeconds).toBe(0)
+    expect(GRANT - 100 - MAX_DELTA_PER_CALL_S).toBeLessThan(0)
+    expect((await sessionsOf(t, userId))[0].secondsBilled).toBe(
+      100 + MAX_DELTA_PER_CALL_S
+    )
   })
 
   test("is idempotent on the ref", async () => {
@@ -822,6 +844,43 @@ describe("sessions.debit", () => {
     const after = (await sessionsOf(t, userId))[0]
     expect(after.secondsBilled).toBe(60)
     expect(after.endedAt).toBe(closedRow.endedAt)
+  })
+
+  test("never charges past zero, and records what was consumed", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+    await openRoom(t, "user_owner", room)
+
+    // More than the whole grant in one report: a worker that held late, or a
+    // report that crossed a balance read. The ledger takes what is there.
+    const result = await t.mutation(internal.sessions.debit, {
+      room,
+      clerkId: "user_owner",
+      jobId: "job_1",
+      seconds: GRANT + 120,
+      seq: 1,
+    })
+
+    // Exactly zero — not below it. `viewer` clamps `minutes` to 0, so a
+    // deficit here would be invisible on every surface and would silently eat
+    // the learner's next grant (C1).
+    expect(result.balanceSeconds).toBe(0)
+    const [debit] = await debitsOf(t, userId)
+    expect(debit.seconds).toBe(-GRANT)
+    // What was CONSUMED is still recorded: the mark is the worker's running
+    // total, and a mark that lagged would re-bill these seconds next report.
+    expect((await sessionsOf(t, userId))[0].secondsBilled).toBe(GRANT + 120)
+
+    // ...and the next report finds nothing left to take rather than digging.
+    const next = await t.mutation(internal.sessions.debit, {
+      room,
+      clerkId: "user_owner",
+      jobId: "job_1",
+      seconds: GRANT + 180,
+      seq: 2,
+    })
+    expect(next.balanceSeconds).toBe(0)
+    expect(await balanceOf(t, userId)).toBe(0)
   })
 })
 

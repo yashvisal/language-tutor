@@ -418,11 +418,34 @@ export const debit = internalMutation({
         `${DELTA_CAP_PREFIX} one report may add at most ${MAX_DELTA_PER_CALL_S}s (got ${delta}s)`
       )
     }
-    if (delta > 0) {
+    // **The balance floor** (launch checklist C1). The zero-hold lives in the
+    // worker's clock, and until now nothing here enforced it: a worker that
+    // held late, or one whose report crossed a balance read, pushed the ledger
+    // below zero — where `viewer` clamps `minutes` to 0 and the deficit is
+    // invisible on every surface, silently eaten by the learner's next grant.
+    //
+    // Both halves of this matter. What was CONSUMED is still recorded: the
+    // high-water mark moves to the reported total below, because the worker
+    // really did spend those seconds and a mark that lagged would re-bill them
+    // on the next report. What is CHARGED is clamped, so the balance lands at
+    // exactly zero rather than under it. The difference is the house's, and it
+    // is reported rather than absorbed quietly — this is the Sentry capture
+    // point (A11).
+    const balanceBefore = await secondsFor(ctx, user._id)
+    const applied = Math.max(0, Math.min(delta, Math.max(0, balanceBefore)))
+    if (applied < delta) {
+      reportError("balance_floor", {
+        userId: user._id,
+        room: args.room,
+        requested: delta,
+        applied,
+      })
+    }
+    if (applied > 0) {
       await ctx.db.insert("creditLedger", {
         userId: user._id,
         kind: "debit",
-        seconds: -delta,
+        seconds: -applied,
         ref,
         createdAt: Date.now(),
       })
