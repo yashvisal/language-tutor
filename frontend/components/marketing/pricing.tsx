@@ -1,4 +1,4 @@
-import { PACKS, PACKS_NOTE } from "@/components/marketing/brand"
+import { PACKS } from "@/components/marketing/brand"
 import { Overline } from "@/components/overline"
 import { cn } from "@/lib/utils"
 
@@ -39,13 +39,5 @@ export function PricingPacks({ className }: { className?: string }) {
         )
       })}
     </div>
-  )
-}
-
-export function PricingNote({ className }: { className?: string }) {
-  return (
-    <p className={cn("text-sm text-muted-foreground", className)}>
-      {PACKS_NOTE}
-    </p>
   )
 }
