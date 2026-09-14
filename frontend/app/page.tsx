@@ -52,7 +52,7 @@ export default function LandingPage() {
             rather than piled above them: a tight stack centred in a tall box
             reads as cramped copy floating in emptiness (Yash, 2026-09-11).
             Hence the fixed start under the header and the growing gaps. */}
-        <section className="relative mx-auto flex min-h-[calc(100svh-3.5rem)] w-full max-w-6xl flex-col items-center px-6 pt-16 pb-16 text-center sm:pt-20">
+        <section className="relative mx-auto flex min-h-[calc(100svh-3.5rem)] w-full max-w-6xl flex-col items-center overflow-x-clip px-6 pt-16 pb-16 text-center sm:pt-20">
           {/* The wide wash behind the whole hero, at the strength Yash
               settled on with the lab's tuner (2026-09-13). */}
           <div
@@ -254,7 +254,9 @@ export default function LandingPage() {
         {/* Closing — the small orb above the line. The button is the bare
             verb: the minutes section just above has already made the
             promise (Yash, 2026-09-13). */}
-        <section className="border-t border-border/60">
+        {/* The orb's glow is 1.5× its box and overflows a phone: clipped here
+            rather than narrowed, so the light is unchanged (checklist A6). */}
+        <section className="overflow-x-clip border-t border-border/60">
           <div className="mx-auto flex w-full max-w-6xl flex-col items-center px-6 py-24 text-center">
             <Reveal className="flex flex-col items-center">
               <div className="relative h-20">
