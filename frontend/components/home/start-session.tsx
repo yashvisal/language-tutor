@@ -17,7 +17,6 @@
  */
 
 import { useState, useSyncExternalStore } from "react"
-import Link from "next/link"
 import { useRouter } from "next/navigation"
 
 import { PlanCards } from "@/components/session/session-preflight"
@@ -35,7 +34,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { api } from "@/convex/_generated/api"
 import { useViewer } from "@/lib/use-authed-query"
 import { LOW_BALANCE_SECONDS, formatClock } from "@/lib/billing"
 import type { SessionPlan } from "@/lib/session/contract"

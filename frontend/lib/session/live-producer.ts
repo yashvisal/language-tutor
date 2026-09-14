@@ -50,12 +50,7 @@ import {
   useRef,
   useState,
 } from "react"
-import {
-  ConnectionState,
-  RoomEvent,
-  Track,
-  type Room,
-} from "livekit-client"
+import { ConnectionState, RoomEvent, Track, type Room } from "livekit-client"
 import { useMutation } from "convex/react"
 import {
   useAgent,

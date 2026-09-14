@@ -29,7 +29,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { api } from "@/convex/_generated/api"
 import { formatClock } from "@/lib/billing"
 import { useViewer } from "@/lib/use-authed-query"
 

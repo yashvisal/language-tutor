@@ -12,7 +12,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { api } from "@/convex/_generated/api"
 import { useViewer } from "@/lib/use-authed-query"
 
 export function SettingsDialog({
