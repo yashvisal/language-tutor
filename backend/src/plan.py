@@ -151,15 +151,36 @@ class SessionPlan:
         }
 
     def log_fields(self) -> dict[str, object]:
-        # Prefixed: these land in a LogRecord's namespace alongside the
-        # worker's own fields.
+        """The plan's SHAPE, for the session's opening INFO line.
+
+        Prefixed: these land in a LogRecord's namespace alongside the worker's
+        own fields. No learner-typed prose (A12, phase 8 decision (b)): the
+        topic, the scenario, the focus note and the free-text note are all
+        things a learner typed, and none of them belong in a log an operator
+        reads. What is left is what an operator actually triages on — was a
+        plan sent at all, how much of it, and at what level.
+        `debug_fields()` has the prose for a laptop.
+        """
+        return {
+            "plan_present": not self.is_empty,
+            "plan_has_topic": bool(self.topic),
+            "plan_has_scenario": bool(self.scenario),
+            "plan_has_focus_note": bool(self.focus_note),
+            "plan_has_note": bool(self.note),
+            "plan_tenses": len(self.tenses),
+            "plan_vocab": len(self.vocab),
+            "plan_level": self.level,
+        }
+
+    def debug_fields(self) -> dict[str, object]:
+        """The plan's prose, for DEBUG only. Never log this at INFO."""
         return {
             "plan_topic": self.topic,
             "plan_scenario": self.scenario,
-            "plan_tenses": self.tenses,
+            "plan_tenses": list(self.tenses),
             "plan_focus_note": self.focus_note,
             "plan_note": self.note,
-            "plan_vocab": self.vocab,
+            "plan_vocab": list(self.vocab),
             "plan_level": self.level,
         }
 

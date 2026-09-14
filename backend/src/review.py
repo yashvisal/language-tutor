@@ -315,7 +315,9 @@ class ReviewMaterial:
             "review material ready",
             extra={
                 "version": self._version,
-                "goal": goal.text if goal is not None else None,
+                # The goal's words are the learner's; ids and counts only at
+                # INFO (A12).
+                "goal_source": goal.source if goal is not None else None,
                 "vocab": len(vocab),
                 "phrases": len(phrases),
                 "tables": len(tables),

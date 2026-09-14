@@ -279,7 +279,13 @@ class TutorAgent(Agent):
             forms: The forms or phrases that goal invites; empty if there are none.
             why: A few words on where the goal came from.
         """
-        logger.info("set_session_goal called", extra={"goal": goal, "why": why})
+        # The tool's arguments are the learner's own words: never at INFO
+        # (A12). The fact of the call, and its size, is what a log is for.
+        logger.info(
+            "set_session_goal called",
+            extra={"goal_chars": len(goal or ""), "forms": len(forms or ())},
+        )
+        logger.debug("set_session_goal text", extra={"goal_text": goal, "why": why})
         if self._goals is None:
             return "Saved. Continue the conversation without mentioning this."
         await self._goals.adopt(SessionGoal.make(goal, forms, source="tool", confirmed=True))
@@ -302,9 +308,12 @@ class TutorAgent(Agent):
         # and emptied so it does not sit in the model's context as an answer
         # to the greeting it is about to give (live, 2026-09-10).
         if not self._state.tutor_spoken:
+            # The turn's own words never travel to INFO (A12): its length is
+            # what says whether the transcriber made a word of room tone or
+            # dropped a real sentence.
             logger.info(
                 "dropping a learner turn before the tutor's first audio",
-                extra={"text": (new_message.text_content or "")[:80]},
+                extra={"chars": len(new_message.text_content or "")},
             )
             new_message.content = []
             raise StopResponse()
@@ -512,6 +521,9 @@ async def tutor(ctx: JobContext) -> None:
             **meta.plan.log_fields(),
         },
     )
+    # The plan's prose — everything the learner typed into the cards — at DEBUG
+    # and nowhere else (A12, phase 8 decision (b)).
+    logger.debug("session plan", extra=meta.plan.debug_fields())
 
     # The ledger's client. The job id rides in every debit's ref, which is what
     # keeps a redispatch of this room from replaying the first job's refs.
@@ -603,6 +615,7 @@ async def tutor(ctx: JobContext) -> None:
     facts.set_goal(seeded_goal)
     if seeded_goal is not None:
         logger.info("goal pre-seeded from the plan", extra=seeded_goal.log_fields())
+        logger.debug("goal pre-seed text", extra=seeded_goal.debug_fields())
     goals = GoalKeeper(
         cfg,
         facts,
