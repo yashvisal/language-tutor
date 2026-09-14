@@ -44,3 +44,6 @@ __pycache__/
 # local dev logs
 .agent-dev.log
 .frontend-dev.log
+
+# Vercel CLI project link
+.vercel
