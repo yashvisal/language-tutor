@@ -431,6 +431,13 @@ class BillingClient:
         active = int(max(0, active_seconds))
         tripped = False
         async with self._lock:
+            # Again, under the lock: two reports in flight together (the
+            # periodic one and a zero hold's) can both pass the check above,
+            # and the second would post to a row the first just learned is
+            # closed, then fire the handler a second time (CodeRabbit, PR #12).
+            if self._closed:
+                logger.debug("debit skipped: the ledger closed this room")
+                return None
             self._seq += 1
             seq = self._seq
             seconds = min(self._billed_before + active, MAX_SECONDS)

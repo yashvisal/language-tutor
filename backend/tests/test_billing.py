@@ -311,6 +311,26 @@ async def test_a_closed_row_ends_the_session_and_stops_the_reports() -> None:
     assert len(ledger.debits) == 1
 
 
+async def test_two_reports_in_flight_fire_the_closed_handler_once() -> None:
+    # Two debits can pass the pre-lock check together (the periodic report
+    # and a zero hold's). The second must not post to a row the first just
+    # learned is closed, and the handler must fire once (CodeRabbit, PR #12).
+    ledger = FakeLedger(
+        [{"balanceSeconds": 100, "closed": True}, {"balanceSeconds": 100, "closed": True}]
+    )
+    client = make(ledger)
+    fired: list[int] = []
+
+    async def on_closed() -> None:
+        fired.append(1)
+
+    client.set_closed_handler(on_closed)
+    results = await asyncio.gather(client.debit(30), client.debit(45))
+    assert sorted(results, key=lambda r: (r is None, r or 0)) == [100, None]
+    assert fired == [1]
+    assert len(ledger.debits) == 1
+
+
 async def test_a_final_report_that_closes_the_row_is_not_a_refusal() -> None:
     ledger = FakeLedger([{"balanceSeconds": 40, "closed": True}])
     client = make(ledger)
