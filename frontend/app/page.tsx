@@ -1,12 +1,10 @@
 import type { Metadata } from "next"
 
 import { AmbientAura } from "@/components/marketing/ambient-aura"
-import {
-  DemoConversation,
-  FixFragment,
-} from "@/components/marketing/demo-conversation"
+import { DemoConversation } from "@/components/marketing/demo-conversation"
 import {
   AskFragment,
+  FixFragment,
   TranslateFragment,
 } from "@/components/marketing/feature-miniatures"
 import { LanguageFlag } from "@/components/marketing/language-flag"
@@ -162,7 +160,7 @@ export default function LandingPage() {
               ].map((feature, i) => (
                 <li key={feature.title} className="flex h-full flex-col">
                   <Reveal delay={i * 0.08} className="flex h-full flex-col">
-                    <div className="h-56 rounded-2xl border border-border/60 bg-muted/50 px-6 shadow-xs dark:bg-card/40 dark:shadow-none">
+                    <div className="h-44 rounded-2xl border border-border/60 bg-muted/50 px-6 shadow-xs dark:bg-card/40 dark:shadow-none">
                       {feature.stage}
                     </div>
                     <div className="px-1 pt-5">
