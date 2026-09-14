@@ -90,9 +90,11 @@ export default function LandingPage() {
             </Button>
           </div>
 
+          {/* The orb at the Paper boards' 200px. The override has to name the
+              sm breakpoint too, or the demo's own sm:h-56 wins above 640px. */}
           <DemoConversation
             size="hero"
-            auraClassName="h-[200px]"
+            auraClassName="h-[200px] sm:h-[200px]"
             className="mt-14 w-full max-w-2xl"
           />
         </section>
