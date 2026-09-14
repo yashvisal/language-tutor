@@ -195,7 +195,10 @@ export default function LandingPage() {
                 {LANGUAGES.map((lang) => (
                   <li
                     key={lang.code}
-                    className="flex items-center gap-4 border-border/60 px-6 py-6 not-first:border-t sm:not-first:border-t-0 sm:not-first:border-l"
+                    // At sm the five cells wrap to two rows: the second row keeps its
+                    // top hairline and its first cell drops the left one, so no
+                    // line sits on the container's own edge (CodeRabbit, PR #11).
+                    className="flex items-center gap-4 border-border/60 px-6 py-6 not-first:border-t sm:not-first:border-t-0 sm:not-first:border-l sm:nth-4:border-l-0 sm:nth-[n+4]:border-t lg:nth-4:border-l lg:nth-[n+4]:border-t-0"
                   >
                     <LanguageFlag code={lang.code} />
                     <div className="flex flex-col">
