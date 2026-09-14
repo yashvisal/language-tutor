@@ -623,18 +623,20 @@ describe("sessions.debit", () => {
     expect(closed.endedAt).toBeTypeOf("number")
     expect(closed.secondsBilled).toBe(90)
 
-    // A later report — a redispatch, a retry, a straggler — bills what is new
-    // and leaves the end where it was. The row is history now.
-    await t.mutation(internal.sessions.debit, {
+    // A later report — a redispatch, a retry, a straggler — bills NOTHING and
+    // leaves the row exactly as it was (A3). The row is history now, and the
+    // learner may already be talking somewhere else.
+    const later = await t.mutation(internal.sessions.debit, {
       room,
       clerkId: "user_owner",
       jobId: "job_2",
       seconds: 95,
       seq: 1,
     })
+    expect(later.closed).toBe(true)
     const after = (await sessionsOf(t, userId))[0]
     expect(after.endedAt).toBe(closed.endedAt)
-    expect(after.secondsBilled).toBe(95)
+    expect(after.secondsBilled).toBe(90)
   })
 
   test("a periodic report renews the lease and a final one does not", async () => {
@@ -746,6 +748,45 @@ describe("sessions.debit", () => {
     // The adopted row is a live conversation like any other: something is
     // metering it, so it holds a lease and the cron will not close it.
     expect(rows[0].leaseUntil).toBeGreaterThan(Date.now())
+  })
+
+  test("billing after close: a closed row takes no more money", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+    await openRoom(t, "user_owner", room)
+
+    await t.mutation(internal.sessions.debit, {
+      room,
+      clerkId: "user_owner",
+      jobId: "job_1",
+      seconds: 60,
+      seq: 1,
+    })
+
+    // The worker lost the network for longer than the lease, so the cron
+    // closed the row — and the learner started talking again somewhere else.
+    await setLease(t, room, Date.now() - 1000)
+    expect(await t.mutation(internal.sessions.reconcileStale, {})).toBe(1)
+    const closedRow = (await sessionsOf(t, userId))[0]
+    expect(closedRow.endedAt).toBeTypeOf("number")
+
+    const balanceBefore = await balanceOf(t, userId)
+    const result = await t.mutation(internal.sessions.debit, {
+      room,
+      clerkId: "user_owner",
+      jobId: "job_1",
+      seconds: 200,
+      seq: 2,
+    })
+
+    // Two spenders on one balance is what this prevents: the old worker's
+    // report is refused whole, terminally, and it says so.
+    expect(result.closed).toBe(true)
+    expect(result.balanceSeconds).toBe(balanceBefore)
+    expect(await debitsOf(t, userId)).toHaveLength(1)
+    const after = (await sessionsOf(t, userId))[0]
+    expect(after.secondsBilled).toBe(60)
+    expect(after.endedAt).toBe(closedRow.endedAt)
   })
 })
 
@@ -1961,8 +2002,11 @@ describe("why a session ended", () => {
     })
     const row = await rowOf(t)
     expect(row!.endReason).toBe("hold_idle")
-    // and the meter still moved, so this is a no-op on the reason alone.
-    expect(row!.secondsBilled).toBe(120)
+    // ...and the meter did not move either: the row was closed by the first
+    // report, and a closed row bills nothing (A3). The reason is the one
+    // thing a late report can still add, because a row swept by the cron
+    // carries none.
+    expect(row!.secondsBilled).toBe(90)
   })
 
   test("a final report with no reason leaves the column absent", async () => {

@@ -314,7 +314,18 @@ export const debit = internalMutation({
      */
     reason: v.optional(endReasonValidator),
   },
-  returns: v.object({ balanceSeconds: v.number() }),
+  returns: v.object({
+    balanceSeconds: v.number(),
+    /**
+     * The row this report names is closed, so nothing was billed for it.
+     *
+     * A refusal rather than a fault: the worker on the other end has to leave
+     * politely, exactly as it does for `open`'s `closed` code. It is TERMINAL
+     * — no report will ever land on this room again — and the worker must
+     * treat it as such rather than retrying. See the A3 note below.
+     */
+    closed: v.boolean(),
+  }),
   handler: async (ctx, args) => {
     const user = await userByClerkId(ctx, args.clerkId)
     if (user === null)
@@ -336,7 +347,39 @@ export const debit = internalMutation({
       .withIndex("by_ref", (q) => q.eq("ref", ref))
       .first()
     if (already !== null) {
-      return { balanceSeconds: await secondsFor(ctx, user._id) }
+      return {
+        balanceSeconds: await secondsFor(ctx, user._id),
+        closed: session?.endedAt !== undefined,
+      }
+    }
+
+    // **A closed row bills nothing** (launch checklist A3). The row is history:
+    // the final debit wrote `endedAt`, or the cron did because the lease ran
+    // out. A report arriving after that is a worker that lost the network for
+    // longer than the lease and has now reconnected — and the learner may well
+    // have started a second conversation in the meantime, which is two
+    // spenders on one balance for as long as it takes the old worker's renewal
+    // to come back refused. So: no ledger row, and the high-water mark does
+    // not move either, because moving it would print seconds on the History
+    // card that were never charged for.
+    //
+    // The reason still lands. It is the one fact this report carries that a
+    // closed row may not have, and it is written on its own condition for
+    // exactly this case (see the `endReason` note above): a row the cron swept
+    // up says only "stale" until the worker that was actually there explains
+    // it.
+    if (session !== null && session.endedAt !== undefined) {
+      if (
+        args.final === true &&
+        args.reason !== undefined &&
+        session.endReason === undefined
+      ) {
+        await ctx.db.patch(session._id, { endReason: args.reason })
+      }
+      return {
+        balanceSeconds: await secondsFor(ctx, user._id),
+        closed: true,
+      }
     }
 
     // Normally written by `open`. A missing row means the worker is metering
@@ -421,7 +464,12 @@ export const debit = internalMutation({
       await ctx.db.patch(session._id, patch)
     }
 
-    return { balanceSeconds: await secondsFor(ctx, user._id) }
+    return {
+      balanceSeconds: await secondsFor(ctx, user._id),
+      // True only where THIS report closed the row: a report that lands on an
+      // already-closed one returned above.
+      closed: patch.endedAt !== undefined,
+    }
   },
 })
 
