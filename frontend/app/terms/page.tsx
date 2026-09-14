@@ -1,5 +1,11 @@
 import type { Metadata } from "next"
 
+import {
+  GOVERNING_LAW,
+  LEGAL_LAST_UPDATED,
+  REFUND_WINDOW_DAYS,
+  SUPPORT_EMAIL,
+} from "@/components/marketing/brand"
 import { LegalPage } from "@/components/marketing/legal-page"
 import { MINUTE_PACKS, SIGNUP_GRANT_MINUTES } from "@/lib/billing"
 
@@ -9,37 +15,41 @@ import { MINUTE_PACKS, SIGNUP_GRANT_MINUTES } from "@/lib/billing"
  * conversation, free holds, non-expiring minutes, one Clerk account per
  * person) or is explicitly marked as unsettled.
  *
- * DRAFT — the `draft` flag renders the "under review" line. Open decisions
- * left for Yash, all marked inline as "(to set)":
- *   1. Refund window and terms (drafted as 14 days, unused minutes only).
- *   2. Contact address — `hello@` has no domain yet.
- *   3. Governing law / jurisdiction.
- * Remove `draft` and the "(to set)" markers once those are settled.
+ * DRAFT — the `draft` flag renders the "under review" line, and `draftNote`
+ * names what is provisional. The unsettled values are the constants in
+ * `components/marketing/brand.ts` (`SUPPORT_EMAIL`, `GOVERNING_LAW`,
+ * `REFUND_WINDOW_DAYS`); this file quotes them and states none of its own, so
+ * signing them off is one edit there and then dropping `draft` here.
  */
 export const metadata: Metadata = {
   title: "Terms",
-  description: "The terms you agree to when you use tutor.",
+  description: "The terms you agree to when you use lengua.",
 }
 
 export default function TermsPage() {
   const smallestPack = MINUTE_PACKS[0].minutes
 
   return (
-    <LegalPage title="Terms" lastUpdated="2026-08-25" draft>
+    <LegalPage
+      title="Terms"
+      lastUpdated={LEGAL_LAST_UPDATED}
+      draft
+      draftNote="the support address, the refund window, and the governing law"
+    >
       <p>
-        These terms cover your use of tutor. By making an account or using the
+        These terms cover your use of lengua. By making an account or using the
         service, you agree to them. We&rsquo;ve tried to write them the way we
         write everything else here: plainly, and only about things we actually
         do.
       </p>
 
-      <h2>What tutor is</h2>
+      <h2>What lengua is</h2>
       <p>
-        tutor is live voice conversation practice with an AI language tutor. You
-        speak, it listens and replies, and the interface shows you your words
-        and how to say them better. It is software, not a person. It is not a
-        teacher, a translator you should rely on, or a source of advice of any
-        kind. Like any AI system it can be wrong &mdash; it can mishear you,
+        lengua is live voice conversation practice with an AI language tutor.
+        You speak, it listens and replies, and the interface shows you your
+        words and how to say them better. It is software, not a person. It is
+        not a teacher, a translator you should rely on, or a source of advice of
+        any kind. Like any AI system it can be wrong &mdash; it can mishear you,
         correct something that was already right, or say something inaccurate
         with complete confidence. Use it to practise, not as an authority.
       </p>
@@ -70,8 +80,9 @@ export default function TermsPage() {
           once per person, not once per email address.
         </li>
         <li>
-          Minutes are sold in packs, starting at {smallestPack} minutes. They
-          never expire, and there is no subscription or recurring charge.
+          Minutes are sold in packs, starting at {smallestPack} minutes. The
+          packs and their prices are shown in the app. They never expire, and
+          there is no subscription or recurring charge.
         </li>
         <li>
           Minutes are tied to your account. They can&rsquo;t be transferred,
@@ -85,19 +96,18 @@ export default function TermsPage() {
 
       <h2>Refunds</h2>
       <p>
-        Unused purchased minutes are refundable within 14 days of purchase if
-        you ask us. Minutes you have already spoken through aren&rsquo;t
-        refundable &mdash; the conversation cost real money to run. Free minutes
-        have no cash value and are never refundable. (Refund window and terms:
-        to set.)
+        Unused purchased minutes are refundable within {REFUND_WINDOW_DAYS} days
+        of purchase if you ask us. Minutes you have already spoken through
+        aren&rsquo;t refundable &mdash; the conversation cost real money to run.
+        Free minutes have no cash value and are never refundable.
       </p>
 
       <h2>Using it fairly</h2>
       <p>Please don&rsquo;t:</p>
       <ul>
         <li>
-          use tutor to harass anyone, or to generate abusive, illegal or harmful
-          content;
+          use lengua to harass anyone, or to generate abusive, illegal or
+          harmful content;
         </li>
         <li>
           access the service with bots, scripts or automated clients, or resell
@@ -120,7 +130,7 @@ export default function TermsPage() {
 
       <h2>Availability</h2>
       <p>
-        tutor is provided as it is, without warranties of any kind. We
+        lengua is provided as it is, without warranties of any kind. We
         don&rsquo;t promise it will always be available, that a conversation
         will never drop, or that what the tutor says will be correct. Parts of
         it depend on services we don&rsquo;t run, and those can fail. If a
@@ -138,7 +148,7 @@ export default function TermsPage() {
 
       <h2>Ending things</h2>
       <p>
-        You can stop using tutor and delete your account whenever you like. We
+        You can stop using lengua and delete your account whenever you like. We
         may close an account that breaks these terms, or discontinue the service
         &mdash; if we discontinue it, we&rsquo;ll refund unused purchased
         minutes.
@@ -148,21 +158,20 @@ export default function TermsPage() {
       <p>
         We may update these terms. The date at the top always says when they
         last changed, and if a change matters we&rsquo;ll tell you before it
-        takes effect. Continuing to use tutor after that means you accept the
+        takes effect. Continuing to use lengua after that means you accept the
         new version.
       </p>
 
       <h2>Law</h2>
       <p>
-        These terms are governed by the laws of the place we operate from, and
-        disputes go to the courts there. (Governing law and jurisdiction: to
-        set.)
+        These terms are governed by the laws of {GOVERNING_LAW}, and disputes go
+        to the courts there.
       </p>
 
       <h2>Contact</h2>
       <p>
-        Questions, refunds, or anything else: email us at hello@ (address: to
-        set).
+        Questions, refunds, or anything else: email us at{" "}
+        <a href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a>.
       </p>
     </LegalPage>
   )

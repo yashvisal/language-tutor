@@ -21,3 +21,36 @@ export const CTA_LABEL = `Start speaking — your first ${SIGNUP_GRANT_MINUTES} 
 /** The packs, from their one home in `lib/billing.ts` — the app's Billing
  * dialog quotes the same list, and the two must never drift. */
 export const PACKS = MINUTE_PACKS
+
+/* -------------------------------------------------------------------------- */
+/*  Legal placeholders                                                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The four values the legal pages need and the product has not settled. They
+ * live here, once each, so that signing them off is a single edit in a single
+ * file rather than a hunt through two documents — and so that the draft flag
+ * on `LegalPage` and the values it warns about can never drift apart.
+ *
+ * Every constant below is: to confirm with Yash before removing the draft flag.
+ */
+
+/** Where support, refund requests and data requests go. The domain exists
+ * (lengua.chat); the mailbox has to be created. */
+export const SUPPORT_EMAIL = "hello@lengua.chat"
+
+/** Reads inside "governed by the laws of ___, and disputes go to the courts
+ * there". Deliberately still the hedge the draft has always carried rather
+ * than a jurisdiction nobody has chosen. */
+export const GOVERNING_LAW = "the place we operate from"
+
+/** The age floor stated in the privacy policy's Children section. */
+export const MINIMUM_AGE = 16
+
+/** How long after a purchase unused minutes can be refunded. Nothing can be
+ * bought yet, so this binds nobody until checkout ships. */
+export const REFUND_WINDOW_DAYS = 14
+
+/** The date both documents print at the top. Move it whenever the copy
+ * changes, not whenever the file is touched. */
+export const LEGAL_LAST_UPDATED = "2026-09-14"

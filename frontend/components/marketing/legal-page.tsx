@@ -14,18 +14,23 @@ import { Overline } from "@/components/overline"
  * the copy is the thing being reviewed, and it should not be buried in
  * markup. `max-w-xl` matches the rest of the marketing pages.
  *
- * `draft` renders the muted line that says these have not been signed off.
- * It comes off when they have; nothing else about the page changes.
+ * `draft` renders the muted line that says these have not been signed off,
+ * and `draftNote` says in one line which values are still unconfirmed, so a
+ * reader is told what is provisional rather than left to guess. Both come off
+ * together when the values in `brand.ts` are settled; nothing else about the
+ * page changes.
  */
 export function LegalPage({
   title,
   lastUpdated,
   draft = false,
+  draftNote,
   children,
 }: {
   title: string
   lastUpdated: string
   draft?: boolean
+  draftNote?: string
   children: ReactNode
 }) {
   return (
@@ -36,7 +41,8 @@ export function LegalPage({
         <h1 className="mt-3 text-2xl font-medium tracking-tight">{title}</h1>
         {draft && (
           <p className="mt-2 text-sm text-muted-foreground">
-            Draft — under review.
+            Draft — under review
+            {draftNote ? `. Still to confirm: ${draftNote}` : ""}.
           </p>
         )}
         <div

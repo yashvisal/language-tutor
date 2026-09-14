@@ -1,5 +1,10 @@
 import type { Metadata } from "next"
 
+import {
+  LEGAL_LAST_UPDATED,
+  MINIMUM_AGE,
+  SUPPORT_EMAIL,
+} from "@/components/marketing/brand"
 import { LegalPage } from "@/components/marketing/legal-page"
 
 /**
@@ -11,23 +16,39 @@ import { LegalPage } from "@/components/marketing/legal-page"
  * `room_config` is ignored (`app/api/token/route.ts`). If either of those
  * changes, this page changes with it.
  *
- * DRAFT — the `draft` flag renders the "under review" line. Open decisions
- * left for Yash, all marked inline as "(to set)":
- *   1. Contact address — `hello@` has no domain yet.
- *   2. Minimum age — drafted as 16.
- *   3. The payment provider, named once it's chosen.
- * Remove `draft` and the "(to set)" markers once those are settled.
+ * Two claims are pinned to code that exists today and must be revisited when
+ * it changes:
+ *   1. Cookies — Clerk's session cookies are the only ones set. There is no
+ *      analytics package in the tree (no `@vercel/analytics` in
+ *      `package.json`, nothing in `app/layout.tsx`); if one is added, the
+ *      Cookies section gains an analytics line the same day.
+ *   2. Deletion — `internal.users.deleteByClerkId` removes the `users` row,
+ *      the `creditLedger` rows and the `sessions` rows, and that is the whole
+ *      list because there is no `purchases` table yet. WHEN CHECKOUT SHIPS:
+ *      decide whether purchase records are swept or kept for accounting, and
+ *      say so here (launch checklist C4 / A10, audit L7). Saying nothing is
+ *      correct only while nothing can be bought.
+ *
+ * DRAFT — the `draft` flag renders the "under review" line, and `draftNote`
+ * names what is provisional. The unsettled values are the constants in
+ * `components/marketing/brand.ts` (`SUPPORT_EMAIL`, `MINIMUM_AGE`).
  */
 export const metadata: Metadata = {
   title: "Privacy",
-  description: "What tutor collects, what it keeps, and what it never records.",
+  description:
+    "What lengua collects, what it keeps, and what it never records.",
 }
 
 export default function PrivacyPage() {
   return (
-    <LegalPage title="Privacy" lastUpdated="2026-08-25" draft>
+    <LegalPage
+      title="Privacy"
+      lastUpdated={LEGAL_LAST_UPDATED}
+      draft
+      draftNote="the support address and the minimum age"
+    >
       <p>
-        This explains what tutor collects, why, and what happens to it. The
+        This explains what lengua collects, why, and what happens to it. The
         short version: we keep the text of your conversations so the product can
         teach you from them, we never keep the audio, and we don&rsquo;t sell
         anything to anyone.
@@ -140,12 +161,13 @@ export default function PrivacyPage() {
       <h2>Deleting your account</h2>
       <p>
         Delete your account from your account settings. Doing so removes your
-        account record, your minute balance and its history, and your
-        conversation records &mdash; transcripts, corrections, summaries, review
-        material and everything else listed above. Unused minutes are forfeited
-        when you delete, so ask for a refund first if you want one. Deletion is
-        permanent; we can&rsquo;t restore a deleted account. Backups may hold
-        copies for a short period before they roll over.
+        account record, your minute balance and every grant and debit in its
+        history, and all of your conversation records &mdash; transcripts,
+        corrections, summaries, review material and everything else listed
+        above. Unused minutes are forfeited when you delete, so ask for a refund
+        first if you want one. Deletion is permanent; we can&rsquo;t restore a
+        deleted account. Backups may hold copies for a short period before they
+        roll over.
       </p>
 
       <h2>Your rights</h2>
@@ -158,9 +180,9 @@ export default function PrivacyPage() {
 
       <h2>Children</h2>
       <p>
-        tutor isn&rsquo;t for people under 16. We don&rsquo;t knowingly collect
-        data from them, and we&rsquo;ll delete an account if we learn it belongs
-        to one. (Minimum age: to set.)
+        lengua isn&rsquo;t for people under {MINIMUM_AGE}. We don&rsquo;t
+        knowingly collect data from them, and we&rsquo;ll delete an account if
+        we learn it belongs to one.
       </p>
 
       <h2>Changes</h2>
@@ -172,8 +194,8 @@ export default function PrivacyPage() {
 
       <h2>Contact</h2>
       <p>
-        Questions about any of this, or a request about your data: email hello@
-        (address: to set).
+        Questions about any of this, or a request about your data: email{" "}
+        <a href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a>.
       </p>
     </LegalPage>
   )
