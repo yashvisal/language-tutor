@@ -8,7 +8,16 @@ import { Button } from "@/components/ui/button"
  * One call to action per page. Signed out it opens the Clerk sign-up modal;
  * signed in there is nothing to sell, so it becomes the way back to the app.
  */
-export function PrimaryCta({ size = "lg" }: { size?: "default" | "lg" }) {
+export function PrimaryCta({
+  size = "lg",
+  label = CTA_LABEL,
+}: {
+  size?: "default" | "lg"
+  /** The signed-out label. Defaults to the shared sentence with the free
+   * minutes in it; a page that states the grant elsewhere can pass the bare
+   * verb. */
+  label?: string
+}) {
   return (
     <Show
       when="signed-out"
@@ -19,7 +28,7 @@ export function PrimaryCta({ size = "lg" }: { size?: "default" | "lg" }) {
       }
     >
       <SignUpButton mode="modal">
-        <Button size={size}>{CTA_LABEL}</Button>
+        <Button size={size}>{label}</Button>
       </SignUpButton>
     </Show>
   )

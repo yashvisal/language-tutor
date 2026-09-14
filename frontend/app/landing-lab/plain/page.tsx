@@ -1,4 +1,5 @@
 import type { Metadata } from "next"
+import { ArrowDown } from "lucide-react"
 
 import {
   AnswerFragment,
@@ -72,21 +73,27 @@ export default function PlainStageLanding() {
             corrections wait until you have finished the thought.
           </p>
 
-          {/* The app's own button at the app's own size, the promise inside
-              the label, and beside it the one secondary from the Paper panel
-              hero (kept from that variant, Yash, 2026-09-13): a quiet way
-              down to the explanation for whoever wants it before the demo. */}
-          <div className="mt-7 flex items-center gap-2">
-            <PrimaryCta />
+          {/* The app's own button at the app's own size, the bare verb: the
+              grant sits under it instead of inside it (Yash, 2026-09-13).
+              Beside it the way down to the explanation as a ghost, not an
+              outline: a white-filled box on the stage light read as a
+              sticker (Yash, 2026-09-13). */}
+          <div className="mt-7 flex items-center gap-1">
+            <PrimaryCta label="Start speaking" />
             <Button
-              variant="outline"
+              variant="ghost"
               size="lg"
               render={<a href="#how" />}
               nativeButton={false}
+              className="text-muted-foreground hover:text-foreground"
             >
               How it works
+              <ArrowDown data-icon="inline-end" />
             </Button>
           </div>
+          <p className="mt-3 text-sm text-muted-foreground">
+            Your first {SIGNUP_GRANT_MINUTES} minutes are free
+          </p>
 
           <LabDemoConversation
             auraClassName="h-[200px]"
