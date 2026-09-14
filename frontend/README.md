@@ -66,6 +66,44 @@ client pointed at the dev deployment.
 Node and pnpm are pinned in `package.json` (`engines`, `packageManager`) so the
 build platform resolves the same versions this repo is developed against.
 
+`frontend/vercel.json` holds that build command, the install command and the
+framework preset, so they live in the repo rather than only in the dashboard.
+
+**The Root Directory stays in the dashboard.** It is not a `vercel.json`
+property — it is not in Vercel's configuration table at all — and Vercel reads
+`vercel.json` *from* the Root Directory. That is why the file is
+`frontend/vercel.json` and not one at the repo root: with Root Directory set to
+`frontend`, a repo-root `vercel.json` is never read. Set Root Directory to
+`frontend` once, in Project Settings, and everything else is in this file.
+
+### Error reporting (Sentry)
+
+`@sentry/nextjs` is wired on all three Next runtimes:
+
+| File | What it is |
+| ---- | ---------- |
+| `instrumentation.ts` | Next's server hook: imports the server or edge config per runtime, and exports `onRequestError` (server components, route handlers, middleware) |
+| `instrumentation-client.ts` | The browser SDK, plus `onRouterTransitionStart` for client navigations |
+| `sentry.server.config.ts` / `sentry.edge.config.ts` | `Sentry.init` for the Node and edge runtimes |
+| `sentry.options.ts` | The options all three share: the sample rate and the `beforeSend` scrubber |
+| `app/global-error.tsx` | The last resort — a throw in the root layout itself. Captures, then renders its own `<html>`/`<body>` with "Something went wrong" and a reload |
+
+Three rules the wiring keeps:
+
+- **No DSN, no Sentry.** Each init site checks its own DSN and, without one,
+  calls nothing. A checkout with no Sentry env is a checkout with no Sentry:
+  no init warnings in `next dev`, no requests.
+- **`sendDefaultPii: false`**, `tracesSampleRate: 0.1`, and no session replay —
+  a replay of this product is a recording of somebody's language lesson.
+- **`beforeSend` strips `transcript` and `text`** from the event's extras and
+  from every context object, on all three runtimes. Phase 8 decision (b): ids
+  only, never transcript.
+
+Source maps upload only when `SENTRY_AUTH_TOKEN` is set, so no local or preview
+build depends on it. The `@sentry/cli` postinstall is allow-listed in
+`package.json` (`pnpm.onlyBuiltDependencies`) — without it, pnpm 10 skips the
+binary download and an upload-enabled build would fail.
+
 ### Convex deployment env
 
 `CLERK_FRONTEND_API_URL` is not a `.env.local` var — it lives on the Convex
