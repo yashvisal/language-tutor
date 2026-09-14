@@ -258,6 +258,7 @@ it is what every later command resolves from.
 
 ```shell
 cd backend
+mv livekit.toml livekit.toml.example   # `create` refuses to overwrite it
 lk agent create --region <region> --secrets-file ./secrets.env .
 lk agent deploy            # every version after the first
 lk agent update-secrets --secrets TUTOR_ENV=production
