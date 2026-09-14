@@ -1,0 +1,23 @@
+# The agent's deployment identity for the LiveKit CLI (`lk agent …`).
+#
+# The schema is exactly these two keys — project subdomain and agent id
+# (https://docs.livekit.io/deploy/agents/managing-deployments/). The agent's
+# *dispatch* name is not configured here: it comes from the source
+# (`AGENT_NAME = "tutor"` in `src/config.py`) and must byte-match the
+# `RoomAgentDispatch` the frontend's `/api/token` route attaches.
+#
+# First time only: `lk agent create` refuses to run when a config file is
+# already present, and writes this file itself. So for the very first create,
+# move this file aside (or pass `--config`), then commit the file the CLI
+# generated over this one — the `id` it assigns is what every later
+# `lk agent deploy` / `rollback` / `update-secrets` resolves from.
+#
+# Nothing here is a secret. `LIVEKIT_URL`, `LIVEKIT_API_KEY` and
+# `LIVEKIT_API_SECRET` are injected by LiveKit Cloud and cannot be set;
+# everything else is passed with `--secrets` / `--secrets-file`.
+
+[project]
+  subdomain = "<livekit-cloud-project-subdomain>"
+
+[agent]
+  id = "<written by lk agent create>"

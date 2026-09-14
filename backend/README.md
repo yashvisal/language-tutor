@@ -228,6 +228,60 @@ lk agent dev          # dev mode against the LiveKit Cloud project
 `console` has no `lk` equivalent, so keep that one for a terminal-only smoke
 test and nothing else.
 
+### Deploying to LiveKit Cloud
+
+The deploy artifact is checked in (launch checklist B4): `Dockerfile`,
+`.dockerignore` and `livekit.toml`, all in `backend/`.
+
+The image is a two-stage build on `ghcr.io/astral-sh/uv:python3.13-bookworm-slim`
+— 3.13 is the top of `requires-python` and what `.python-version` pins — that
+installs with `uv sync --frozen --no-dev` (exactly `uv.lock`, no ruff or
+pytest), copies `src/`, runs as an unprivileged `appuser`, and starts with
+`CMD ["python", "src/agent.py", "start"]`. That is the same `agents.cli`
+entrypoint `lk agent dev` runs, in production mode; LiveKit Cloud's health
+check watches that process, so there is no wrapper script and nothing
+backgrounded.
+
+Check it builds locally before the first deploy:
+
+```shell
+docker build -t tutor-worker backend/     # from the repo root
+```
+
+LiveKit Cloud builds the image itself on `create` / `deploy` — a local
+`docker build` is only a smoke test.
+
+**First deploy.** `lk agent create` refuses to run when a config file already
+exists and writes `livekit.toml` itself, so move the checked-in one aside (or
+pass `--config`), create, then commit the file the CLI generated — the `id` in
+it is what every later command resolves from.
+
+```shell
+cd backend
+lk agent create --region <region> --secrets-file ./secrets.env .
+lk agent deploy            # every version after the first
+lk agent update-secrets --secrets TUTOR_ENV=production
+lk agent logs              # deploy logs; --log-type build for the build
+lk agent rollback          # paid plans
+```
+
+**Secrets.** `LIVEKIT_URL`, `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` are
+injected by LiveKit Cloud and must **not** be set — the Dockerfile sets no
+environment variable that carries a secret, and `.env*` never enters the build
+context. Everything else is passed with `--secrets` / `--secrets-file`:
+
+| Secret | Notes |
+| ------ | ----- |
+| `OPENAI_API_KEY` | The production OpenAI project — verify model access there (B5) |
+| `CONVEX_SITE_URL` | The **production** `*.convex.site` host |
+| `CLERK_WORKER_MACHINE_SECRET_KEY` | Production instance's `tutor-worker` machine key |
+| `TUTOR_ENV=production` | Required. It is what makes `TUTOR_ALLOW_UNMETERED` refuse to boot |
+| `SENTRY_DSN` | Error reporting. Unset = off; the worker initialises nothing |
+| `TUTOR_REALTIME_MODEL`, `TUTOR_STT_MODEL`, `TUTOR_ANALYZER_MODEL`, `TUTOR_TRANSLATE_MODEL` | Pin dated snapshots rather than riding the floating aliases in `config.py` |
+
+Never set `TUTOR_ALLOW_UNMETERED` on this agent. Rollout order for any schema
+change is Convex → worker → frontend.
+
 Tests:
 
 ```shell
