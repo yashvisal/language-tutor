@@ -9,16 +9,16 @@ import { useEffect, useState } from "react"
  * Four numbers, all CSS variables on the root: the halo's opacity, spread
  * and blur (read by the demo's glow), and the opacity of the wide wash the
  * shipped landing puts behind the whole hero. Presets bracket the range:
- * "Paper" is the tight halo from the wireframes, "Live" is what ships today,
- * "Middle" is between them. Values persist in localStorage so a reload keeps
+ * "Chosen" is what Yash settled on (2026-09-13) and the page's default,
+ * "Paper" is the tight halo from the wireframes, "Live" is what ships today. Values persist in localStorage so a reload keeps
  * the dial where it was; read them off the panel and tell me the numbers.
  */
 
 type Glow = { opacity: number; scale: number; blur: number; wash: number }
 
 const PRESETS: Record<string, Glow> = {
+  Chosen: { opacity: 0.5, scale: 2.3, blur: 108, wash: 0.2 },
   Paper: { opacity: 0.22, scale: 1.25, blur: 40, wash: 0 },
-  Middle: { opacity: 0.25, scale: 1.4, blur: 56, wash: 0.12 },
   Live: { opacity: 0.25, scale: 1.5, blur: 64, wash: 0.25 },
 }
 
@@ -36,9 +36,9 @@ export function GlowTuner() {
   // Lazy so the saved dial is the first render's value: a setState in an
   // effect would paint the preset, then repaint the saved numbers.
   const [glow, setGlow] = useState<Glow>(() => {
-    if (typeof window === "undefined") return PRESETS.Paper!
+    if (typeof window === "undefined") return PRESETS.Chosen!
     const saved = localStorage.getItem(STORAGE_KEY)
-    return saved ? (JSON.parse(saved) as Glow) : PRESETS.Paper!
+    return saved ? (JSON.parse(saved) as Glow) : PRESETS.Chosen!
   })
   const [open, setOpen] = useState(true)
 

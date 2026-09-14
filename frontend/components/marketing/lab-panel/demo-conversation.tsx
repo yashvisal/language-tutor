@@ -122,15 +122,16 @@ export function LabDemoConversation({
       <div className={cn("relative h-48 sm:h-56", auraClassName)}>
         {/* The stage light: the orb's own colour landing on the surface
             around it. Opacity, spread and blur read from CSS variables so the
-            lab's glow tuner can dial them live; the defaults are the Paper
-            halo (a tight 60px blur at about a fifth strength). */}
+            lab's glow tuner can dial them live; the defaults are the numbers
+            Yash settled on (2026-09-13): half strength, 2.3× spread, 108px
+            blur, a lot more light than the Paper halo. */}
         <div
           aria-hidden
           className="pointer-events-none absolute inset-0 -z-10 rounded-full bg-blue-400 dark:bg-blue-500"
           style={{
-            opacity: "var(--lab-glow-opacity, 0.22)",
-            transform: "scale(var(--lab-glow-scale, 1.25))",
-            filter: "blur(var(--lab-glow-blur, 40px))",
+            opacity: "var(--lab-glow-opacity, 0.5)",
+            transform: "scale(var(--lab-glow-scale, 2.3))",
+            filter: "blur(var(--lab-glow-blur, 108px))",
           }}
         />
         <AmbientAura state={auraState} className="h-full" />

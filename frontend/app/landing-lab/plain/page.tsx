@@ -51,12 +51,11 @@ export default function PlainStageLanding() {
             Hence the fixed start under the header and the growing gaps. */}
         <section className="relative mx-auto flex min-h-[calc(100svh-3.5rem)] w-full max-w-6xl flex-col items-center px-6 pt-16 pb-16 text-center sm:pt-20">
           {/* The wide wash the shipped landing puts behind the whole hero,
-              here at a strength the glow tuner controls (default off): the
-              Paper boards have only the orb's own halo. */}
+              at the strength Yash settled on with the tuner (2026-09-13). */}
           <div
             aria-hidden
             className="pointer-events-none absolute top-[58%] left-1/2 -z-10 h-[40rem] w-[40rem] -translate-x-1/2 -translate-y-1/2 rounded-full bg-blue-400 blur-[120px] dark:bg-blue-500"
-            style={{ opacity: "var(--lab-wash-opacity, 0)" }}
+            style={{ opacity: "var(--lab-wash-opacity, 0.2)" }}
           />
 
           {/* The measurements are the Paper "H1/H3 plain stage" heroes
