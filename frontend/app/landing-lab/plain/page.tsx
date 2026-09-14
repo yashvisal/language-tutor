@@ -180,7 +180,7 @@ export default function PlainStageLanding() {
                 Languages
               </h2>
               <p className="mt-3 max-w-xl text-2xl font-medium tracking-tight text-balance">
-                Five to choose from. The coaching stays in English.
+                Practice speaking in these languages, with coaching in English.
               </p>
               <ul className="mt-10 grid grid-cols-2 gap-x-6 gap-y-8 sm:grid-cols-3 lg:grid-cols-5">
                 {LANGUAGES.map((lang) => (
