@@ -22,9 +22,34 @@ export function AmbientAura({
   className?: string
 }) {
   const volume = useAmbientVolume(state === "speaking")
+  const auraRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const aura = auraRef.current
+    if (!aura) return
+    const display = aura.style.display
+    // The reload recording shows the outgoing WebGL surface turning white
+    // before the new document appears. Remove the entire marketing surface
+    // earlier than pagehide; a child canvas can override inherited visibility.
+    const hideForReload = () => {
+      aura.style.display = "none"
+    }
+    const restore = () => {
+      aura.style.display = display
+    }
+    // No preventDefault/returnValue: this must never prompt or block leaving.
+    window.addEventListener("beforeunload", hideForReload)
+    window.addEventListener("pageshow", restore)
+    return () => {
+      window.removeEventListener("beforeunload", hideForReload)
+      window.removeEventListener("pageshow", restore)
+      restore()
+    }
+  }, [])
 
   return (
     <TutorAura
+      ref={auraRef}
       state={state}
       volume={volume}
       className={className}
