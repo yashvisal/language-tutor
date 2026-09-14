@@ -27,7 +27,7 @@ export const PACKS = MINUTE_PACKS
 /* -------------------------------------------------------------------------- */
 
 /**
- * The four values the legal pages need and the product has not settled. They
+ * The values the legal pages need and the product has not all settled. They
  * live here, once each, so that signing them off is a single edit in a single
  * file rather than a hunt through two documents — and so that the draft flag
  * on `LegalPage` and the values it warns about can never drift apart.
@@ -35,9 +35,9 @@ export const PACKS = MINUTE_PACKS
  * Every constant below is: to confirm with Yash before removing the draft flag.
  */
 
-/** Where support, refund requests and data requests go. The domain exists
- * (lengua.chat); the mailbox has to be created. */
-export const SUPPORT_EMAIL = "hello@lengua.chat"
+/** Where support, refund requests and data requests go. Yash's own address
+ * for now (settled 2026-09-14); a lengua.chat mailbox can replace it here. */
+export const SUPPORT_EMAIL = "yashvisal@gmail.com"
 
 /** Reads inside "governed by the laws of ___, and disputes go to the courts
  * there". Deliberately still the hedge the draft has always carried rather

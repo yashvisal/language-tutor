@@ -17,8 +17,8 @@ import { MINUTE_PACKS, SIGNUP_GRANT_MINUTES } from "@/lib/billing"
  *
  * DRAFT — the `draft` flag renders the "under review" line, and `draftNote`
  * names what is provisional. The unsettled values are the constants in
- * `components/marketing/brand.ts` (`SUPPORT_EMAIL`, `GOVERNING_LAW`,
- * `REFUND_WINDOW_DAYS`); this file quotes them and states none of its own, so
+ * `components/marketing/brand.ts` (`GOVERNING_LAW`, `REFUND_WINDOW_DAYS`);
+ * this file quotes them and states none of its own, so
  * signing them off is one edit there and then dropping `draft` here.
  */
 export const metadata: Metadata = {
@@ -34,7 +34,7 @@ export default function TermsPage() {
       title="Terms"
       lastUpdated={LEGAL_LAST_UPDATED}
       draft
-      draftNote="the support address, the refund window, and the governing law"
+      draftNote="the refund window and the governing law"
     >
       <p>
         These terms cover your use of lengua. By making an account or using the

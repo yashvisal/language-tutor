@@ -31,7 +31,7 @@ import { LegalPage } from "@/components/marketing/legal-page"
  *
  * DRAFT — the `draft` flag renders the "under review" line, and `draftNote`
  * names what is provisional. The unsettled values are the constants in
- * `components/marketing/brand.ts` (`SUPPORT_EMAIL`, `MINIMUM_AGE`).
+ * `components/marketing/brand.ts` (`MINIMUM_AGE`).
  */
 export const metadata: Metadata = {
   title: "Privacy",
@@ -45,7 +45,7 @@ export default function PrivacyPage() {
       title="Privacy"
       lastUpdated={LEGAL_LAST_UPDATED}
       draft
-      draftNote="the support address and the minimum age"
+      draftNote="the minimum age"
     >
       <p>
         This explains what lengua collects, why, and what happens to it. The
