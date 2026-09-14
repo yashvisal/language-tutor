@@ -386,13 +386,21 @@ export const debit = internalMutation({
     // a room it never opened (a manual dispatch, an `open` that failed and
     // was not honoured): the seconds were still spoken, so they are still
     // billed — the row is created here so the high-water mark has a home.
+    //
+    // **Adopted WITHOUT a lease** (launch checklist A4). The lease is a
+    // reservation — it is what `open` refuses a second conversation against —
+    // and handing one to a room nobody ever called `open` for means a worker
+    // that was told to leave, or a replayed token, can lock a learner out of
+    // their own account for three minutes by reporting once. The seconds are
+    // real and they are billed; the reservation is not real and is not
+    // granted. An adopted row is closed by its own `final` report, and swept
+    // by age like any other row nothing is renewing.
     if (session === null) {
       const id = await ctx.db.insert("sessions", {
         userId: user._id,
         room: args.room,
         plan: ADOPTED_PLAN,
         startedAt: Date.now(),
-        leaseUntil: Date.now() + LEASE_TTL_MS,
       })
       session = await ctx.db.get(id)
     }
@@ -439,7 +447,13 @@ export const debit = internalMutation({
     } else if (
       args.final !== true &&
       session !== null &&
-      session.endedAt === undefined
+      session.endedAt === undefined &&
+      // RENEWS a lease; never grants one (A4). A row with no lease was
+      // adopted by a report rather than opened by `open`, and a reservation
+      // nobody asked for is exactly what the adoption rule refuses. Renewal
+      // is free for a worker that really is alive on a room it really did
+      // open; everything else keeps metering without holding the learner.
+      session.leaseUntil !== undefined
     ) {
       patch.leaseUntil = Date.now() + LEASE_TTL_MS
     }
@@ -648,11 +662,17 @@ export const recordSummary = internalMutation({
         room: args.room,
         plan: ADOPTED_PLAN,
         startedAt: Date.now(),
-        // The same lease `debit` gives an adopted row. Without one the row
-        // sits at the head of the reconciliation index (absent sorts first)
-        // for two hours, and enough of them would starve the expired leases
-        // behind them.
-        leaseUntil: Date.now() + LEASE_TTL_MS,
+        // NO lease, on the same terms as `debit`'s adoption (launch checklist
+        // A4). A summary is the record of something that is over; giving its
+        // row a live reservation meant a late report — or any room name at all
+        // behind a replayed machine token — blocked the learner's next start
+        // for three minutes. A row without a lease is not live, and the cron
+        // closes it by age.
+        //
+        // Lease-less rows used to sit at the head of the reconciliation index
+        // (absent sorts below every number), where enough of them would starve
+        // the expired leases behind them. `reconcileStale` no longer reads
+        // them in that range at all; see the note there.
       })
       session = await ctx.db.get(id)
       if (session === null)

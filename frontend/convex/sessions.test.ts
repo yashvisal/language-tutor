@@ -745,9 +745,44 @@ describe("sessions.debit", () => {
     expect(result.balanceSeconds).toBe(GRANT - 42)
     const rows = await sessionsOf(t, userId)
     expect(rows).toHaveLength(1)
-    // The adopted row is a live conversation like any other: something is
-    // metering it, so it holds a lease and the cron will not close it.
-    expect(rows[0].leaseUntil).toBeGreaterThan(Date.now())
+    // ...but it gets NO lease (A4). A lease is a reservation, and nobody
+    // asked `open` for this room: handing one out here let a worker that had
+    // been told to leave lock the learner out of their own account for three
+    // minutes by reporting once.
+    expect(rows[0].leaseUntil).toBeUndefined()
+  })
+
+  test("a debit for an unknown room does not reserve a second conversation", async () => {
+    const { t, userId } = await started()
+
+    // The A4 attack: the learner is mid-conversation in `room`, and a worker
+    // that was refused — or a replayed machine token — reports seconds for a
+    // room name of its own choosing. The seconds are billed (they were spent
+    // somewhere), but the second row must not become a second live session.
+    await t.mutation(internal.sessions.debit, {
+      room: "room-somebody-else-invented",
+      clerkId: "user_owner",
+      jobId: "job_9",
+      seconds: 42,
+      seq: 1,
+    })
+
+    const rows = await sessionsOf(t, userId)
+    expect(rows).toHaveLength(2)
+    const adopted = rows.find(
+      (row) => row.room === "room-somebody-else-invented"
+    )!
+    expect(adopted.leaseUntil).toBeUndefined()
+    // Exactly one of this learner's rows is a live conversation, and it is
+    // the one the worker actually opened.
+    const live = rows.filter(
+      (row) =>
+        row.endedAt === undefined &&
+        row.leaseUntil !== undefined &&
+        row.leaseUntil > Date.now()
+    )
+    expect(live).toHaveLength(1)
+    expect(live[0].room).toBe(room)
   })
 
   test("billing after close: a closed row takes no more money", async () => {
@@ -1006,6 +1041,30 @@ describe("sessions.recordSummary", () => {
     const rows = await sessionsOf(t, userId)
     expect(rows).toHaveLength(1)
     expect(rows[0].about).toBe("A conversation nobody wrote a row for.")
+    // Without a lease (A4): a summary is the record of something that is
+    // over, and a record must never be a reservation.
+    expect(rows[0].leaseUntil).toBeUndefined()
+  })
+
+  test("a summary for an unknown room does not block the next start", async () => {
+    const t = setup()
+    await makeLearner(t, "user_owner")
+
+    // A late summary for a real past room, or an arbitrary room name behind a
+    // replayed machine token. Either way the learner is not in a conversation
+    // and must be able to start one.
+    await t.mutation(internal.sessions.recordSummary, {
+      room: "room-unrecorded",
+      clerkId: "user_owner",
+      about: "A conversation that is already over.",
+    })
+
+    const opened = await openRoom(t, "user_owner", "room-next")
+    expect(opened).toEqual({
+      ok: true,
+      balanceSeconds: GRANT,
+      secondsBilled: 0,
+    })
   })
 
   test("leaves a field absent from the call untouched", async () => {
