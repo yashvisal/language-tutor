@@ -1351,15 +1351,31 @@ def _build_clock(
         a long stall) and the learner may already be in another conversation
         on the same balance. This job is metering a room it no longer owns,
         so it ends the way a lost lease ends (A3, 2026-09-14).
+
+        Through `_end_session`, the same as the ceiling above: a bare
+        `ctx.shutdown()` never published `session_over` or closed the agent
+        session, so the frontend was left to its disconnect fallback
+        (CodeRabbit, PR #12). The teardown's final debit is skipped by the
+        client — the row is closed — which is the accepted outcome here.
         """
+        state.ledger_failed = True
         report_error(
             "lease_lost",
             "the ledger closed this room while the worker was away; ending the session",
             room=ctx.room.name,
             job_id=ctx.job.id,
         )
-        billing.set_end_reason("lease_lost")
-        ctx.shutdown(reason="ledger closed the room")
+        try:
+            await clock.notify_hold_changed()
+        except Exception:
+            logger.warning("clock republish on ledger close failed", exc_info=True)
+        await _end_session(
+            ctx,
+            session,
+            reason="ledger closed the room",
+            code="lease_lost",
+            billing=billing,
+        )
 
     billing.set_closed_handler(_ledger_closed)
 
