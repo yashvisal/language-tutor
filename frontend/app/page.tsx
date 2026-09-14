@@ -2,11 +2,13 @@ import type { Metadata } from "next"
 
 import { AmbientAura } from "@/components/marketing/ambient-aura"
 import {
-  AnswerFragment,
   DemoConversation,
   FixFragment,
-  SpeakFragment,
 } from "@/components/marketing/demo-conversation"
+import {
+  AskFragment,
+  TranslateFragment,
+} from "@/components/marketing/feature-miniatures"
 import { LanguageFlag } from "@/components/marketing/language-flag"
 import { MarketingFooter } from "@/components/marketing/marketing-footer"
 import { MarketingHeader } from "@/components/marketing/marketing-header"
@@ -101,7 +103,10 @@ export default function LandingPage() {
           />
         </section>
 
-        {/* How it works — the same stage, three moments. */}
+        {/* How it works — three things the product does, each one running.
+            The numerals went with the sequence they belonged to: these are
+            features a visitor can pick from, not steps in an order (Yash,
+            2026-09-14). */}
         <section
           id="how"
           aria-labelledby="how-heading"
@@ -109,63 +114,58 @@ export default function LandingPage() {
         >
           <div className="mx-auto w-full max-w-6xl px-6 py-20">
             <Reveal>
-              <h2
-                id="how-heading"
-                className="text-xs font-medium tracking-[0.18em] text-muted-foreground uppercase"
-              >
+              {/* The sentence is the heading and the eyebrow is a label: a
+                  screen reader's heading list should read as sentences, not
+                  as three shouted words (checklist C10). Only the tags
+                  swapped — the type is the same on both. */}
+              <p className="text-xs font-medium tracking-[0.18em] text-muted-foreground uppercase">
                 How it works
-              </h2>
+              </p>
               {/* Section headings hold one line at desktop, all of them the
                   same (Yash, 2026-09-13). */}
-              <p className="mt-3 max-w-3xl text-2xl font-medium tracking-tight text-balance">
+              <h2
+                id="how-heading"
+                className="mt-3 max-w-3xl text-2xl font-medium tracking-tight text-balance"
+              >
                 A conversation, with the teaching around it instead of in it.
-              </p>
+              </h2>
             </Reveal>
 
-            <ol className="mt-10 grid gap-5 md:grid-cols-3">
+            <ul className="mt-10 grid gap-5 md:grid-cols-3">
               {[
                 {
-                  n: "1",
-                  title: "You speak",
-                  body: "Say it however it comes out. Your words appear as you say them, so you can follow without translating in your head.",
-                  stage: <SpeakFragment />,
-                },
-                {
-                  n: "2",
-                  title: "The tutor answers",
-                  body: "In your chosen language, at conversation speed — and it waits. Nobody stops you mid-sentence to fix a verb.",
-                  stage: <AnswerFragment />,
-                },
-                {
-                  n: "3",
                   title: "The fix appears",
                   body: "Once your turn settles, the better word steps in quietly, in place, with the reason if you want it.",
                   stage: <FixFragment />,
                 },
-              ].map((step, i) => (
-                <li key={step.n} className="flex h-full flex-col">
+                {
+                  title: "Highlight to translate",
+                  body: "Unsure what the tutor said? Select any part of it and the English appears right there. Selecting holds the session — no seconds spent reading.",
+                  stage: <TranslateFragment />,
+                },
+                {
+                  title: "Ask anything",
+                  body: "Pause and ask why. The tutor explains in English, with the conversation as context, then you pick up where you left off.",
+                  stage: <AskFragment />,
+                },
+              ].map((feature, i) => (
+                <li key={feature.title} className="flex h-full flex-col">
                   <Reveal delay={i * 0.08} className="flex h-full flex-col">
                     <div className="h-56 rounded-2xl border border-border/60 bg-muted/50 px-6 shadow-xs dark:bg-card/40 dark:shadow-none">
-                      {step.stage}
+                      {feature.stage}
                     </div>
                     <div className="px-1 pt-5">
-                      {/* The number at the title's own size: a 12px numeral
-                          on an 18px baseline read as floating (Yash,
-                          2026-09-11). */}
-                      <h3 className="flex items-center gap-3 text-lg font-medium tracking-tight">
-                        <span className="text-primary tabular-nums">
-                          {step.n}
-                        </span>
-                        {step.title}
+                      <h3 className="text-lg font-medium tracking-tight">
+                        {feature.title}
                       </h3>
                       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-                        {step.body}
+                        {feature.body}
                       </p>
                     </div>
                   </Reveal>
                 </li>
               ))}
-            </ol>
+            </ul>
           </div>
         </section>
 

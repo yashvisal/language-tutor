@@ -474,56 +474,7 @@ export function CorrectionFragment({
   )
 }
 
-/**
- * Words arriving one at a time, on a loop — the shape of a live caption.
- * Types the sentence, holds it, clears, and starts again.
- */
-function useLoopTyping(text: string, perWordMs = 260, holdMs = 1800) {
-  const reducedMotion = useReducedMotion()
-  const total = text.split(" ").length
-  const [shown, setShown] = useState(reducedMotion ? total : 0)
-  useEffect(() => {
-    if (reducedMotion) return
-    const timer = setTimeout(
-      () => setShown((n) => (n >= total ? 0 : n + 1)),
-      shown >= total ? holdMs : shown === 0 ? 500 : perWordMs
-    )
-    return () => clearTimeout(timer)
-  }, [shown, total, perWordMs, holdMs, reducedMotion])
-  return { shown, done: shown >= total, text }
-}
-
-/** Step 1 — the learner talking, their words arriving as they say them. */
-export function SpeakFragment() {
-  const typing = useLoopTyping(learnerWords(STEP_SCENE).join(" "))
-  return (
-    <StepStage state="listening" speaker="You">
-      <Caption
-        text={typing.text}
-        words={typing.shown}
-        typing={!typing.done}
-        className="text-lg"
-      />
-    </StepStage>
-  )
-}
-
-/** Step 2 — the tutor answering in Spanish, at conversation speed. */
-export function AnswerFragment() {
-  const typing = useLoopTyping(STEP_SCENE.followUp, 300)
-  return (
-    <StepStage state={typing.done ? "listening" : "speaking"} speaker="Tutor">
-      <Caption
-        text={typing.text}
-        words={typing.shown}
-        typing={!typing.done}
-        className="text-lg"
-      />
-    </StepStage>
-  )
-}
-
-/** Step 3 — the correction, in place, with its reason. */
+/** The correction, in place, with its reason. */
 export function FixFragment() {
   return (
     <StepStage state="listening" speaker="You">
