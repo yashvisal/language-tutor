@@ -21,5 +21,3 @@ export const CTA_LABEL = `Start speaking — your first ${SIGNUP_GRANT_MINUTES} 
 /** The packs, from their one home in `lib/billing.ts` — the app's Billing
  * dialog quotes the same list, and the two must never drift. */
 export const PACKS = MINUTE_PACKS
-
-export const PACKS_NOTE = "Minutes never expire. Pausing to study is free."
