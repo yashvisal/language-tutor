@@ -157,8 +157,13 @@ TUTOR_TRANSLATE_MODEL=gpt-5.6-luna
 TUTOR_HOLD_IDLE_S=600               # any hold this long ends the session
 TUTOR_ALLOW_UNMETERED=0             # local development ONLY — see below
 TUTOR_ENV=                          # set to `production` on the prod worker
+SENTRY_DSN=                         # error reporting; unset = off
 CLERK_API_URL=https://api.clerk.com # only for a Clerk instance on another host
 ```
+
+`SENTRY_DSN` is optional everywhere and unset by default: `sentry-sdk` is a
+dependency, but the init seam (`src/observability.py`) initialises nothing
+without a DSN, so a laptop run reports nothing anywhere.
 
 `TUTOR_ENV` is a free string and only `production` means anything. Set it on
 the production worker and nowhere else: with it set, `TUTOR_ALLOW_UNMETERED`

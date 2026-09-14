@@ -77,6 +77,7 @@ from config import (
     TutorConfig,
 )
 from goal import GoalKeeper
+from observability import init_error_reporting, report_error
 from plan import JobMetadata, SessionPlan
 from prompts import (
     BRIDGE_INTENTS,
@@ -427,12 +428,22 @@ def _prewarm(proc: JobProcess) -> None:
     unmetered production worker) are already refused per job, loudly, in
     `TutorConfig.from_env`.
     """
+    # The error reporter, before anything that could need it. A no-op without
+    # SENTRY_DSN, and the ONE place the SDK is initialised (see
+    # `src/observability.py`).
+    try:
+        init_error_reporting()
+    except Exception:
+        logger.warning("error reporting could not be initialised", exc_info=True)
+
     try:
         logger.info("worker boot", extra=TutorConfig.from_env().log_fields())
     except Exception as exc:
         # The config itself is broken. This is the line that says so — every
-        # job this process takes is about to be refused for the same reason.
-        logger.error("worker boot: the configuration is unusable: %s", exc)
+        # job this process takes is about to be refused for the same reason,
+        # and each of those refusals now reaches the learner as `config_fault`
+        # rather than as an agent that never joins (A2).
+        report_error("config_fault", f"worker boot: the configuration is unusable: {exc}", exc)
 
     try:
         proc.userdata["vad"] = inference.VAD(model="silero")
@@ -839,9 +850,12 @@ async def _open_ledger(
                 "closed": ERROR_CLOSED,
                 "rate_limited": ERROR_RATE_LIMITED,
             }.get(opened.code, ERROR_OPEN_SESSION)
-            logger.warning(
+            report_error(
+                "ledger_refused",
                 "the ledger refused this room; leaving",
-                extra={"code": opened.code, "room": ctx.room.name, "job_id": ctx.job.id},
+                code=opened.code,
+                room=ctx.room.name,
+                job_id=ctx.job.id,
             )
             await _say_and_leave(ctx, code)
             return None
@@ -902,9 +916,12 @@ async def _renew_lease(ctx: JobContext, billing: BillingClient) -> None:
             continue
         if result.ok:
             continue
-        logger.error(
+        report_error(
+            "lease_lost",
             "lease lost: the ledger refused the renewal; ending the session",
-            extra={"code": result.code, "room": ctx.room.name, "job_id": ctx.job.id},
+            code=result.code,
+            room=ctx.room.name,
+            job_id=ctx.job.id,
         )
         billing.set_end_reason("lease_lost")
         ctx.shutdown(reason=f"lease lost: {result.code}")
@@ -1042,7 +1059,12 @@ def _watch_session_errors(
         if failed:
             return
         failed = True
-        logger.error("ending the session: %s", why, extra={"seconds_billed": clock.seconds_billed})
+        report_error(
+            "model_error",
+            f"ending the session: {why}",
+            seconds_billed=clock.seconds_billed,
+            room=ctx.room.name,
+        )
         _spawn(_fail(), "tutor-model-error")
 
     def _on_error(ev: ErrorEvent) -> None:
@@ -1241,6 +1263,14 @@ def _build_clock(
         path; the last minutes go unbilled and Convex's cron closes the row.
         """
         state.ledger_failed = True
+        report_error(
+            "ledger_ceiling",
+            "the debits stopped landing: the meter is held and the session is ending; "
+            "the last minutes will not bill",
+            room=ctx.room.name,
+            job_id=ctx.job.id,
+            seconds_billed=clock.seconds_billed,
+        )
         try:
             await clock.notify_hold_changed()
         except Exception:
