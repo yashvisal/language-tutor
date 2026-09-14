@@ -188,15 +188,15 @@ export default function LandingPage() {
         >
           <div className="mx-auto w-full max-w-6xl px-6 py-20">
             <Reveal>
+              <p className="text-xs font-medium tracking-[0.18em] text-muted-foreground uppercase">
+                Languages
+              </p>
               <h2
                 id="languages-heading"
-                className="text-xs font-medium tracking-[0.18em] text-muted-foreground uppercase"
+                className="mt-3 max-w-3xl text-2xl font-medium tracking-tight text-balance"
               >
-                Languages
-              </h2>
-              <p className="mt-3 max-w-3xl text-2xl font-medium tracking-tight text-balance">
                 Practice speaking in these languages, with coaching in English.
-              </p>
+              </h2>
               {/* One strip, five cells, a hairline between them: the flag as
                   a small round badge, the name in its own spelling, the
                   English beneath. Five separate cards with a word each read
@@ -237,15 +237,15 @@ export default function LandingPage() {
         >
           <div className="mx-auto w-full max-w-6xl px-6 py-20">
             <Reveal>
+              <p className="text-xs font-medium tracking-[0.18em] text-muted-foreground uppercase">
+                Minutes
+              </p>
               <h2
                 id="pricing-heading"
-                className="text-xs font-medium tracking-[0.18em] text-muted-foreground uppercase"
+                className="mt-3 text-2xl font-medium tracking-tight"
               >
-                Minutes
-              </h2>
-              <p className="mt-3 text-2xl font-medium tracking-tight">
                 Your first {SIGNUP_GRANT_MINUTES} minutes are free.
-              </p>
+              </h2>
               <PricingPacks className="mt-8" />
             </Reveal>
           </div>
