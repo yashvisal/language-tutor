@@ -1,4 +1,4 @@
-# tutor
+# lengua
 
 Live voice conversation practice with an AI language tutor. `frontend/` is the
 Next.js app (and the Convex backend under `frontend/convex/`); `backend/` is
