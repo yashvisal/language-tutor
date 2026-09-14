@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react"
 import type { AgentState } from "@livekit/components-react"
-import { motion, useReducedMotion } from "motion/react"
+import { AnimatePresence, motion, useReducedMotion } from "motion/react"
 
 import { AmbientAura } from "@/components/marketing/ambient-aura"
 import { cn } from "@/lib/utils"
@@ -10,42 +10,133 @@ import { cn } from "@/lib/utils"
 /**
  * The product, playing by itself.
  *
- * One scripted exchange on a loop — the tutor asks, the learner answers with a
- * wrong preterite, the turn settles, the correction surfaces in place, the
- * conversation moves on. It is built from the session's own parts (the Aura,
- * the caption, the inline correction) rather than an illustration of them, so
- * what a visitor sees here is what they get after signing up.
+ * One conversation on a loop — three turns each way. The tutor asks, the
+ * learner answers with one mistake, the turn settles, the correction surfaces
+ * in place, and the tutor's next question carries the story on. It is built
+ * from the session's own parts (the Aura, the caption, the inline correction)
+ * rather than an illustration of them, so what a visitor sees here is what
+ * they get after signing up.
+ *
+ * One story rather than three scenes (Yash, 2026-09-13): three unrelated
+ * exchanges back to back went by too fast to follow, with nothing marking
+ * where one ended and the next began. A single conversation with a slip in
+ * every learner turn shows the same range — a past tense, a gender agreement,
+ * ser against estar — without ever feeling disjoint, and a breath before the
+ * loop restarts marks the restart. Spanish only: it is the launch language,
+ * and the copy already says the coaching is in English.
  *
  * Time drives it, not scroll: a demo you can watch is legible; one you have to
  * operate is a puzzle.
  */
 
-type Beat =
-  | { kind: "tutor"; text: string; ms: number }
-  | { kind: "learner"; text: string; ms: number }
-  | { kind: "settle"; ms: number }
-  | { kind: "correct"; ms: number }
-  | { kind: "hold"; ms: number }
+/** One turn of the story: the tutor's question, the learner's answer with
+ * one wrong word, the reason, and what the tutor says next — which is the
+ * next turn's question, so the turns chain into one conversation. */
+export type Scene = {
+  tutor: string
+  before: string
+  wrong: string
+  right: string
+  after: string
+  /** The reason, in the product's own terse voice. */
+  note: string
+  followUp: string
+}
 
-const SCRIPT: Beat[] = [
+export const SCENES: Scene[] = [
   {
-    kind: "tutor",
-    text: "¿Qué tal tu fin de semana? Cuéntame qué hiciste.",
-    ms: 2600,
+    tutor: "¿Qué tal tu fin de semana? Cuéntame qué hiciste.",
+    before: "Ayer yo",
+    wrong: "fue",
+    right: "fui",
+    after: "al supermercado.",
+    note: "past tense, first person",
+    followUp: "¡Qué bien! ¿Y qué compraste?",
   },
-  { kind: "learner", text: "Ayer yo fue al supermercado.", ms: 2000 },
-  { kind: "settle", ms: 1100 },
-  { kind: "correct", ms: 2600 },
-  { kind: "tutor", text: "¡Qué bien! ¿Y qué compraste?", ms: 2200 },
-  { kind: "hold", ms: 2400 },
+  {
+    tutor: "¡Qué bien! ¿Y qué compraste?",
+    before: "Compré",
+    wrong: "un",
+    right: "una",
+    after: "cerveza y algo de fruta.",
+    note: "cerveza is feminine",
+    followUp: "Suena bien. ¿Y hoy, cómo estás?",
+  },
+  {
+    tutor: "Suena bien. ¿Y hoy, cómo estás?",
+    before: "Hoy",
+    wrong: "soy",
+    right: "estoy",
+    after: "un poco cansado.",
+    note: "estar, for how you feel right now",
+    followUp: "Te entiendo. Descansa un poco.",
+  },
 ]
 
-const LEARNER_WORDS = ["Ayer", "yo", "fue", "al", "supermercado."]
-const WRONG_INDEX = 2
-const LEARNER_WRONG = "fue"
-const LEARNER_RIGHT = "fui"
-const LEARNER_BEFORE = "Ayer yo"
-const LEARNER_AFTER = "al supermercado."
+/** The scene the "how it works" miniatures show. The second one, so a
+ * visitor scrolling down from the hero sees a different sentence, not the
+ * same one again (Yash, 2026-09-13). */
+const STEP_SCENE = SCENES[1]!
+
+type Beat =
+  | { kind: "tutor"; text: string; ms: number }
+  | { kind: "pause"; ms: number }
+  | { kind: "learner"; ms: number }
+  | { kind: "settle"; ms: number }
+  | { kind: "correct"; ms: number }
+  | { kind: "followUp"; text: string; ms: number }
+  | { kind: "hold"; ms: number }
+  | { kind: "break"; ms: number }
+
+/** Words arrive at a reading pace rather than a speaking one, and a beat
+ * ends the same short breath after its last word every time, so the rhythm
+ * holds from line to line. The first cut gave each line a fixed length and
+ * let the tail vary, which read as a stall; the second ran at speech pace
+ * and went by too fast to follow (Yash, 2026-09-13). */
+const TUTOR_WORD_MS = 300
+const LEARNER_WORD_MS = 340
+const TAIL_MS = 500
+
+const learnerWords = (s: Scene) =>
+  `${s.before} ${s.wrong} ${s.after}`.split(" ")
+
+const spoken = (text: string, perWord: number) =>
+  text.split(" ").length * perWord + TAIL_MS
+
+/** A turn's beats. The tutor's follow-up is the next turn's question, so
+ * only the last turn plays it here — then holds, then takes a breath. */
+const turnBeats = (s: Scene, last: boolean): Beat[] => [
+  { kind: "tutor", text: s.tutor, ms: spoken(s.tutor, TUTOR_WORD_MS) },
+  // The question stays up while the learner thinks: the answer arriving on
+  // the tutor's last word read as a rush (Yash, 2026-09-13).
+  { kind: "pause", ms: 1300 },
+  {
+    kind: "learner",
+    ms: learnerWords(s).length * LEARNER_WORD_MS + TAIL_MS,
+  },
+  { kind: "settle", ms: 1200 },
+  // Long enough to read the fix and its reason, twice.
+  { kind: "correct", ms: 3400 },
+  ...(last
+    ? ([
+        {
+          kind: "followUp",
+          text: s.followUp,
+          ms: spoken(s.followUp, TUTOR_WORD_MS),
+        },
+        { kind: "hold", ms: 1400 },
+        // The caption clears and the orb sits alone for a moment: the
+        // conversation is starting over, and the visitor can see that it is.
+        // Short — the long wait here read as the demo having stopped.
+        { kind: "break", ms: 900 },
+      ] satisfies Beat[])
+    : []),
+]
+
+/** The whole loop, flat, each beat knowing its turn. */
+const SCRIPT: { scene: number; beat: Beat }[] = SCENES.flatMap((s, i) =>
+  turnBeats(s, i === SCENES.length - 1).map((beat) => ({ scene: i, beat }))
+)
 
 export function DemoConversation({
   size = "hero",
@@ -63,7 +154,8 @@ export function DemoConversation({
   // advancing a beat and resetting the typed count is a single update.
   const [step, setStep] = useState({ index: 0, words: 0 })
   const { index, words } = step
-  const beat = SCRIPT[index]!
+  const { scene: sceneIndex, beat } = SCRIPT[index]!
+  const scene = SCENES[sceneIndex]!
 
   // Advance the script; type the spoken beats out word by word.
   useEffect(() => {
@@ -73,52 +165,64 @@ export function DemoConversation({
         setStep((s) => ({ index: (s.index + 1) % SCRIPT.length, words: 0 })),
       beat.ms
     )
-    if (beat.kind !== "tutor" && beat.kind !== "learner") {
-      return () => clearTimeout(next)
-    }
-    const total = beat.text.split(" ").length
-    const perWord = Math.max(120, (beat.ms - 500) / total)
+    const typed =
+      beat.kind === "tutor" || beat.kind === "followUp"
+        ? { total: beat.text.split(" ").length, perWord: TUTOR_WORD_MS }
+        : beat.kind === "learner"
+          ? { total: learnerWords(scene).length, perWord: LEARNER_WORD_MS }
+          : null
+    if (!typed) return () => clearTimeout(next)
     const typer = setInterval(
       () =>
-        setStep((s) => (s.words >= total ? s : { ...s, words: s.words + 1 })),
-      perWord
+        setStep((s) =>
+          s.words >= typed.total ? s : { ...s, words: s.words + 1 }
+        ),
+      typed.perWord
     )
     return () => {
       clearTimeout(next)
       clearInterval(typer)
     }
-  }, [index, beat, reducedMotion])
+  }, [index, beat, scene, reducedMotion])
 
-  // Reduced motion: the resolved frame, no loop.
+  // Reduced motion: the first scene's resolved frame, no loop.
   const resolved = reducedMotion === true
 
   const auraState: AgentState = resolved
     ? "listening"
-    : beat.kind === "tutor"
+    : beat.kind === "tutor" || beat.kind === "followUp"
       ? "speaking"
       : beat.kind === "settle"
         ? "thinking"
         : "listening"
 
-  // The hold beat is the tutor's last line, still on screen — not a blank.
-  const holdText =
-    beat.kind === "hold" && index > 0
-      ? (() => {
-          const prev = SCRIPT[index - 1]!
-          return prev.kind === "tutor" ? prev.text : null
-        })()
-      : null
-  const speaker =
-    (beat.kind === "tutor" || holdText !== null) && !resolved ? "Tutor" : "You"
+  // Which line is on stage. The learner's line stays mounted from the moment
+  // they speak until the tutor answers, so the correction animates in place
+  // rather than the line being replaced; every other change of speaker is a
+  // crossfade (Yash, 2026-09-13: the hard swaps read as a glitch).
+  const turn: "tutor" | "learner" | "followUp" | "break" = resolved
+    ? "learner"
+    : beat.kind === "tutor" || beat.kind === "pause"
+      ? "tutor"
+      : beat.kind === "followUp" || beat.kind === "hold"
+        ? "followUp"
+        : beat.kind === "break"
+          ? "break"
+          : "learner"
+  const turnKey = `${resolved ? 0 : sceneIndex}-${turn}`
+  const speaker = turn === "learner" ? "You" : "Tutor"
 
   const corrected = resolved || beat.kind === "correct"
-  const learnerVisible =
-    resolved ||
-    beat.kind === "learner" ||
-    beat.kind === "settle" ||
-    beat.kind === "correct"
+  const settling = beat.kind === "settle"
+  const typing =
+    !resolved &&
+    beat.kind !== "hold" &&
+    beat.kind !== "break" &&
+    beat.kind !== "pause"
 
   const hero = size === "hero"
+  const captionClass = hero ? "text-xl sm:text-2xl" : "text-base"
+  const shownScene = resolved ? SCENES[0]! : scene
 
   return (
     <div
@@ -144,77 +248,128 @@ export function DemoConversation({
         <AmbientAura state={auraState} className="h-full" />
       </div>
 
+      {/* A grid with every turn in the same cell, so the outgoing and
+          incoming lines overlap during the crossfade instead of stacking and
+          shoving the page. The reserved height is the tallest turn: the
+          learner's line with its correction beneath. */}
       <div
         className={cn(
-          "w-full text-center",
+          "grid w-full text-center [&>*]:[grid-area:1/1]",
           hero ? "mt-8 min-h-[5.5rem]" : "mt-6 min-h-[4rem]"
         )}
       >
-        <div className="mb-2 text-[10px] font-medium tracking-[0.22em] text-muted-foreground/60 uppercase">
-          {speaker}
-        </div>
+        <AnimatePresence initial={false}>
+          {turn !== "break" && (
+            <motion.div
+              key={turnKey}
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.4, ease: "easeOut" }}
+            >
+              <div className="mb-2 text-[10px] font-medium tracking-[0.22em] text-muted-foreground/60 uppercase">
+                {speaker}
+              </div>
 
-        {beat.kind === "tutor" && !resolved ? (
-          <Caption
-            text={beat.text}
-            words={words}
-            typing
-            className={hero ? "text-xl sm:text-2xl" : "text-base"}
-          />
-        ) : holdText !== null && !resolved ? (
-          <Caption
-            text={holdText}
-            words={Number.MAX_SAFE_INTEGER}
-            className={hero ? "text-xl sm:text-2xl" : "text-base"}
-          />
-        ) : learnerVisible ? (
-          <p
-            className={cn(
-              "leading-snug tracking-tight text-balance",
-              hero ? "text-xl sm:text-2xl" : "text-base"
-            )}
-          >
-            {LEARNER_WORDS.map((word, i) => {
-              const shown = beat.kind !== "learner" || i < words
-              if (!shown) return null
-              return (
-                <span key={i}>
-                  {i === WRONG_INDEX ? (
-                    <CorrectedWord revealed={corrected} />
-                  ) : (
-                    word
-                  )}
-                  {i < LEARNER_WORDS.length - 1 ? " " : ""}
-                </span>
-              )
-            })}
-            {beat.kind === "learner" && words < LEARNER_WORDS.length && (
-              <Caret />
-            )}
-          </p>
-        ) : (
-          <p
-            className={cn(
-              "text-muted-foreground/70",
-              hero ? "text-xl sm:text-2xl" : "text-base"
-            )}
-          >
-            …
-          </p>
-        )}
-
-        <motion.p
-          initial={false}
-          animate={{ opacity: corrected ? 1 : 0, y: corrected ? 0 : 4 }}
-          transition={{ duration: 0.4, ease: "easeOut" }}
-          className="mt-3 text-xs text-muted-foreground"
-          aria-hidden={!corrected}
-        >
-          <span className="font-medium text-foreground/80">fue → fui</span>
-          {" · "}past tense, first person. Nobody interrupted you to say so.
-        </motion.p>
+              {turn === "tutor" || turn === "followUp" ? (
+                <Caption
+                  text={
+                    turn === "tutor" ? shownScene.tutor : shownScene.followUp
+                  }
+                  words={typing ? words : Number.MAX_SAFE_INTEGER}
+                  typing={typing}
+                  className={captionClass}
+                />
+              ) : (
+                <>
+                  {/* The settle beat dims the line a touch: the pause before
+                    the correction is the tutor listening to the whole
+                    thought, and a static second read as a stall. */}
+                  <motion.p
+                    initial={false}
+                    animate={{ opacity: settling ? 0.7 : 1 }}
+                    transition={{ duration: 0.35, ease: "easeOut" }}
+                    className={cn(
+                      "leading-snug tracking-tight text-balance",
+                      captionClass
+                    )}
+                  >
+                    <LearnerLine
+                      scene={shownScene}
+                      words={beat.kind === "learner" ? words : Infinity}
+                      revealed={corrected}
+                      typing={beat.kind === "learner"}
+                    />
+                  </motion.p>
+                  <motion.p
+                    initial={false}
+                    animate={{
+                      opacity: corrected ? 1 : 0,
+                      y: corrected ? 0 : 4,
+                    }}
+                    transition={{ duration: 0.4, ease: "easeOut" }}
+                    className="mt-3 text-xs text-muted-foreground"
+                    aria-hidden={!corrected}
+                  >
+                    <CorrectionNote scene={shownScene} />
+                  </motion.p>
+                </>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </div>
+  )
+}
+
+/** The learner's sentence, word by word, with the wrong word able to step
+ * aside for the right one in place. */
+function LearnerLine({
+  scene,
+  words,
+  revealed,
+  typing,
+}: {
+  scene: Scene
+  words: number
+  revealed: boolean
+  typing: boolean
+}) {
+  const all = learnerWords(scene)
+  const wrongIndex = scene.before.split(" ").length
+  return (
+    <>
+      {all.map((word, i) => {
+        if (i >= words) return null
+        return (
+          <span key={i}>
+            {i === wrongIndex ? (
+              <CorrectedWord scene={scene} revealed={revealed} />
+            ) : (
+              word
+            )}
+            {i < all.length - 1 ? " " : ""}
+          </span>
+        )
+      })}
+      {typing && words < all.length && <Caret />}
+    </>
+  )
+}
+
+/** `fue → fui · past tense, first person`: the product's own terse note,
+ * nothing else. The marketing clause that used to follow it belonged to the
+ * page, not the product (Yash, 2026-09-13). */
+function CorrectionNote({ scene }: { scene: Scene }) {
+  return (
+    <>
+      <span className="font-medium text-foreground/80">
+        {scene.wrong} → {scene.right}
+      </span>
+      {" · "}
+      {scene.note}
+    </>
   )
 }
 
@@ -248,10 +403,16 @@ function Caret() {
   )
 }
 
-/** `fue → fui` in place: the wrong word steps aside for the right one. */
-export function CorrectedWord({ revealed }: { revealed: boolean }) {
+/** The wrong word stepping aside for the right one, in place. */
+export function CorrectedWord({
+  scene,
+  revealed,
+}: {
+  scene: Scene
+  revealed: boolean
+}) {
   return (
-    <span className="inline-flex items-baseline gap-1.5">
+    <span className="inline-flex items-baseline">
       <motion.span
         initial={false}
         animate={{ opacity: revealed ? 0.5 : 1 }}
@@ -264,20 +425,25 @@ export function CorrectedWord({ revealed }: { revealed: boolean }) {
         )}
         aria-hidden={revealed}
       >
-        {LEARNER_WRONG}
+        {scene.wrong}
       </motion.span>
+      {/* The line eases open around the right word as it grows, no drop
+          from above, no clipping — the step reveal was compared against it
+          and this one read as cleaner (Yash, 2026-09-13). The struck word
+          drifts during the 400ms as the centred line re-centres; at rest the
+          two words share a baseline to the pixel. */}
       <motion.span
         initial={false}
         animate={{
           opacity: revealed ? 1 : 0,
-          y: revealed ? 0 : -4,
           width: revealed ? "auto" : 0,
+          marginLeft: revealed ? "0.25em" : 0,
         }}
         transition={{ duration: 0.4, ease: "easeOut" }}
-        className="overflow-hidden font-medium text-primary"
+        className="font-medium whitespace-nowrap text-primary"
         aria-hidden={!revealed}
       >
-        {LEARNER_RIGHT}
+        {scene.right}
       </motion.span>
     </span>
   )
@@ -287,7 +453,13 @@ export function CorrectedWord({ revealed }: { revealed: boolean }) {
  * The correction on its own, for the "how it works" fragment: resolves once
  * it scrolls into view, and stays resolved.
  */
-export function CorrectionFragment({ className }: { className?: string }) {
+export function CorrectionFragment({
+  scene = STEP_SCENE,
+  className,
+}: {
+  scene?: Scene
+  className?: string
+}) {
   const reducedMotion = useReducedMotion()
   const [revealed, setRevealed] = useState(reducedMotion === true)
   return (
@@ -296,7 +468,8 @@ export function CorrectionFragment({ className }: { className?: string }) {
       viewport={{ once: true, amount: 0.8 }}
       className={cn("text-lg leading-snug tracking-tight", className)}
     >
-      {LEARNER_BEFORE} <CorrectedWord revealed={revealed} /> {LEARNER_AFTER}
+      {scene.before} <CorrectedWord scene={scene} revealed={revealed} />{" "}
+      {scene.after}
     </motion.p>
   )
 }
@@ -322,7 +495,7 @@ function useLoopTyping(text: string, perWordMs = 260, holdMs = 1800) {
 
 /** Step 1 — the learner talking, their words arriving as they say them. */
 export function SpeakFragment() {
-  const typing = useLoopTyping("Ayer yo fue al supermercado.")
+  const typing = useLoopTyping(learnerWords(STEP_SCENE).join(" "))
   return (
     <StepStage state="listening" speaker="You">
       <Caption
@@ -337,7 +510,7 @@ export function SpeakFragment() {
 
 /** Step 2 — the tutor answering in Spanish, at conversation speed. */
 export function AnswerFragment() {
-  const typing = useLoopTyping("¡Qué bien! ¿Y qué compraste?", 300)
+  const typing = useLoopTyping(STEP_SCENE.followUp, 300)
   return (
     <StepStage state={typing.done ? "listening" : "speaking"} speaker="Tutor">
       <Caption
@@ -356,8 +529,7 @@ export function FixFragment() {
     <StepStage state="listening" speaker="You">
       <CorrectionFragment />
       <p className="mt-2 text-xs text-muted-foreground">
-        <span className="font-medium text-foreground/80">fue → fui</span>
-        {" · "}past tense, first person
+        <CorrectionNote scene={STEP_SCENE} />
       </p>
     </StepStage>
   )
