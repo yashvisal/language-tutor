@@ -44,6 +44,19 @@ MAX_LIST_ITEMS = 8
 MAX_ITEM_CHARS = 60
 MAX_TEXT_CHARS = 200
 
+# The levels the frontend offers (`LEVEL_VALUES` in `lib/session/plan.ts`).
+# `from_raw` still accepts any short string — the prompt reads it as prose —
+# but only one of these may appear in an INFO log: a hand-built dispatch can
+# put anything in `level`, and anything is learner text (A12; CodeRabbit,
+# PR #12).
+KNOWN_LEVELS = frozenset(
+    {
+        "beginner",
+        "understands more than they can say",
+        "comfortable, wants polish",
+    }
+)
+
 
 def _text(value: object, *, limit: int = MAX_TEXT_CHARS) -> str | None:
     if not isinstance(value, str):
@@ -169,7 +182,11 @@ class SessionPlan:
             "plan_has_note": bool(self.note),
             "plan_tenses": len(self.tenses),
             "plan_vocab": len(self.vocab),
-            "plan_level": self.level,
+            # The level only when it is one of ours; anything else is text a
+            # learner (or a hand-built dispatch) wrote, and says so.
+            "plan_level": (
+                self.level if self.level in KNOWN_LEVELS else ("other" if self.level else None)
+            ),
         }
 
     def debug_fields(self) -> dict[str, object]:
