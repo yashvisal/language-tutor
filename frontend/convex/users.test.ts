@@ -254,3 +254,156 @@ describe("users.deleteByClerkId", () => {
     })
   })
 })
+
+/* -------------------------------------------------------------------------- */
+/*  The balance checkpoint                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Reading a balance used to mean reading a lifetime of ledger rows (audit L9,
+ * launch checklist C2) — one row per active minute, on every dashboard render
+ * and three times per debit, until a heavy learner crossed Convex's per-query
+ * document limit and everything that touches money broke at once.
+ *
+ * The checkpoint is a cache of a sum, so the only property that really matters
+ * is that it is EXACTLY the sum: every test here compares the answer against
+ * the whole ledger added up by hand.
+ */
+describe("the balance checkpoint", () => {
+  /** The naive answer: every row, added up. What the checkpoint must equal. */
+  function wholeLedger(t: TestConvex, userId: Id<"users">) {
+    return t.run(async (ctx) => {
+      const rows = await ctx.db
+        .query("creditLedger")
+        .withIndex("by_user", (q) => q.eq("userId", userId))
+        .collect()
+      return rows.reduce((sum, row) => sum + row.seconds, 0)
+    })
+  }
+
+  function checkpointsOf(t: TestConvex, userId: Id<"users">) {
+    return t.run(async (ctx) =>
+      ctx.db
+        .query("ledgerCheckpoints")
+        .withIndex("by_user", (q) => q.eq("userId", userId))
+        .collect()
+    )
+  }
+
+  /** One room's worth of conversation: `reports` periodic debits, a minute
+   * apart on the meter, the way a real session bills. */
+  async function talk(
+    t: TestConvex,
+    clerkId: string,
+    room: string,
+    reports: number
+  ) {
+    for (let seq = 1; seq <= reports; seq++) {
+      await t.mutation(internal.sessions.debit, {
+        room,
+        clerkId,
+        jobId: "job_1",
+        seconds: seq * 60,
+        seq,
+      })
+    }
+  }
+
+  test("a fresh account reads its balance with no checkpoint at all", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_new", { sessionRows: 0 })
+
+    expect(await checkpointsOf(t, userId)).toHaveLength(0)
+    expect(
+      await t.query(internal.users.balanceByClerkId, { clerkId: "user_new" })
+    ).toEqual({ balanceSeconds: SIGNUP_GRANT_SECONDS })
+    expect(await wholeLedger(t, userId)).toBe(SIGNUP_GRANT_SECONDS)
+  })
+
+  test("the balance is the checkpoint plus the rows after it, exactly", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_talker", { sessionRows: 0 })
+    // Enough minutes to pay for the conversation this is about to have.
+    await t.mutation(internal.users.setBalance, {
+      clerkId: "user_talker",
+      seconds: 60 * 60 * 4,
+    })
+
+    // Past the checkpoint threshold, so one is written mid-conversation...
+    await talk(t, "user_talker", "room-long", 60)
+    const checkpoints = await checkpointsOf(t, userId)
+    expect(checkpoints.length).toBeGreaterThan(0)
+    expect(await wholeLedger(t, userId)).toBe(
+      await t
+        .query(internal.users.balanceByClerkId, { clerkId: "user_talker" })
+        .then((result) => result.balanceSeconds)
+    )
+
+    // ...and the rows written after it are still counted.
+    await talk(t, "user_talker", "room-after", 5)
+    const newest = (await checkpointsOf(t, userId)).at(-1)!
+    const rowsAfter = await t.run(async (ctx) =>
+      ctx.db
+        .query("creditLedger")
+        .withIndex("by_user", (q) =>
+          q
+            .eq("userId", userId)
+            .gt("_creationTime", newest.throughCreationTime)
+        )
+        .collect()
+    )
+    expect(rowsAfter.length).toBeGreaterThan(0)
+    expect(
+      (await t.query(internal.users.balanceByClerkId, { clerkId: "user_talker" }))
+        .balanceSeconds
+    ).toBe(await wholeLedger(t, userId))
+  })
+
+  test("checkpointing again with nothing new writes nothing", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_talker", { sessionRows: 0 })
+    await t.mutation(internal.users.setBalance, {
+      clerkId: "user_talker",
+      seconds: 60 * 60 * 4,
+    })
+    await talk(t, "user_talker", "room-long", 60)
+
+    const before = await checkpointsOf(t, userId)
+    const balance = await wholeLedger(t, userId)
+
+    // A handful more debits: fewer than the threshold, so the tail has not
+    // earned a checkpoint and the newest one stays where it is.
+    await talk(t, "user_talker", "room-short", 3)
+
+    const after = await checkpointsOf(t, userId)
+    expect(after.at(-1)!._id).toBe(before.at(-1)!._id)
+    expect(
+      (await t.query(internal.users.balanceByClerkId, { clerkId: "user_talker" }))
+        .balanceSeconds
+    ).toBe(await wholeLedger(t, userId))
+    // ...and the extra minutes really were billed, so this is not a balance
+    // that simply stopped moving.
+    expect(await wholeLedger(t, userId)).toBeLessThan(balance)
+  })
+
+  test("deleting the account takes the checkpoints with it", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_talker", { sessionRows: 0 })
+    await t.mutation(internal.users.setBalance, {
+      clerkId: "user_talker",
+      seconds: 60 * 60 * 4,
+    })
+    await talk(t, "user_talker", "room-long", 60)
+    expect((await checkpointsOf(t, userId)).length).toBeGreaterThan(0)
+
+    await t.mutation(internal.users.deleteByClerkId, { clerkId: "user_talker" })
+    await t.finishAllScheduledFunctions(() => {})
+
+    expect(await checkpointsOf(t, userId)).toHaveLength(0)
+    expect(await remainsOf(t, userId)).toEqual({
+      user: 0,
+      ledger: 0,
+      sessions: 0,
+    })
+  })
+})

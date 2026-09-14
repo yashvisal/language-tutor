@@ -11,7 +11,7 @@ import {
 import type { Doc } from "./_generated/dataModel"
 import { CodedError, ERROR_CODES } from "./errors"
 import { reportError } from "./observability"
-import { secondsFor, userByClerkId } from "./users"
+import { checkpointLedger, secondsFor, userByClerkId } from "./users"
 import {
   correctionValidator,
   endReasonValidator,
@@ -500,6 +500,11 @@ export const debit = internalMutation({
     if (session !== null && Object.keys(patch).length > 0) {
       await ctx.db.patch(session._id, patch)
     }
+
+    // The one writer that runs on a schedule for as long as a learner keeps
+    // talking, so the one that has to keep the balance read cheap (C2). A
+    // no-op until the ledger has grown a checkpoint's worth of rows.
+    await checkpointLedger(ctx, user._id)
 
     return {
       balanceSeconds: await secondsFor(ctx, user._id),
