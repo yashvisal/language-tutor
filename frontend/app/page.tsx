@@ -19,11 +19,10 @@ import { Button } from "@/components/ui/button"
 import { SIGNUP_GRANT_MINUTES } from "@/lib/billing"
 import { LANGUAGE_NAMES, TARGET_LANGUAGES } from "@/lib/session/plan"
 
-export const metadata: Metadata = {
-  title: "lengua — practice languages, uninterrupted",
-  description:
-    "A live language tutor that keeps the conversation going. Your words appear as you speak them, and after your turn settles you see what you should have said.",
-}
+// The title and description live on the root layout (its `default` is this
+// page's), so the home page inherits them and the `%s · lengua` template does
+// not double the wordmark.
+export const metadata: Metadata = {}
 
 const LANGUAGES = TARGET_LANGUAGES.map(({ code, native }) => ({
   code,

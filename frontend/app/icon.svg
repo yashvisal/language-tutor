@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- The Aura at rest: one blue orb, a soft highlight up and to the left,
+       nothing else. Transparent behind it so a dark tab bar keeps the orb. -->
+  <defs>
+    <radialGradient id="orb" cx="38%" cy="32%" r="78%">
+      <stop offset="0%" stop-color="#93c5fd" />
+      <stop offset="45%" stop-color="#60a5fa" />
+      <stop offset="100%" stop-color="#3b82f6" />
+    </radialGradient>
+  </defs>
+  <circle cx="16" cy="16" r="14" fill="url(#orb)" />
+</svg>
