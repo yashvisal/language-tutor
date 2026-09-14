@@ -7,6 +7,7 @@ import {
   FixFragment,
   SpeakFragment,
 } from "@/components/marketing/demo-conversation"
+import { LanguageFlag } from "@/components/marketing/language-flag"
 import { MarketingFooter } from "@/components/marketing/marketing-footer"
 import { MarketingHeader } from "@/components/marketing/marketing-header"
 import { PricingPacks } from "@/components/marketing/pricing"
@@ -23,7 +24,8 @@ export const metadata: Metadata = {
 }
 
 const LANGUAGES = TARGET_LANGUAGES.map(({ code, native }) => ({
-  name: LANGUAGE_NAMES[code],
+  code,
+  name: LANGUAGE_NAMES[code]!,
   native,
 }))
 
@@ -113,7 +115,9 @@ export default function LandingPage() {
               >
                 How it works
               </h2>
-              <p className="mt-3 max-w-xl text-2xl font-medium tracking-tight text-balance">
+              {/* Section headings hold one line at desktop, all of them the
+                  same (Yash, 2026-09-13). */}
+              <p className="mt-3 max-w-3xl text-2xl font-medium tracking-tight text-balance">
                 A conversation, with the teaching around it instead of in it.
               </p>
             </Reveal>
@@ -178,22 +182,30 @@ export default function LandingPage() {
               >
                 Languages
               </h2>
-              <p className="mt-3 max-w-xl text-2xl font-medium tracking-tight text-balance">
+              <p className="mt-3 max-w-3xl text-2xl font-medium tracking-tight text-balance">
                 Practice speaking in these languages, with coaching in English.
               </p>
-              {/* Each language in its own name, large and unadorned, with the
-                  English underneath. Every one is live, so the old "· now"
-                  tag said nothing, and a row of bordered pills looked like a
-                  filter bar with no list under it (Yash, 2026-09-11). */}
-              <ul className="mt-10 grid grid-cols-2 gap-x-6 gap-y-8 sm:grid-cols-3 lg:grid-cols-5">
+              {/* One strip, five cells, a hairline between them: the flag as
+                  a small round badge, the name in its own spelling, the
+                  English beneath. Five separate cards with a word each read
+                  as bland (Yash, 2026-09-13); one shared surface reads as a
+                  set. The flags are drawn inline: emoji flags come out as
+                  letters on Windows. */}
+              <ul className="mt-10 grid grid-cols-1 overflow-hidden rounded-2xl border border-border/60 bg-muted/50 shadow-xs sm:grid-cols-3 lg:grid-cols-5 dark:bg-card/40 dark:shadow-none">
                 {LANGUAGES.map((lang) => (
-                  <li key={lang.name} className="flex flex-col gap-1">
-                    <span className="text-2xl font-medium tracking-tight">
-                      {lang.native}
-                    </span>
-                    <span className="text-sm text-muted-foreground">
-                      {lang.name}
-                    </span>
+                  <li
+                    key={lang.code}
+                    className="flex items-center gap-4 border-border/60 px-6 py-6 not-first:border-t sm:not-first:border-t-0 sm:not-first:border-l"
+                  >
+                    <LanguageFlag code={lang.code} />
+                    <div className="flex flex-col">
+                      <span className="text-lg font-medium tracking-tight">
+                        {lang.native}
+                      </span>
+                      <span className="text-sm text-muted-foreground">
+                        {lang.name}
+                      </span>
+                    </div>
                   </li>
                 ))}
               </ul>
