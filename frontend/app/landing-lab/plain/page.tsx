@@ -49,7 +49,7 @@ export default function PlainStageLanding() {
             rather than piled above them: a tight stack centred in a tall box
             reads as cramped copy floating in emptiness (Yash, 2026-09-11).
             Hence the fixed start under the header and the growing gaps. */}
-        <section className="relative mx-auto flex min-h-[calc(100svh-3.5rem)] w-full max-w-5xl flex-col items-center px-6 pt-16 pb-16 text-center sm:pt-20">
+        <section className="relative mx-auto flex min-h-[calc(100svh-3.5rem)] w-full max-w-6xl flex-col items-center px-6 pt-16 pb-16 text-center sm:pt-20">
           {/* The wide wash the shipped landing puts behind the whole hero,
               here at a strength the glow tuner controls (default off): the
               Paper boards have only the orb's own halo. */}
@@ -60,12 +60,13 @@ export default function PlainStageLanding() {
           />
 
           {/* The measurements are the Paper "H1/H3 plain stage" heroes
-              (2026-09-13): headline 64/68 at medium weight with -0.03em,
+              (2026-09-13): headline 64/68 at medium weight with -0.03em, held
+              to one line on desktop (Yash, 2026-09-13),
               subline 18/28 in a 520px measure, 16px between them, the
               buttons 12px further down, the demo 56px under them. Medium at
               this size reads bolder than semibold a size smaller did, and it
               is the weight every other heading on the page uses. */}
-          <h1 className="max-w-[900px] text-4xl leading-[1.06] font-medium tracking-[-0.03em] text-balance sm:text-5xl lg:text-[4rem]">
+          <h1 className="text-4xl leading-[1.06] font-medium tracking-[-0.03em] text-balance sm:text-5xl lg:text-[4rem] lg:whitespace-nowrap">
             Learn your next language, out loud.
           </h1>
           <p className="mt-4 max-w-[520px] text-lg leading-7 text-balance text-muted-foreground">
