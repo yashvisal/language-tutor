@@ -67,7 +67,10 @@ from config import (
     ATTR_TRUE,
     ATTR_TURN_SEQ,
     ERROR_CLOSED,
+    ERROR_CONFIG_FAULT,
+    ERROR_LEDGER_UNREACHABLE,
     ERROR_MODEL,
+    ERROR_NO_LEARNER,
     ERROR_NONE,
     ERROR_OPEN_SESSION,
     ERROR_RATE_LIMITED,
@@ -499,7 +502,23 @@ def _prewarmed(ctx: JobContext, key: str, build: Callable[[], Any]) -> Any:
 
 @server.rtc_session(agent_name=AGENT_NAME)
 async def tutor(ctx: JobContext) -> None:
-    cfg = TutorConfig.from_env()
+    # Per job, because the environment is read per job: a bad OPENAI_API_KEY or
+    # TUTOR_ALLOW_UNMETERED on a production worker raises here, on every job,
+    # and used to take the whole entrypoint down before `ctx.connect()` — a
+    # room the agent never joined, indistinguishable from a dispatch that never
+    # landed (A2). Now the learner is told, in one code, and the job leaves.
+    try:
+        cfg = TutorConfig.from_env()
+    except Exception as exc:
+        report_error(
+            "config_fault",
+            f"refusing this job: the worker's configuration is unusable: {exc}",
+            exc,
+            room=ctx.room.name,
+            job_id=ctx.job.id,
+        )
+        await _say_and_leave(ctx, ERROR_CONFIG_FAULT)
+        return
     meta = JobMetadata.parse(ctx.job.metadata)
     cfg = cfg.with_session_language(meta.plan.target_language)
     state = SessionState()
@@ -830,12 +849,16 @@ async def _open_ledger(
                 extra={"balance_s": meta.balance_s},
             )
             return meta.balance_s
-        logger.error(
+        report_error(
+            "no_learner",
             "refusing this job: no learner id on the dispatch. A web dispatch always "
             "carries one; set TUTOR_ALLOW_UNMETERED=1 to run a manual job locally.",
-            extra={"room": ctx.room.name, "job_id": ctx.job.id},
+            room=ctx.room.name,
+            job_id=ctx.job.id,
         )
-        ctx.shutdown(reason="no learner on the dispatch: refusing to run unmetered")
+        # Through `_say_and_leave`, like the ledger's own refusals: a refusal
+        # nobody is told about is a frozen stage (A2).
+        await _say_and_leave(ctx, ERROR_NO_LEARNER)
         return None
 
     if not billing.enabled:
@@ -882,15 +905,16 @@ async def _open_ledger(
         )
         return meta.balance_s
 
-    logger.error(
-        "refusing this job: the learner is metered but the ledger is unreachable (%s). "
-        "Set CONVEX_SITE_URL and CLERK_WORKER_MACHINE_SECRET_KEY, or "
-        "TUTOR_ALLOW_UNMETERED=1 for "
-        "local development.",
-        reason,
-        extra={"user_id": meta.user_id, "room": ctx.room.name, "job_id": ctx.job.id},
+    report_error(
+        "ledger_unreachable",
+        "refusing this job: the learner is metered but the ledger is unreachable "
+        f"({reason}). Set CONVEX_SITE_URL and CLERK_WORKER_MACHINE_SECRET_KEY, or "
+        "TUTOR_ALLOW_UNMETERED=1 for local development.",
+        user_id=meta.user_id,
+        room=ctx.room.name,
+        job_id=ctx.job.id,
     )
-    ctx.shutdown(reason="ledger unreachable: refusing to run an unmetered paid session")
+    await _say_and_leave(ctx, ERROR_LEDGER_UNREACHABLE)
     return None
 
 
@@ -900,6 +924,10 @@ async def _say_and_leave(ctx: JobContext, code: str) -> None:
     Used before the session exists, so the room may not be connected yet:
     connecting is what lets the attribute reach the learner, and a short
     pause lets it land before the participant leaves with it.
+
+    Every fail-closed refusal goes through here (A2): the ledger's three, plus
+    `no_learner`, `ledger_unreachable` and `config_fault`. The code goes on the
+    wire as-is; `frontend/lib/session/protocol.ts` knows all of them.
     """
     try:
         await ctx.connect()
@@ -907,7 +935,7 @@ async def _say_and_leave(ctx: JobContext, code: str) -> None:
         logger.warning("could not connect to publish the refusal", exc_info=True)
     await _publish_error(ctx.room, code)
     await asyncio.sleep(0.5)
-    ctx.shutdown(reason=f"the ledger refused this room: {code}")
+    ctx.shutdown(reason=f"refused: {code}")
 
 
 async def _renew_lease(ctx: JobContext, billing: BillingClient) -> None:

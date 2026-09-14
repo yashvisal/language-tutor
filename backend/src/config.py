@@ -101,6 +101,24 @@ ERROR_CLOSED = "closed"
 ERROR_RATE_LIMITED = "rate_limited"
 ERROR_NONE = ""
 
+# Fail-closed refusals that used to be a silent `ctx.shutdown()` (A2,
+# 2026-09-14). All three are failed STARTS — nothing was billed, the clock
+# never began — and all three used to look exactly like a dispatch that never
+# landed: a room the agent joined and left with no attribute on it.
+#
+# `no_learner`          — the dispatch carried no `user_id` and the worker is
+#                         not running with `TUTOR_ALLOW_UNMETERED=1`.
+# `ledger_unreachable`  — the learner is metered and `/tutor/open` could not be
+#                         reached (`CONVEX_SITE_URL` /
+#                         `CLERK_WORKER_MACHINE_SECRET_KEY` unset, or the call
+#                         failed).
+# `config_fault`        — `TutorConfig.from_env()` raised for this job: a
+#                         missing `OPENAI_API_KEY`, or `TUTOR_ALLOW_UNMETERED`
+#                         on a `TUTOR_ENV=production` worker.
+ERROR_NO_LEARNER = "no_learner"
+ERROR_LEDGER_UNREACHABLE = "ledger_unreachable"
+ERROR_CONFIG_FAULT = "config_fault"
+
 # Value convention for boolean participant attributes.
 ATTR_TRUE = "true"
 ATTR_FALSE = "false"
