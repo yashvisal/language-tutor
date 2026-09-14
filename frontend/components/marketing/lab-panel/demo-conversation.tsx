@@ -120,11 +120,18 @@ export function LabDemoConversation({
       role="img"
     >
       <div className={cn("relative h-48 sm:h-56", auraClassName)}>
-        {/* The stage light, contained by the panel: the orb's own colour
-            landing on the surface around it, subtler in dark. */}
+        {/* The stage light: the orb's own colour landing on the surface
+            around it. Opacity, spread and blur read from CSS variables so the
+            lab's glow tuner can dial them live; the defaults are the Paper
+            halo (a tight 60px blur at about a fifth strength). */}
         <div
           aria-hidden
-          className="pointer-events-none absolute inset-0 -z-10 scale-125 rounded-full bg-blue-400/25 blur-3xl dark:bg-blue-500/20"
+          className="pointer-events-none absolute inset-0 -z-10 rounded-full bg-blue-400 dark:bg-blue-500"
+          style={{
+            opacity: "var(--lab-glow-opacity, 0.22)",
+            transform: "scale(var(--lab-glow-scale, 1.25))",
+            filter: "blur(var(--lab-glow-blur, 40px))",
+          }}
         />
         <AmbientAura state={auraState} className="h-full" />
       </div>
