@@ -7,9 +7,10 @@ while an overlay shows what it means. Because the span is *settled* text, this
 is a plain request/response call to the same cheap text model the analyzer uses:
 no stream, no clock, no arrival-time attribution.
 
-The frontend times out at 5s and shows a shimmer while it waits, so the whole
-handler is budgeted well under that: failures return `{"error": ...}` rather
-than raising, and never take the session down with them.
+The frontend times out at 10s (`TRANSLATE_TIMEOUT_MS` in
+`frontend/lib/session/protocol.ts`) and shows a shimmer while it waits, so the
+whole handler is budgeted well under that: failures return `{"error": ...}`
+rather than raising, and never take the session down with them.
 """
 
 from __future__ import annotations
@@ -53,6 +54,21 @@ SPEAKERS = ("learner", "tutor")
 MAX_LOOKUPS = 100
 MAX_LOOKUP_CHARS = 200
 
+# The invisible cap, mirroring Ask's (C6, `ask.py`'s `MAX_QUESTIONS`). Every
+# lookup is a model call, and lookups happen during holds — including the free
+# hold a learner sits in at zero balance — so an unmetered surface with no
+# ceiling is the one place a session can cost us without billing anything.
+# Forty, not Ask's twenty-five: a lookup is a reflex on a word, not a question,
+# and a lively session legitimately runs to a couple of dozen. Only a real
+# translation spends one; a timeout or a failure does not.
+MAX_LOOKUPS_PER_SESSION = 40
+
+# What a capped lookup answers with. `TranslateResponse` in
+# `frontend/lib/session/protocol.ts` has no `limit` field — unlike `AskResponse`
+# — so this rides the `error` field, which the overlay renders as its own
+# "Couldn't translate." line. Short, English, and true.
+LIMIT_LINE = "That's a lot of lookups for one session — try saying it instead."
+
 
 class SpanTranslator:
     """Translates one selected span from the target language into the anchor.
@@ -70,6 +86,10 @@ class SpanTranslator:
         # What the learner looked up, oldest first, for the after-session
         # record. Trimmed as it grows, like every other session-long list here.
         self._lookups: list[dict[str, str]] = []
+        # Counted separately from `_lookups`, which is trimmed to the ledger's
+        # bound: the cap is about how many calls this session made, not how
+        # many are still worth storing.
+        self._translated = 0
         # Built on first use. Constructing the client loads the CA bundle and
         # builds an SSL context, and the translator is constructed on every job
         # while plenty of sessions never translate anything — so that cost does
@@ -82,7 +102,17 @@ class SpanTranslator:
         """Every span the learner translated, as `{source, translation}`."""
         return list(self._lookups)
 
+    @property
+    def translated(self) -> int:
+        """How many spans this session actually got translated."""
+        return self._translated
+
+    @property
+    def at_limit(self) -> bool:
+        return self._translated >= MAX_LOOKUPS_PER_SESSION
+
     def _record(self, source: str, translation: str) -> None:
+        self._translated += 1
         self._lookups.append(
             {
                 "source": " ".join(source.split())[:MAX_LOOKUP_CHARS],
@@ -189,6 +219,15 @@ async def register_translate_rpc(
         if len(text) > MAX_SPAN_CHARS:
             return json.dumps({"error": "selection too long"})
 
+        # The cap, before the model call — the point of a cap is not paying for
+        # the request (the same rule as `ask.py`).
+        if translator.at_limit:
+            logger.info(
+                "translate cap reached",
+                extra={"turn_id": turn_id, "translated": translator.translated},
+            )
+            return json.dumps({"error": LIMIT_LINE}, ensure_ascii=False)
+
         # The span itself is in the history; excluding its turn would drop the
         # sentence it sits in, which is exactly the context that disambiguates.
         context = recent_context(session.history, limit=CONTEXT_TURNS)
@@ -217,6 +256,7 @@ async def register_translate_rpc(
                 "turn_id": turn_id,
                 "speaker": speaker,
                 "chars": len(text),
+                "translated": translator.translated,
                 "latency_ms": int((time.monotonic() - started) * 1000),
             },
         )
