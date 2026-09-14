@@ -28,7 +28,11 @@ export default function RootLayout({
         "antialiased",
         fontMono.variable,
         "font-sans",
-        geist.variable
+        geist.variable,
+        // In-page anchors glide instead of jumping (the landing's "How it
+        // works", Yash, 2026-09-13). The one programmatic scroll in the app
+        // already asks for smooth; reduced motion keeps the jump.
+        "motion-safe:scroll-smooth"
       )}
     >
       <body>
