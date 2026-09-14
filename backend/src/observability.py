@@ -58,12 +58,24 @@ def scrub_fields(fields: dict[str, Any]) -> dict[str, Any]:
 
     Shared by the logger below and by Sentry's `before_send`, so the two can
     never disagree about what counts as prose.
+
+    Recursive: a nested mapping (`context={"transcript": ...}`) or a list of
+    them is scrubbed at every depth, so the contract does not depend on every
+    caller passing scalars (CodeRabbit, PR #12).
     """
     return {
-        key: value
+        key: _scrub_value(value)
         for key, value in fields.items()
         if key not in SCRUB_KEYS and not key.startswith(SCRUB_PREFIXES)
     }
+
+
+def _scrub_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return scrub_fields(value)
+    if isinstance(value, (list, tuple)):
+        return type(value)(_scrub_value(item) for item in value)
+    return value
 
 
 def init_error_reporting() -> None:
