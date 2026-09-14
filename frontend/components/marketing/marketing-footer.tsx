@@ -5,7 +5,9 @@ import { SUPPORT_EMAIL, WORDMARK } from "@/components/marketing/brand"
 
 /**
  * Minimal footer: who we are, a way to reach a person, and the way in for
- * someone who already has an account. Nothing else belongs here.
+ * someone who already has an account. Nothing else belongs here — the
+ * signed-in "Continue" link went too; the header already carries the way
+ * back to the app (Yash, 2026-09-14).
  *
  * The year is read at render; these pages are static, so it is the year of
  * the build — close enough for a copyright line, and one less client
@@ -30,14 +32,6 @@ export function MarketingFooter() {
                 Sign in
               </button>
             </SignInButton>
-          </Show>
-          <Show when="signed-in">
-            <Link
-              href="/home"
-              className="underline-offset-4 transition-colors hover:text-foreground hover:underline"
-            >
-              Continue
-            </Link>
           </Show>
           <a
             href={`mailto:${SUPPORT_EMAIL}`}
