@@ -1,5 +1,4 @@
 import type { Metadata } from "next"
-import { ArrowDown } from "lucide-react"
 
 import { AmbientAura } from "@/components/marketing/ambient-aura"
 import {
@@ -74,27 +73,22 @@ export default function PlainStageLanding() {
             corrections wait until you have finished the thought.
           </p>
 
-          {/* The app's own button at the app's own size, the bare verb: the
-              grant sits under it instead of inside it (Yash, 2026-09-13).
-              Beside it the way down to the explanation as a ghost, not an
-              outline: a white-filled box on the stage light read as a
-              sticker (Yash, 2026-09-13). */}
-          <div className="mt-7 flex items-center gap-1">
-            <PrimaryCta label="Start speaking" />
+          {/* The app's own button at the app's own size, the promise inside
+              the label, and beside it the one secondary from the Paper panel
+              hero: a quiet way down to the explanation for whoever wants it
+              before the demo. Tried as a ghost with the grant as a caption;
+              the outline and the full label read better (Yash, 2026-09-13). */}
+          <div className="mt-7 flex items-center gap-2">
+            <PrimaryCta />
             <Button
-              variant="ghost"
+              variant="outline"
               size="lg"
               render={<a href="#how" />}
               nativeButton={false}
-              className="text-muted-foreground hover:text-foreground"
             >
               How it works
-              <ArrowDown data-icon="inline-end" />
             </Button>
           </div>
-          <p className="mt-3 text-sm text-muted-foreground">
-            Your first {SIGNUP_GRANT_MINUTES} minutes are free
-          </p>
 
           <LabDemoConversation
             auraClassName="h-[200px]"
@@ -225,8 +219,8 @@ export default function PlainStageLanding() {
         </section>
 
         {/* Closing — the shipped landing's, with the small orb above the
-            line (Yash, 2026-09-13: keep it). The button is the bare verb
-            here too; the grant and the requirements share the fine print. */}
+            line (Yash, 2026-09-13: keep it). The button is the bare verb: the
+            minutes section just above has already made the promise. */}
         <section className="border-t border-border/60">
           <div className="mx-auto flex w-full max-w-6xl flex-col items-center px-6 py-24 text-center">
             <Reveal className="flex flex-col items-center">
@@ -246,10 +240,6 @@ export default function PlainStageLanding() {
               <div className="mt-8">
                 <PrimaryCta label="Start speaking" />
               </div>
-              <p className="mt-6 text-xs text-muted-foreground/80">
-                Your first {SIGNUP_GRANT_MINUTES} minutes are free. No card
-                needed, just a desktop browser and a microphone.
-              </p>
             </Reveal>
           </div>
         </section>
