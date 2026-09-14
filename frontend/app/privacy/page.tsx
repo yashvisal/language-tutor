@@ -112,9 +112,12 @@ export default function PrivacyPage() {
         the site knows you&rsquo;re you between pages; they are strictly
         necessary, and without them there is no signed-in product. Two small
         things are kept in your browser&rsquo;s local storage rather than in a
-        cookie and never reach us: your light/dark theme preference, and the
-        language and level you last chose, so the next session opens where you
-        left off. There are no advertising cookies and nothing that tracks you
+        cookie: your light/dark theme preference, which never leaves your
+        browser, and the language and level you last chose, so the next session
+        opens where you left off. Those two are sent to us only when you start a
+        session, as part of the plan for it, and are kept on that
+        session&rsquo;s record like the rest of the plan &mdash; not on your
+        account. There are no advertising cookies and nothing that tracks you
         across other websites. We run no analytics today &mdash; if we ever turn
         on Vercel Analytics or anything like it, this section says so before it
         goes live.
