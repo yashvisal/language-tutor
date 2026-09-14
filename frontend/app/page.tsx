@@ -82,8 +82,17 @@ export default function LandingPage() {
               hero: a quiet way down to the explanation for whoever wants it
               before the demo. Tried as a ghost with the grant as a caption;
               the outline and the full label read better (Yash, 2026-09-13). */}
-          <div className="mt-7 flex items-center gap-2">
-            <PrimaryCta />
+          {/* Below sm the row stacks and the primary takes the bare verb: the
+              full label is 44 characters and runs off a 360px screen, so the
+              grant moves to a caption under the buttons (checklist A5). At sm
+              and up this is the row Yash settled on, unchanged. */}
+          <div className="mt-7 flex w-full flex-col items-center gap-2 sm:w-auto sm:flex-row">
+            <div className="sm:hidden">
+              <PrimaryCta label="Start speaking" />
+            </div>
+            <div className="hidden sm:block">
+              <PrimaryCta />
+            </div>
             <Button
               variant="outline"
               size="lg"
@@ -93,6 +102,9 @@ export default function LandingPage() {
               How it works
             </Button>
           </div>
+          <p className="mt-3 text-sm text-muted-foreground sm:hidden">
+            Your first {SIGNUP_GRANT_MINUTES} minutes are free.
+          </p>
 
           {/* The orb at the Paper boards' 200px. The override has to name the
               sm breakpoint too, or the demo's own sm:h-56 wins above 640px. */}
