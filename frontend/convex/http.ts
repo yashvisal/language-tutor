@@ -5,6 +5,7 @@ import { httpAction } from "./_generated/server"
 import { internal } from "./_generated/api"
 import { DELTA_CAP_PREFIX, MAX_DELTA_PER_CALL_S } from "../lib/billing"
 import { verifyWorkerToken } from "./m2m"
+import { reportError } from "./observability"
 import {
   parseBalanceBody,
   parseDebitBody,
@@ -513,7 +514,10 @@ const summary = httpAction(async (ctx, request) => {
 const clerkWebhook = httpAction(async (ctx, request) => {
   const signingSecret = process.env.CLERK_WEBHOOK_SIGNING_SECRET
   if (!signingSecret) {
-    console.error("/clerk/webhook: CLERK_WEBHOOK_SIGNING_SECRET is not set")
+    reportError("webhook_unconfigured", {
+      route: "/clerk/webhook",
+      missing: "CLERK_WEBHOOK_SIGNING_SECRET",
+    })
     return unauthorized()
   }
 
@@ -531,7 +535,7 @@ const clerkWebhook = httpAction(async (ctx, request) => {
   } catch (error) {
     // Server-side only, and deliberately just the reason: an unverified body
     // is a stranger's, and nothing in it belongs in these logs.
-    console.error("/clerk/webhook: signature verification failed", error)
+    reportError("webhook_signature", { route: "/clerk/webhook" }, error)
     return unauthorized()
   }
 
@@ -545,7 +549,11 @@ const clerkWebhook = httpAction(async (ctx, request) => {
   if (typeof clerkId !== "string" || clerkId.length === 0) {
     // Clerk types `data.id` as optional on the deleted-object envelope. A
     // delete with nothing to delete is malformed, not something to retry.
-    console.error("/clerk/webhook: user.deleted with no id")
+    reportError("webhook_malformed", {
+      route: "/clerk/webhook",
+      event: "user.deleted",
+      reason: "missing data.id",
+    })
     return badRequest("user.deleted is missing data.id")
   }
 

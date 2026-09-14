@@ -10,6 +10,7 @@ import {
 } from "./_generated/server"
 import type { Doc } from "./_generated/dataModel"
 import { CodedError, ERROR_CODES } from "./errors"
+import { reportError } from "./observability"
 import { secondsFor, userByClerkId } from "./users"
 import {
   correctionValidator,
@@ -1090,6 +1091,19 @@ export const reconcileStale = internalMutation({
       } = { endedAt: session.startedAt + (session.secondsBilled ?? 0) * 1000 }
       if (session.endReason === undefined) patch.endReason = "stale"
       await ctx.db.patch(session._id, patch)
+      // A row closed with seconds on it is a conversation whose worker never
+      // came back to say so — billed, and explained by nobody. Worth seeing
+      // (launch checklist A11); a swept row with nothing billed is just a
+      // start that failed, and there is nothing to report about it.
+      if ((session.secondsBilled ?? 0) > 0) {
+        reportError("reconcile_billed_row", {
+          sessionId: session._id,
+          room: session.room,
+          userId: session.userId,
+          secondsBilled: session.secondsBilled,
+          leaseUntil: session.leaseUntil ?? null,
+        })
+      }
     }
     return stale.length
   },
