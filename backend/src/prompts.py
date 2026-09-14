@@ -607,10 +607,16 @@ def greeting_instructions(
 
     Two shapes (phase 7 step 3, Yash 2026-08-25): a pre-seeded goal is restated
     in one line and confirmed; no pre-seed asks what they want to work on. Both
-    are in `TUTOR_GOAL_LANG`'s language — the target language by default, per
-    the vision doc's rule that the conversation opens in it, with the standing
-    one-anchor-line allowance if the learner stalls. There are no consent gates
-    beyond that single confirmation, and no "are you ready" (audit 2026-08-23).
+    are in `TUTOR_GOAL_LANG`'s language — the ANCHOR language by default since
+    2026-09-09 (Yash; see `TutorConfig.goal_lang` in `config.py`): the greeting
+    and the one goal confirmation are in English, and the conversation switches
+    into the target language on the first question after the goal is agreed. An
+    opening in the target language was mostly untranslated to a learner at the
+    level this product is for, and every session began with a lookup.
+    `TUTOR_GOAL_LANG=target` is the earlier rule, still available. Either way
+    the standing one-anchor-line allowance covers a learner who stalls. There
+    are no consent gates beyond that single confirmation, and no "are you
+    ready" (audit 2026-08-23).
     """
     langs = {
         "target": cfg.target_language_name,

@@ -125,9 +125,12 @@ ATTR_FALSE = "false"
 ANALYZER_ON = "on"
 ANALYZER_OFF = "off"
 
-# The language the opening goal exchange happens in. `target` by default (the
-# vision doc's rule: the conversation opens in the target language); `anchor`
-# is the escape hatch a later "which language" card would flip. The standing
+# The language the opening goal exchange happens in. `anchor` by default since
+# 2026-09-09 (Yash; see `TutorConfig.goal_lang` below): the greeting and the
+# goal confirmation are in the anchor language, and the conversation switches
+# into the target language on the first question after the goal is agreed.
+# `target` is the earlier rule (the vision doc's: the conversation opens in the
+# target language), kept as the other half of the switch. The standing
 # one-anchor-line allowance applies either way, so a learner who stalls still
 # gets help.
 GOAL_LANGS = ("target", "anchor")
