@@ -50,9 +50,13 @@ const LEARNER_AFTER = "al supermercado."
 export function DemoConversation({
   size = "hero",
   className,
+  auraClassName,
 }: {
   size?: "hero" | "compact"
   className?: string
+  /** The orb's box, when a page wants a size the two presets do not give:
+   * the landing's hero takes the Paper boards' 200px. */
+  auraClassName?: string
 }) {
   const reducedMotion = useReducedMotion()
   // One state for "where in the script" and "how much of it is typed", so
@@ -122,12 +126,20 @@ export function DemoConversation({
       aria-label="A short example of a session"
       role="img"
     >
-      <div className={cn("relative", hero ? "h-48 sm:h-56" : "h-36")}>
+      <div
+        className={cn(
+          "relative",
+          hero ? "h-48 sm:h-56" : "h-36",
+          auraClassName
+        )}
+      >
         {/* The glow is the stage light, not decoration: it is where the
-            orb's own color lands on the surface around it. */}
+            orb's own color lands on the surface around it. Half strength,
+            2.3× the orb, 108px of blur: the numbers Yash dialled in on the
+            landing lab (2026-09-13), a lot more light than the first cut. */}
         <div
           aria-hidden
-          className="pointer-events-none absolute inset-0 -z-10 scale-150 rounded-full bg-blue-400/25 blur-3xl dark:bg-blue-500/20"
+          className="pointer-events-none absolute inset-0 -z-10 scale-[2.3] rounded-full bg-blue-400/50 blur-[108px] dark:bg-blue-500/50"
         />
         <AmbientAura state={auraState} className="h-full" />
       </div>
