@@ -1,5 +1,10 @@
 # Phase 8: Launch — Sentry, deployment, billing
 
+**2026-09-14 update:** The landing rework (PR #11) is merged. Work from
+[the launch checklist](../launch-checklist-2026-09-14.md), which reconciles
+this plan against the code after four audits; it lists the functional bugs
+found on the way and assumes a free-minutes beta first.
+
 **2026-09-06 update:** Read [the current launch audit](../audit-2026-09-06.md)
 before executing this plan. It adds reproduced session-lock failures and
 dependency triage to the launch gates. Language selection is now implemented;
