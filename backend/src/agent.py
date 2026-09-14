@@ -1344,6 +1344,25 @@ def _build_clock(
 
     billing.set_ceiling_handler(_ledger_ceiling)
 
+    async def _ledger_closed() -> None:
+        """The ledger refused a periodic debit: the row is already closed.
+
+        The cron swept this room while the worker was away (a lost network,
+        a long stall) and the learner may already be in another conversation
+        on the same balance. This job is metering a room it no longer owns,
+        so it ends the way a lost lease ends (A3, 2026-09-14).
+        """
+        report_error(
+            "lease_lost",
+            "the ledger closed this room while the worker was away; ending the session",
+            room=ctx.room.name,
+            job_id=ctx.job.id,
+        )
+        billing.set_end_reason("lease_lost")
+        ctx.shutdown(reason="ledger closed the room")
+
+    billing.set_closed_handler(_ledger_closed)
+
     clock = SessionClock(
         budget_s,
         publish=_publish,

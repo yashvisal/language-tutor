@@ -291,6 +291,12 @@ class BillingClient:
         self._consecutive_failures = 0
         self._ceiling_reached = False
         self._on_ceiling: Callable[[], Awaitable[None]] | None = None
+        # The ledger said the row is closed (A3, 2026-09-14): a periodic debit
+        # answered `closed: true`, meaning the cron swept this room while the
+        # worker was away and another conversation may own the balance now.
+        # One-way, like the ceiling: nothing more is reported for this room.
+        self._closed = False
+        self._on_closed: Callable[[], Awaitable[None]] | None = None
         self._seq = 0
         # Why this session ended, reported on the final debit. Set by the
         # ending paths as they run; the default is the ordinary end.
@@ -321,6 +327,20 @@ class BillingClient:
     @property
     def consecutive_failures(self) -> int:
         return self._consecutive_failures
+
+    @property
+    def closed(self) -> bool:
+        """True once the ledger answered a periodic debit with `closed`."""
+        return self._closed
+
+    def set_closed_handler(self, handler: Callable[[], Awaitable[None]] | None) -> None:
+        """What to do when the ledger says the row is already closed.
+
+        Same contract as the ceiling handler: called at most once, outside the
+        debit lock. The handler ends the session; its teardown debit is then
+        skipped here, because the ledger has already refused the room.
+        """
+        self._on_closed = handler
 
     def set_ceiling_handler(self, handler: Callable[[], Awaitable[None]] | None) -> None:
         """What to do when the debits stop landing: hold the clock, end it.
@@ -405,6 +425,9 @@ class BillingClient:
             # tripped, and the teardown path calls this twice on the way out.
             logger.debug("debit skipped: the ledger failure ceiling was reached")
             return None
+        if self._closed:
+            logger.debug("debit skipped: the ledger closed this room")
+            return None
         active = int(max(0, active_seconds))
         tripped = False
         async with self._lock:
@@ -423,7 +446,19 @@ class BillingClient:
                 # Only with `final` (the wire contract): a periodic debit has
                 # no reason to carry, because nothing has ended.
                 payload["reason"] = self._end_reason
-            balance = await self._post(DEBIT_PATH, payload)
+            body = await self._post_json(DEBIT_PATH, payload)
+            balance = _int_field(body, "balanceSeconds")
+            # `closed` on a periodic report is a refusal: the row already ended
+            # and no seconds were taken. On the final report it just means the
+            # row is closed now, which is the point of the final report.
+            closed_now = (
+                not final
+                and balance is not None
+                and isinstance(body, dict)
+                and body.get("closed") is True
+            )
+            if closed_now:
+                self._closed = True
             if balance is None:
                 self._consecutive_failures += 1
                 # ERROR, not warning: a debit that does not land is revenue on
@@ -457,7 +492,23 @@ class BillingClient:
             # Outside the lock: the handler ends the session, whose teardown
             # calls back into `debit`.
             await self._fire_ceiling()
+        if closed_now:
+            await self._fire_closed()
         return balance
+
+    async def _fire_closed(self) -> None:
+        logger.error(
+            "the ledger refused a debit: the session row is already closed. "
+            "Ending the session; nothing more is billed for this room.",
+            extra={"room": self._room, "jobId": self._job_id},
+        )
+        handler = self._on_closed
+        if handler is None:
+            return
+        try:
+            await handler()
+        except Exception:
+            logger.error("the closed-row handler failed", exc_info=True)
 
     async def _fire_ceiling(self) -> None:
         logger.error(
