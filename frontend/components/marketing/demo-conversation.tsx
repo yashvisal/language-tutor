@@ -477,35 +477,50 @@ export function CorrectionFragment({
 /** The correction, in place, with its reason. */
 export function FixFragment() {
   return (
-    <StepStage state="listening" speaker="You">
+    <FeatureTile label="You">
       <CorrectionFragment />
       <p className="mt-2 text-xs text-muted-foreground">
         <CorrectionNote scene={STEP_SCENE} />
       </p>
-    </StepStage>
+    </FeatureTile>
   )
 }
 
-/** A miniature of the session stage: small orb, speaker label, caption. */
-function StepStage({
-  state,
-  speaker,
+/**
+ * The shared frame of the three feature tiles: the speaker label on one line
+ * at the top, the body centred in the space under it. Pinning the label and
+ * centring the body is what makes three bodies of different heights read as
+ * one row. The fix tile used to carry a small orb above its label; it went
+ * when the other two tiles had none, so the row would sit level (Yash,
+ * 2026-09-14).
+ */
+export function FeatureTile({
+  label,
+  align = "center",
   children,
 }: {
-  state: AgentState
-  speaker: string
+  label: string
+  align?: "center" | "start"
   children: React.ReactNode
 }) {
   return (
-    // The orb's top is the line the other two feature tiles align to, so it is
-    // pinned rather than centred: the same 29px centring used to produce, now
-    // stated, so a change to this tile's height cannot move the others off it.
-    <div className="flex h-full flex-col items-center justify-start pt-[29px] text-center">
-      <AmbientAura state={state} className="h-14" />
-      <div className="mt-4 mb-1.5 text-[10px] font-medium tracking-[0.22em] text-muted-foreground/60 uppercase">
-        {speaker}
+    <div
+      className={cn(
+        "flex h-full flex-col pt-6",
+        align === "center" && "items-center text-center"
+      )}
+    >
+      <div className="text-center text-[10px] font-medium tracking-[0.22em] text-muted-foreground/60 uppercase">
+        {label}
       </div>
-      <div className="min-h-[3.25rem]">{children}</div>
+      <div
+        className={cn(
+          "flex w-full flex-1 flex-col justify-center pb-3",
+          align === "center" && "items-center"
+        )}
+      >
+        {children}
+      </div>
     </div>
   )
 }

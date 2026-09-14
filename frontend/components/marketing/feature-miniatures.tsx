@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react"
 import { motion, useReducedMotion } from "motion/react"
 
+import { FeatureTile } from "@/components/marketing/demo-conversation"
+
 /**
  * The two features the landing page had no way of telling anyone about:
  * select-to-translate and the Ask tab.
@@ -86,34 +88,33 @@ export function TranslateFragment() {
     <motion.div
       onViewportEnter={start}
       viewport={{ once: true, amount: 0.6 }}
-      // Pinned to the same top as the fix tile's orb (`FixFragment`), so the
-      // three tiles start on one line rather than each centring its own
-      // height (Yash, 2026-09-14).
-      className="flex h-full flex-col items-center justify-start pt-[29px] text-center"
+      className="h-full"
     >
-      <div className="mb-6 text-[10px] font-medium tracking-[0.22em] text-muted-foreground/60 uppercase">
-        Tutor
-      </div>
-      <p lang="es" className="text-lg leading-snug tracking-tight text-balance">
-        Suena bien. ¿Y hoy,{" "}
-        <SelectedSpan selected={selected}>cómo estás?</SelectedSpan>
-      </p>
-
-      {/* The overlay's own card, at the tile's scale. */}
-      <motion.div
-        initial={false}
-        animate={{ opacity: answered ? 1 : 0, y: answered ? 0 : -4 }}
-        transition={{ duration: 0.2, ease: "easeOut" }}
-        aria-hidden={!answered}
-        className="mt-7 w-full max-w-[16rem] rounded-lg bg-popover p-3 text-left text-sm text-popover-foreground shadow-md ring-1 ring-foreground/10"
-      >
-        <div lang="es" className="text-xs text-muted-foreground/70 italic">
-          cómo estás
-        </div>
-        <p lang="en" className="mt-1.5 leading-relaxed">
-          how are you
+      <FeatureTile label="Tutor">
+        <p
+          lang="es"
+          className="text-lg leading-snug tracking-tight text-balance"
+        >
+          Suena bien. ¿Y hoy,{" "}
+          <SelectedSpan selected={selected}>cómo estás?</SelectedSpan>
         </p>
-      </motion.div>
+
+        {/* The overlay's own card, at the tile's scale. */}
+        <motion.div
+          initial={false}
+          animate={{ opacity: answered ? 1 : 0, y: answered ? 0 : -4 }}
+          transition={{ duration: 0.2, ease: "easeOut" }}
+          aria-hidden={!answered}
+          className="mt-4 w-full max-w-[16rem] rounded-lg bg-popover p-3 text-left text-sm text-popover-foreground shadow-md ring-1 ring-foreground/10"
+        >
+          <div lang="es" className="text-xs text-muted-foreground/70 italic">
+            cómo estás
+          </div>
+          <p lang="en" className="mt-1.5 leading-relaxed">
+            how are you
+          </p>
+        </motion.div>
+      </FeatureTile>
     </motion.div>
   )
 }
@@ -130,31 +131,29 @@ export function AskFragment() {
     <motion.div
       onViewportEnter={start}
       viewport={{ once: true, amount: 0.6 }}
-      // The same top as the other two tiles; see `TranslateFragment`.
-      className="flex h-full flex-col justify-start pt-[29px]"
+      className="h-full"
     >
-      <div className="mb-7 text-center text-[10px] font-medium tracking-[0.22em] text-muted-foreground/60 uppercase">
-        Ask
-      </div>
-      <motion.div
-        initial={false}
-        animate={{ opacity: asked ? 1 : 0, y: asked ? 0 : 6 }}
-        transition={{ duration: 0.3, ease: "easeOut" }}
-        className="flex justify-end"
-      >
-        <p className="max-w-[85%] rounded-2xl rounded-br-md bg-foreground/[0.05] px-3.5 py-2 text-sm leading-6 tracking-[-0.011em] text-foreground dark:bg-white/[0.08]">
-          Why estoy and not soy?
-        </p>
-      </motion.div>
-      <motion.p
-        initial={false}
-        animate={{ opacity: answered ? 1 : 0, y: answered ? 0 : 6 }}
-        transition={{ duration: 0.35, ease: "easeOut" }}
-        aria-hidden={!answered}
-        className="mt-6 pr-8 text-sm leading-6 text-pretty text-foreground"
-      >
-        Estar is for how you feel right now; ser is for what you are.
-      </motion.p>
+      <FeatureTile label="Ask" align="start">
+        <motion.div
+          initial={false}
+          animate={{ opacity: asked ? 1 : 0, y: asked ? 0 : 6 }}
+          transition={{ duration: 0.3, ease: "easeOut" }}
+          className="flex justify-end"
+        >
+          <p className="max-w-[85%] rounded-2xl rounded-br-md bg-foreground/[0.05] px-3.5 py-2 text-sm leading-6 tracking-[-0.011em] text-foreground dark:bg-white/[0.08]">
+            Why estoy and not soy?
+          </p>
+        </motion.div>
+        <motion.p
+          initial={false}
+          animate={{ opacity: answered ? 1 : 0, y: answered ? 0 : 6 }}
+          transition={{ duration: 0.35, ease: "easeOut" }}
+          aria-hidden={!answered}
+          className="mt-3 pr-8 text-sm leading-6 text-pretty text-foreground"
+        >
+          Estar is for how you feel right now; ser is for what you are.
+        </motion.p>
+      </FeatureTile>
     </motion.div>
   )
 }
