@@ -1165,20 +1165,44 @@ export const reconcileStale = internalMutation({
   returns: v.number(),
   handler: async (ctx) => {
     const now = Date.now()
+
+    // Two ranges, because they are two different questions and one index
+    // range cannot ask both (launch checklist C11).
+    //
+    // `lt("leaseUntil", now)` alone also matches every row with NO lease:
+    // absent sorts below every number, so the lease-less rows crowd the head
+    // of the range. The filter for them used to run AFTER `take(100)`, which
+    // meant a hundred young lease-less rows — and there are more of those now
+    // that `debit` and `recordSummary` adopt without one — returned a hundred
+    // rows that all failed the filter while the expired leases queued behind
+    // them were never read at all. A dead worker's row would sit open for as
+    // long as that backlog lasted. Bounding the range at zero puts only rows
+    // that actually carry a lease in it, so an expired lease is never starved.
     const expired = await ctx.db
       .query("sessions")
       .withIndex("by_endedAt_leaseUntil", (q) =>
-        q.eq("endedAt", undefined).lt("leaseUntil", now)
+        q.eq("endedAt", undefined).gte("leaseUntil", 0).lt("leaseUntil", now)
       )
       .take(RECONCILE_BATCH)
-    // `lt(leaseUntil, now)` on an optional field also matches rows with no
-    // lease at all (absent sorts below every number). Those are the legacy
-    // rows, and they close by age, not on sight.
-    const stale = expired.filter(
-      (session) =>
-        session.leaseUntil !== undefined ||
-        now - session.startedAt > LEGACY_STALE_MS
-    )
+
+    // The lease-less rows, read by AGE on their own index rather than sieved
+    // out of the one above: a row with no lease is not live (nothing renews
+    // it) but it is not evidence of a dead worker either, so it closes only
+    // once it is older than any real conversation. `lt("startedAt", …)` is the
+    // age bound expressed on the index, so the batch is spent on rows that
+    // qualify. The remaining JS check is the cheap half of the pair — the rows
+    // in THIS range that do carry a lease are the live long conversations, and
+    // there are a handful of those at most.
+    const legacy = (
+      await ctx.db
+        .query("sessions")
+        .withIndex("by_endedAt_startedAt", (q) =>
+          q.eq("endedAt", undefined).lt("startedAt", now - LEGACY_STALE_MS)
+        )
+        .take(RECONCILE_BATCH)
+    ).filter((session) => session.leaseUntil === undefined)
+
+    const stale = [...expired, ...legacy]
 
     for (const session of stale) {
       const patch: {

@@ -1039,6 +1039,57 @@ describe("sessions.reconcileStale", () => {
     expect(row!.endReason).toBe("model_error")
     expect(row!.endedAt).toBe(startedAt + 60_000)
   })
+
+  test("a backlog of lease-less rows does not starve an expired lease", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+    const now = Date.now()
+
+    // Rows with no lease sort at the head of `by_endedAt_leaseUntil` — absent
+    // is below every number — and the legacy filter used to run after
+    // `take(100)`. So a hundred young lease-less rows (which is exactly what
+    // an adopted summary or debit now writes, A4) filled the batch, every one
+    // of them was discarded, and the dead worker's row behind them was never
+    // read at all. It stayed open, out of History, run after run.
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 150; i++) {
+        await ctx.db.insert("sessions", {
+          userId,
+          room: `room-adopted-${i}`,
+          plan: PLAN,
+          startedAt: now - 60_000,
+        })
+      }
+    })
+    const dead = await t.run(async (ctx) =>
+      ctx.db.insert("sessions", {
+        userId,
+        room: "room-dead-worker",
+        plan: PLAN,
+        startedAt: now - 5 * 60_000,
+        leaseUntil: now - 1000,
+        secondsBilled: 120,
+      })
+    )
+
+    // One run, and the one row that is actually evidence of a dead worker is
+    // the one that gets closed.
+    expect(await t.mutation(internal.sessions.reconcileStale, {})).toBe(1)
+    const row = await t.run(async (ctx) => ctx.db.get(dead))
+    expect(row!.endedAt).toBe(now - 5 * 60_000 + 120_000)
+    expect(row!.endReason).toBe("stale")
+
+    // ...and the young lease-less rows are left alone: nothing renews them,
+    // but nothing says they are over either until they are older than any
+    // real conversation.
+    const untouched = await t.run(async (ctx) =>
+      ctx.db
+        .query("sessions")
+        .withIndex("by_room", (q) => q.eq("room", "room-adopted-0"))
+        .unique()
+    )
+    expect(untouched!.endedAt).toBeUndefined()
+  })
 })
 
 /* -------------------------------------------------------------------------- */
