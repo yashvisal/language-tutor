@@ -1,6 +1,7 @@
 import type { Metadata } from "next"
 import { ArrowDown } from "lucide-react"
 
+import { AmbientAura } from "@/components/marketing/ambient-aura"
 import {
   AnswerFragment,
   FixFragment,
@@ -223,23 +224,31 @@ export default function PlainStageLanding() {
           </div>
         </section>
 
-        {/* Closing — the hero's voice, a size under it. No orb: the demo at
-            the top is the only place the product should be playing, and a
-            second one here read as a rerun. */}
+        {/* Closing — the shipped landing's, with the small orb above the
+            line (Yash, 2026-09-13: keep it). The button is the bare verb
+            here too; the grant and the requirements share the fine print. */}
         <section className="border-t border-border/60">
           <div className="mx-auto flex w-full max-w-6xl flex-col items-center px-6 py-24 text-center">
             <Reveal className="flex flex-col items-center">
-              <h2 className="text-2xl font-medium tracking-tight text-balance sm:text-3xl">
+              <div className="relative h-20">
+                <div
+                  aria-hidden
+                  className="pointer-events-none absolute inset-0 -z-10 scale-150 rounded-full bg-blue-400/30 blur-2xl dark:bg-blue-500/15"
+                />
+                <AmbientAura state="listening" className="h-full" />
+              </div>
+              <h2 className="mt-8 text-2xl font-medium tracking-tight text-balance sm:text-3xl">
                 Practice with a tutor that lets you finish.
               </h2>
               <p className="mt-3 max-w-md text-muted-foreground">
                 No lesson, no quiz. A conversation that waits for you.
               </p>
               <div className="mt-8">
-                <PrimaryCta />
+                <PrimaryCta label="Start speaking" />
               </div>
               <p className="mt-6 text-xs text-muted-foreground/80">
-                No card needed. A desktop browser and a microphone.
+                Your first {SIGNUP_GRANT_MINUTES} minutes are free. No card
+                needed, just a desktop browser and a microphone.
               </p>
             </Reveal>
           </div>
