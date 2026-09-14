@@ -66,7 +66,7 @@ export default function PlainStageLanding() {
               this size reads bolder than semibold a size smaller did, and it
               is the weight every other heading on the page uses. */}
           <h1 className="max-w-[900px] text-4xl leading-[1.06] font-medium tracking-[-0.03em] text-balance sm:text-5xl lg:text-[4rem]">
-            Your next language, out loud.
+            Learn your next language, out loud.
           </h1>
           <p className="mt-4 max-w-[520px] text-lg leading-7 text-balance text-muted-foreground">
             A tutor that answers naturally and never talks over you. The
