@@ -1,5 +1,7 @@
 import { verifyMachineAuthToken } from "@clerk/backend/internal"
 
+import { reportError } from "./observability"
+
 /**
  * Who is allowed to spend a learner's minutes.
  *
@@ -150,8 +152,10 @@ export async function verifyWorkerToken(
 
 /** One place that logs the reason and returns the closed door, so no branch
  * above can return a failure without leaving a trace an operator can read.
- * `console.warn` is what Convex surfaces as a warn-level log line. */
+ * Through `reportError` (launch checklist A11): a rejected worker token is
+ * either a misconfigured deployment or somebody knocking, and both are worth
+ * a page once Sentry is wired. The reason only — never the token. */
 function reject(reason: string): WorkerTokenResult {
-  console.warn(`[m2m] rejected worker token: ${reason}`)
+  reportError("m2m_rejected", { reason })
   return { ok: false, reason }
 }

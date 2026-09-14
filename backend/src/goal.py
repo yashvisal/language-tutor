@@ -152,7 +152,9 @@ class GoalKeeper:
         """
         if goal is None or not self._facts.set_goal(goal):
             return False
+        # Ids and shape at INFO; the goal's own words only at DEBUG (A12).
         logger.info("session goal set", extra=goal.log_fields())
+        logger.debug("session goal text", extra=goal.debug_fields())
 
         # 1. The tutor itself. A live `session.update` over the open realtime
         #    socket — no restart, no interrupted turn; it takes effect from the

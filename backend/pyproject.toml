@@ -7,6 +7,9 @@ dependencies = [
     "livekit-agents[openai]~=1.8.1",
     "openai>=2.0.0,<3",
     "python-dotenv>=1.0.1",
+    # Error reporting (launch checklist A11). The worker's init seam is
+    # src/observability.py; without a DSN it initialises nothing.
+    "sentry-sdk>=2.0,<3",
 ]
 
 [dependency-groups]

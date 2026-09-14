@@ -96,6 +96,20 @@ function debitsOf(t: TestConvex, userId: Id<"users">) {
   })
 }
 
+/** The balance the way the ledger defines it: the sum of every row. */
+function balanceOf(t: TestConvex, userId: Id<"users">) {
+  return t.run(async (ctx) => {
+    const rows = await ctx.db
+      .query("creditLedger")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect()
+    return rows.reduce(
+      (sum: number, row: Doc<"creditLedger">) => sum + row.seconds,
+      0
+    )
+  })
+}
+
 /**
  * The worker joining a room. This is the only thing that opens a session row
  * now: the token route signs a token and writes nothing, so every test that
@@ -549,7 +563,15 @@ describe("sessions.debit", () => {
       seconds: 100 + MAX_DELTA_PER_CALL_S,
       seq: 3,
     })
-    expect(result.balanceSeconds).toBe(GRANT - 100 - MAX_DELTA_PER_CALL_S)
+    // ...and it lands on the floor rather than through it (C1). The cap is an
+    // hour and the grant is five minutes, so the honest answer to "what is
+    // this learner's balance" is zero: the seconds were consumed and the mark
+    // records them, but the ledger never charges more than the learner had.
+    expect(result.balanceSeconds).toBe(0)
+    expect(GRANT - 100 - MAX_DELTA_PER_CALL_S).toBeLessThan(0)
+    expect((await sessionsOf(t, userId))[0].secondsBilled).toBe(
+      100 + MAX_DELTA_PER_CALL_S
+    )
   })
 
   test("is idempotent on the ref", async () => {
@@ -623,18 +645,20 @@ describe("sessions.debit", () => {
     expect(closed.endedAt).toBeTypeOf("number")
     expect(closed.secondsBilled).toBe(90)
 
-    // A later report — a redispatch, a retry, a straggler — bills what is new
-    // and leaves the end where it was. The row is history now.
-    await t.mutation(internal.sessions.debit, {
+    // A later report — a redispatch, a retry, a straggler — bills NOTHING and
+    // leaves the row exactly as it was (A3). The row is history now, and the
+    // learner may already be talking somewhere else.
+    const later = await t.mutation(internal.sessions.debit, {
       room,
       clerkId: "user_owner",
       jobId: "job_2",
       seconds: 95,
       seq: 1,
     })
+    expect(later.closed).toBe(true)
     const after = (await sessionsOf(t, userId))[0]
     expect(after.endedAt).toBe(closed.endedAt)
-    expect(after.secondsBilled).toBe(95)
+    expect(after.secondsBilled).toBe(90)
   })
 
   test("a periodic report renews the lease and a final one does not", async () => {
@@ -743,9 +767,120 @@ describe("sessions.debit", () => {
     expect(result.balanceSeconds).toBe(GRANT - 42)
     const rows = await sessionsOf(t, userId)
     expect(rows).toHaveLength(1)
-    // The adopted row is a live conversation like any other: something is
-    // metering it, so it holds a lease and the cron will not close it.
-    expect(rows[0].leaseUntil).toBeGreaterThan(Date.now())
+    // ...but it gets NO lease (A4). A lease is a reservation, and nobody
+    // asked `open` for this room: handing one out here let a worker that had
+    // been told to leave lock the learner out of their own account for three
+    // minutes by reporting once.
+    expect(rows[0].leaseUntil).toBeUndefined()
+  })
+
+  test("a debit for an unknown room does not reserve a second conversation", async () => {
+    const { t, userId } = await started()
+
+    // The A4 attack: the learner is mid-conversation in `room`, and a worker
+    // that was refused — or a replayed machine token — reports seconds for a
+    // room name of its own choosing. The seconds are billed (they were spent
+    // somewhere), but the second row must not become a second live session.
+    await t.mutation(internal.sessions.debit, {
+      room: "room-somebody-else-invented",
+      clerkId: "user_owner",
+      jobId: "job_9",
+      seconds: 42,
+      seq: 1,
+    })
+
+    const rows = await sessionsOf(t, userId)
+    expect(rows).toHaveLength(2)
+    const adopted = rows.find(
+      (row) => row.room === "room-somebody-else-invented"
+    )!
+    expect(adopted.leaseUntil).toBeUndefined()
+    // Exactly one of this learner's rows is a live conversation, and it is
+    // the one the worker actually opened.
+    const live = rows.filter(
+      (row) =>
+        row.endedAt === undefined &&
+        row.leaseUntil !== undefined &&
+        row.leaseUntil > Date.now()
+    )
+    expect(live).toHaveLength(1)
+    expect(live[0].room).toBe(room)
+  })
+
+  test("billing after close: a closed row takes no more money", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+    await openRoom(t, "user_owner", room)
+
+    await t.mutation(internal.sessions.debit, {
+      room,
+      clerkId: "user_owner",
+      jobId: "job_1",
+      seconds: 60,
+      seq: 1,
+    })
+
+    // The worker lost the network for longer than the lease, so the cron
+    // closed the row — and the learner started talking again somewhere else.
+    await setLease(t, room, Date.now() - 1000)
+    expect(await t.mutation(internal.sessions.reconcileStale, {})).toBe(1)
+    const closedRow = (await sessionsOf(t, userId))[0]
+    expect(closedRow.endedAt).toBeTypeOf("number")
+
+    const balanceBefore = await balanceOf(t, userId)
+    const result = await t.mutation(internal.sessions.debit, {
+      room,
+      clerkId: "user_owner",
+      jobId: "job_1",
+      seconds: 200,
+      seq: 2,
+    })
+
+    // Two spenders on one balance is what this prevents: the old worker's
+    // report is refused whole, terminally, and it says so.
+    expect(result.closed).toBe(true)
+    expect(result.balanceSeconds).toBe(balanceBefore)
+    expect(await debitsOf(t, userId)).toHaveLength(1)
+    const after = (await sessionsOf(t, userId))[0]
+    expect(after.secondsBilled).toBe(60)
+    expect(after.endedAt).toBe(closedRow.endedAt)
+  })
+
+  test("never charges past zero, and records what was consumed", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+    await openRoom(t, "user_owner", room)
+
+    // More than the whole grant in one report: a worker that held late, or a
+    // report that crossed a balance read. The ledger takes what is there.
+    const result = await t.mutation(internal.sessions.debit, {
+      room,
+      clerkId: "user_owner",
+      jobId: "job_1",
+      seconds: GRANT + 120,
+      seq: 1,
+    })
+
+    // Exactly zero — not below it. `viewer` clamps `minutes` to 0, so a
+    // deficit here would be invisible on every surface and would silently eat
+    // the learner's next grant (C1).
+    expect(result.balanceSeconds).toBe(0)
+    const [debit] = await debitsOf(t, userId)
+    expect(debit.seconds).toBe(-GRANT)
+    // What was CONSUMED is still recorded: the mark is the worker's running
+    // total, and a mark that lagged would re-bill these seconds next report.
+    expect((await sessionsOf(t, userId))[0].secondsBilled).toBe(GRANT + 120)
+
+    // ...and the next report finds nothing left to take rather than digging.
+    const next = await t.mutation(internal.sessions.debit, {
+      room,
+      clerkId: "user_owner",
+      jobId: "job_1",
+      seconds: GRANT + 180,
+      seq: 2,
+    })
+    expect(next.balanceSeconds).toBe(0)
+    expect(await balanceOf(t, userId)).toBe(0)
   })
 })
 
@@ -904,6 +1039,57 @@ describe("sessions.reconcileStale", () => {
     expect(row!.endReason).toBe("model_error")
     expect(row!.endedAt).toBe(startedAt + 60_000)
   })
+
+  test("a backlog of lease-less rows does not starve an expired lease", async () => {
+    const t = setup()
+    const userId = await makeLearner(t, "user_owner")
+    const now = Date.now()
+
+    // Rows with no lease sort at the head of `by_endedAt_leaseUntil` — absent
+    // is below every number — and the legacy filter used to run after
+    // `take(100)`. So a hundred young lease-less rows (which is exactly what
+    // an adopted summary or debit now writes, A4) filled the batch, every one
+    // of them was discarded, and the dead worker's row behind them was never
+    // read at all. It stayed open, out of History, run after run.
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 150; i++) {
+        await ctx.db.insert("sessions", {
+          userId,
+          room: `room-adopted-${i}`,
+          plan: PLAN,
+          startedAt: now - 60_000,
+        })
+      }
+    })
+    const dead = await t.run(async (ctx) =>
+      ctx.db.insert("sessions", {
+        userId,
+        room: "room-dead-worker",
+        plan: PLAN,
+        startedAt: now - 5 * 60_000,
+        leaseUntil: now - 1000,
+        secondsBilled: 120,
+      })
+    )
+
+    // One run, and the one row that is actually evidence of a dead worker is
+    // the one that gets closed.
+    expect(await t.mutation(internal.sessions.reconcileStale, {})).toBe(1)
+    const row = await t.run(async (ctx) => ctx.db.get(dead))
+    expect(row!.endedAt).toBe(now - 5 * 60_000 + 120_000)
+    expect(row!.endReason).toBe("stale")
+
+    // ...and the young lease-less rows are left alone: nothing renews them,
+    // but nothing says they are over either until they are older than any
+    // real conversation.
+    const untouched = await t.run(async (ctx) =>
+      ctx.db
+        .query("sessions")
+        .withIndex("by_room", (q) => q.eq("room", "room-adopted-0"))
+        .unique()
+    )
+    expect(untouched!.endedAt).toBeUndefined()
+  })
 })
 
 /* -------------------------------------------------------------------------- */
@@ -965,6 +1151,30 @@ describe("sessions.recordSummary", () => {
     const rows = await sessionsOf(t, userId)
     expect(rows).toHaveLength(1)
     expect(rows[0].about).toBe("A conversation nobody wrote a row for.")
+    // Without a lease (A4): a summary is the record of something that is
+    // over, and a record must never be a reservation.
+    expect(rows[0].leaseUntil).toBeUndefined()
+  })
+
+  test("a summary for an unknown room does not block the next start", async () => {
+    const t = setup()
+    await makeLearner(t, "user_owner")
+
+    // A late summary for a real past room, or an arbitrary room name behind a
+    // replayed machine token. Either way the learner is not in a conversation
+    // and must be able to start one.
+    await t.mutation(internal.sessions.recordSummary, {
+      room: "room-unrecorded",
+      clerkId: "user_owner",
+      about: "A conversation that is already over.",
+    })
+
+    const opened = await openRoom(t, "user_owner", "room-next")
+    expect(opened).toEqual({
+      ok: true,
+      balanceSeconds: GRANT,
+      secondsBilled: 0,
+    })
   })
 
   test("leaves a field absent from the call untouched", async () => {
@@ -1961,8 +2171,11 @@ describe("why a session ended", () => {
     })
     const row = await rowOf(t)
     expect(row!.endReason).toBe("hold_idle")
-    // and the meter still moved, so this is a no-op on the reason alone.
-    expect(row!.secondsBilled).toBe(120)
+    // ...and the meter did not move either: the row was closed by the first
+    // report, and a closed row bills nothing (A3). The reason is the one
+    // thing a late report can still add, because a row swept by the cron
+    // carries none.
+    expect(row!.secondsBilled).toBe(90)
   })
 
   test("a final report with no reason leaves the column absent", async () => {

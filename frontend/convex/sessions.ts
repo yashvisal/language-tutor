@@ -9,7 +9,9 @@ import {
   type QueryCtx,
 } from "./_generated/server"
 import type { Doc } from "./_generated/dataModel"
-import { secondsFor, userByClerkId } from "./users"
+import { CodedError, ERROR_CODES } from "./errors"
+import { reportError } from "./observability"
+import { checkpointLedger, secondsFor, userByClerkId } from "./users"
 import {
   correctionValidator,
   endReasonValidator,
@@ -144,7 +146,8 @@ export const startCheck = query({
   ),
   handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity()
-    if (identity === null) throw new Error("Not signed in")
+    if (identity === null)
+      throw new CodedError(ERROR_CODES.notSignedIn, "Not signed in")
     const user = await userByClerkId(ctx, identity.subject)
     if (user === null) return "no_account"
     const now = Date.now()
@@ -206,7 +209,8 @@ export const open = internalMutation({
   ),
   handler: async (ctx, args) => {
     const user = await userByClerkId(ctx, args.clerkId)
-    if (user === null) throw new Error("No such user")
+    if (user === null)
+      throw new CodedError(ERROR_CODES.noAccount, "No such user")
     const now = Date.now()
 
     const existing = await ctx.db
@@ -214,7 +218,11 @@ export const open = internalMutation({
       .withIndex("by_room", (q) => q.eq("room", args.room))
       .unique()
     if (existing !== null) {
-      if (existing.userId !== user._id) throw new Error("Not this learner's room")
+      if (existing.userId !== user._id)
+        throw new CodedError(
+          ERROR_CODES.notYourRoom,
+          "Not this learner's room"
+        )
       if (existing.endedAt !== undefined) {
         return { ok: false as const, code: "closed" as const }
       }
@@ -306,10 +314,22 @@ export const debit = internalMutation({
      */
     reason: v.optional(endReasonValidator),
   },
-  returns: v.object({ balanceSeconds: v.number() }),
+  returns: v.object({
+    balanceSeconds: v.number(),
+    /**
+     * The row this report names is closed, so nothing was billed for it.
+     *
+     * A refusal rather than a fault: the worker on the other end has to leave
+     * politely, exactly as it does for `open`'s `closed` code. It is TERMINAL
+     * — no report will ever land on this room again — and the worker must
+     * treat it as such rather than retrying. See the A3 note below.
+     */
+    closed: v.boolean(),
+  }),
   handler: async (ctx, args) => {
     const user = await userByClerkId(ctx, args.clerkId)
-    if (user === null) throw new Error("No such user")
+    if (user === null)
+      throw new CodedError(ERROR_CODES.noAccount, "No such user")
 
     let session: Doc<"sessions"> | null = await ctx.db
       .query("sessions")
@@ -318,7 +338,7 @@ export const debit = internalMutation({
     // Before the ref check, before the patch, before the ledger row: a room
     // this learner does not own is not a room this learner can be charged for.
     if (session !== null && session.userId !== user._id) {
-      throw new Error("Not this learner's room")
+      throw new CodedError(ERROR_CODES.notYourRoom, "Not this learner's room")
     }
 
     const ref = `${args.room}:${args.jobId}:${args.seq}`
@@ -327,20 +347,60 @@ export const debit = internalMutation({
       .withIndex("by_ref", (q) => q.eq("ref", ref))
       .first()
     if (already !== null) {
-      return { balanceSeconds: await secondsFor(ctx, user._id) }
+      return {
+        balanceSeconds: await secondsFor(ctx, user._id),
+        closed: session?.endedAt !== undefined,
+      }
+    }
+
+    // **A closed row bills nothing** (launch checklist A3). The row is history:
+    // the final debit wrote `endedAt`, or the cron did because the lease ran
+    // out. A report arriving after that is a worker that lost the network for
+    // longer than the lease and has now reconnected — and the learner may well
+    // have started a second conversation in the meantime, which is two
+    // spenders on one balance for as long as it takes the old worker's renewal
+    // to come back refused. So: no ledger row, and the high-water mark does
+    // not move either, because moving it would print seconds on the History
+    // card that were never charged for.
+    //
+    // The reason still lands. It is the one fact this report carries that a
+    // closed row may not have, and it is written on its own condition for
+    // exactly this case (see the `endReason` note above): a row the cron swept
+    // up says only "stale" until the worker that was actually there explains
+    // it.
+    if (session !== null && session.endedAt !== undefined) {
+      if (
+        args.final === true &&
+        args.reason !== undefined &&
+        session.endReason === undefined
+      ) {
+        await ctx.db.patch(session._id, { endReason: args.reason })
+      }
+      return {
+        balanceSeconds: await secondsFor(ctx, user._id),
+        closed: true,
+      }
     }
 
     // Normally written by `open`. A missing row means the worker is metering
     // a room it never opened (a manual dispatch, an `open` that failed and
     // was not honoured): the seconds were still spoken, so they are still
     // billed — the row is created here so the high-water mark has a home.
+    //
+    // **Adopted WITHOUT a lease** (launch checklist A4). The lease is a
+    // reservation — it is what `open` refuses a second conversation against —
+    // and handing one to a room nobody ever called `open` for means a worker
+    // that was told to leave, or a replayed token, can lock a learner out of
+    // their own account for three minutes by reporting once. The seconds are
+    // real and they are billed; the reservation is not real and is not
+    // granted. An adopted row is closed by its own `final` report, and swept
+    // by age like any other row nothing is renewing.
     if (session === null) {
       const id = await ctx.db.insert("sessions", {
         userId: user._id,
         room: args.room,
         plan: ADOPTED_PLAN,
         startedAt: Date.now(),
-        leaseUntil: Date.now() + LEASE_TTL_MS,
       })
       session = await ctx.db.get(id)
     }
@@ -358,11 +418,34 @@ export const debit = internalMutation({
         `${DELTA_CAP_PREFIX} one report may add at most ${MAX_DELTA_PER_CALL_S}s (got ${delta}s)`
       )
     }
-    if (delta > 0) {
+    // **The balance floor** (launch checklist C1). The zero-hold lives in the
+    // worker's clock, and until now nothing here enforced it: a worker that
+    // held late, or one whose report crossed a balance read, pushed the ledger
+    // below zero — where `viewer` clamps `minutes` to 0 and the deficit is
+    // invisible on every surface, silently eaten by the learner's next grant.
+    //
+    // Both halves of this matter. What was CONSUMED is still recorded: the
+    // high-water mark moves to the reported total below, because the worker
+    // really did spend those seconds and a mark that lagged would re-bill them
+    // on the next report. What is CHARGED is clamped, so the balance lands at
+    // exactly zero rather than under it. The difference is the house's, and it
+    // is reported rather than absorbed quietly — this is the Sentry capture
+    // point (A11).
+    const balanceBefore = await secondsFor(ctx, user._id)
+    const applied = Math.max(0, Math.min(delta, Math.max(0, balanceBefore)))
+    if (applied < delta) {
+      reportError("balance_floor", {
+        userId: user._id,
+        room: args.room,
+        requested: delta,
+        applied,
+      })
+    }
+    if (applied > 0) {
       await ctx.db.insert("creditLedger", {
         userId: user._id,
         kind: "debit",
-        seconds: -delta,
+        seconds: -applied,
         ref,
         createdAt: Date.now(),
       })
@@ -387,7 +470,13 @@ export const debit = internalMutation({
     } else if (
       args.final !== true &&
       session !== null &&
-      session.endedAt === undefined
+      session.endedAt === undefined &&
+      // RENEWS a lease; never grants one (A4). A row with no lease was
+      // adopted by a report rather than opened by `open`, and a reservation
+      // nobody asked for is exactly what the adoption rule refuses. Renewal
+      // is free for a worker that really is alive on a room it really did
+      // open; everything else keeps metering without holding the learner.
+      session.leaseUntil !== undefined
     ) {
       patch.leaseUntil = Date.now() + LEASE_TTL_MS
     }
@@ -412,7 +501,17 @@ export const debit = internalMutation({
       await ctx.db.patch(session._id, patch)
     }
 
-    return { balanceSeconds: await secondsFor(ctx, user._id) }
+    // The one writer that runs on a schedule for as long as a learner keeps
+    // talking, so the one that has to keep the balance read cheap (C2). A
+    // no-op until the ledger has grown a checkpoint's worth of rows.
+    await checkpointLedger(ctx, user._id)
+
+    return {
+      balanceSeconds: await secondsFor(ctx, user._id),
+      // True only where THIS report closed the row: a report that lands on an
+      // already-closed one returned above.
+      closed: patch.endedAt !== undefined,
+    }
   },
 })
 
@@ -481,10 +580,12 @@ export const finish = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity()
-    if (identity === null) throw new Error("Not signed in")
+    if (identity === null)
+      throw new CodedError(ERROR_CODES.notSignedIn, "Not signed in")
 
     const user = await userByClerkId(ctx, identity.subject)
-    if (user === null) throw new Error("No account yet")
+    if (user === null)
+      throw new CodedError(ERROR_CODES.noAccount, "No account yet")
 
     const session = await ctx.db
       .query("sessions")
@@ -573,14 +674,15 @@ export const recordSummary = internalMutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const user = await userByClerkId(ctx, args.clerkId)
-    if (user === null) throw new Error("No such user")
+    if (user === null)
+      throw new CodedError(ERROR_CODES.noAccount, "No such user")
 
     let session: Doc<"sessions"> | null = await ctx.db
       .query("sessions")
       .withIndex("by_room", (q) => q.eq("room", args.room))
       .unique()
     if (session !== null && session.userId !== user._id) {
-      throw new Error("Not this learner's room")
+      throw new CodedError(ERROR_CODES.notYourRoom, "Not this learner's room")
     }
     if (session === null) {
       const id = await ctx.db.insert("sessions", {
@@ -588,14 +690,21 @@ export const recordSummary = internalMutation({
         room: args.room,
         plan: ADOPTED_PLAN,
         startedAt: Date.now(),
-        // The same lease `debit` gives an adopted row. Without one the row
-        // sits at the head of the reconciliation index (absent sorts first)
-        // for two hours, and enough of them would starve the expired leases
-        // behind them.
-        leaseUntil: Date.now() + LEASE_TTL_MS,
+        // NO lease, on the same terms as `debit`'s adoption (launch checklist
+        // A4). A summary is the record of something that is over; giving its
+        // row a live reservation meant a late report — or any room name at all
+        // behind a replayed machine token — blocked the learner's next start
+        // for three minutes. A row without a lease is not live, and the cron
+        // closes it by age.
+        //
+        // Lease-less rows used to sit at the head of the reconciliation index
+        // (absent sorts below every number), where enough of them would starve
+        // the expired leases behind them. `reconcileStale` no longer reads
+        // them in that range at all; see the note there.
       })
       session = await ctx.db.get(id)
-      if (session === null) throw new Error("Session row vanished")
+      if (session === null)
+        throw new CodedError(ERROR_CODES.rowVanished, "Session row vanished")
     }
 
     const patch: {
@@ -1056,20 +1165,44 @@ export const reconcileStale = internalMutation({
   returns: v.number(),
   handler: async (ctx) => {
     const now = Date.now()
+
+    // Two ranges, because they are two different questions and one index
+    // range cannot ask both (launch checklist C11).
+    //
+    // `lt("leaseUntil", now)` alone also matches every row with NO lease:
+    // absent sorts below every number, so the lease-less rows crowd the head
+    // of the range. The filter for them used to run AFTER `take(100)`, which
+    // meant a hundred young lease-less rows — and there are more of those now
+    // that `debit` and `recordSummary` adopt without one — returned a hundred
+    // rows that all failed the filter while the expired leases queued behind
+    // them were never read at all. A dead worker's row would sit open for as
+    // long as that backlog lasted. Bounding the range at zero puts only rows
+    // that actually carry a lease in it, so an expired lease is never starved.
     const expired = await ctx.db
       .query("sessions")
       .withIndex("by_endedAt_leaseUntil", (q) =>
-        q.eq("endedAt", undefined).lt("leaseUntil", now)
+        q.eq("endedAt", undefined).gte("leaseUntil", 0).lt("leaseUntil", now)
       )
       .take(RECONCILE_BATCH)
-    // `lt(leaseUntil, now)` on an optional field also matches rows with no
-    // lease at all (absent sorts below every number). Those are the legacy
-    // rows, and they close by age, not on sight.
-    const stale = expired.filter(
-      (session) =>
-        session.leaseUntil !== undefined ||
-        now - session.startedAt > LEGACY_STALE_MS
-    )
+
+    // The lease-less rows, read by AGE on their own index rather than sieved
+    // out of the one above: a row with no lease is not live (nothing renews
+    // it) but it is not evidence of a dead worker either, so it closes only
+    // once it is older than any real conversation. `lt("startedAt", …)` is the
+    // age bound expressed on the index, so the batch is spent on rows that
+    // qualify. The remaining JS check is the cheap half of the pair — the rows
+    // in THIS range that do carry a lease are the live long conversations, and
+    // there are a handful of those at most.
+    const legacy = (
+      await ctx.db
+        .query("sessions")
+        .withIndex("by_endedAt_startedAt", (q) =>
+          q.eq("endedAt", undefined).lt("startedAt", now - LEGACY_STALE_MS)
+        )
+        .take(RECONCILE_BATCH)
+    ).filter((session) => session.leaseUntil === undefined)
+
+    const stale = [...expired, ...legacy]
 
     for (const session of stale) {
       const patch: {
@@ -1078,6 +1211,19 @@ export const reconcileStale = internalMutation({
       } = { endedAt: session.startedAt + (session.secondsBilled ?? 0) * 1000 }
       if (session.endReason === undefined) patch.endReason = "stale"
       await ctx.db.patch(session._id, patch)
+      // A row closed with seconds on it is a conversation whose worker never
+      // came back to say so — billed, and explained by nobody. Worth seeing
+      // (launch checklist A11); a swept row with nothing billed is just a
+      // start that failed, and there is nothing to report about it.
+      if ((session.secondsBilled ?? 0) > 0) {
+        reportError("reconcile_billed_row", {
+          sessionId: session._id,
+          room: session.room,
+          userId: session.userId,
+          secondsBilled: session.secondsBilled,
+          leaseUntil: session.leaseUntil ?? null,
+        })
+      }
     }
     return stale.length
   },

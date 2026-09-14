@@ -43,7 +43,9 @@ export function TutorUnavailableCard({
             ? "That conversation has ended."
             : reason === "rate_limited"
               ? "That’s a lot of conversations for one hour."
-              : "The tutor didn’t join."}
+              : reason === "ledger_unreachable" || reason === "config_fault"
+                ? "The tutor couldn’t start."
+                : "The tutor didn’t join."}
       </h2>
       <p
         role="alert"
@@ -57,7 +59,11 @@ export function TutorUnavailableCard({
               ? "Start a new one. Nothing was charged here."
               : reason === "rate_limited"
                 ? "Give it a little while and try again. Nothing was charged."
-                : "Nothing was charged. Try again — this usually clears on the next attempt."}
+                : reason === "ledger_unreachable" || reason === "config_fault"
+                  ? "Something on our side isn’t reachable right now. Nothing was charged — try again in a minute."
+                  : reason === "no_learner"
+                    ? "This session wasn’t tied to your account. Nothing was charged — go home and start again."
+                    : "Nothing was charged. Try again — this usually clears on the next attempt."}
       </p>
       <div className="mt-5 flex items-center gap-3">
         <Button size="lg" onClick={onRetry}>

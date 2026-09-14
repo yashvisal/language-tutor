@@ -144,6 +144,23 @@ class SessionGoal:
         return {"text": self.text, "forms": list(self.forms), "source": self.source}
 
     def log_fields(self) -> dict[str, object]:
+        """What a goal is, without saying what it says.
+
+        The goal line is the learner's own words (or the tutor's, about them),
+        so it is prose and it does not go to INFO (A12, phase 8 decision (b)).
+        The source, whether it was confirmed, how many forms it names and how
+        long it is are what an operator triages on. `debug_fields()` has the
+        text for a laptop.
+        """
+        return {
+            "goal_chars": len(self.text),
+            "goal_forms": len(self.forms),
+            "goal_source": self.source,
+            "goal_confirmed": self.confirmed,
+        }
+
+    def debug_fields(self) -> dict[str, object]:
+        """The goal's text, for DEBUG only. Never log this at INFO."""
         return {
             "goal_text": self.text,
             "goal_forms": list(self.forms),

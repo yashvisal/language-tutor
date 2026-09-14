@@ -1,0 +1,46 @@
+# The build context LiveKit Cloud uploads. Keep it to the worker and its lock.
+
+# Virtual environments — rebuilt inside the image from uv.lock
+.venv/
+venv/
+
+# Tests and their fixtures never ship
+tests/
+
+# Python bytecode and artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Caches
+.cache/
+.pytest_cache/
+.ruff_cache/
+
+# Secrets. LiveKit Cloud's build service already excludes .env.*; this makes it
+# true for a local `docker build` too.
+.env
+.env.*
+
+# Logs and temp files
+*.log
+.tmp
+
+# VCS, editor, OS
+.git
+.gitignore
+.gitattributes
+.github/
+.idea/
+.vscode/
+.DS_Store
+
+# Docs and agent instructions
+README.md
+CLAUDE.md
+AGENTS.md
+.claude/

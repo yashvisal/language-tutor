@@ -30,6 +30,7 @@ pnpm-debug.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # typescript
 *.tsbuildinfo
@@ -43,3 +44,6 @@ __pycache__/
 # local dev logs
 .agent-dev.log
 .frontend-dev.log
+
+# Vercel CLI project link
+.vercel

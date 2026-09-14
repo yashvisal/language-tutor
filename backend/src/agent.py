@@ -67,7 +67,10 @@ from config import (
     ATTR_TRUE,
     ATTR_TURN_SEQ,
     ERROR_CLOSED,
+    ERROR_CONFIG_FAULT,
+    ERROR_LEDGER_UNREACHABLE,
     ERROR_MODEL,
+    ERROR_NO_LEARNER,
     ERROR_NONE,
     ERROR_OPEN_SESSION,
     ERROR_RATE_LIMITED,
@@ -77,6 +80,7 @@ from config import (
     TutorConfig,
 )
 from goal import GoalKeeper
+from observability import init_error_reporting, report_error
 from plan import JobMetadata, SessionPlan
 from prompts import (
     BRIDGE_INTENTS,
@@ -278,7 +282,13 @@ class TutorAgent(Agent):
             forms: The forms or phrases that goal invites; empty if there are none.
             why: A few words on where the goal came from.
         """
-        logger.info("set_session_goal called", extra={"goal": goal, "why": why})
+        # The tool's arguments are the learner's own words: never at INFO
+        # (A12). The fact of the call, and its size, is what a log is for.
+        logger.info(
+            "set_session_goal called",
+            extra={"goal_chars": len(goal or ""), "forms": len(forms or ())},
+        )
+        logger.debug("set_session_goal text", extra={"goal_text": goal, "why": why})
         if self._goals is None:
             return "Saved. Continue the conversation without mentioning this."
         await self._goals.adopt(SessionGoal.make(goal, forms, source="tool", confirmed=True))
@@ -301,9 +311,12 @@ class TutorAgent(Agent):
         # and emptied so it does not sit in the model's context as an answer
         # to the greeting it is about to give (live, 2026-09-10).
         if not self._state.tutor_spoken:
+            # The turn's own words never travel to INFO (A12): its length is
+            # what says whether the transcriber made a word of room tone or
+            # dropped a real sentence.
             logger.info(
                 "dropping a learner turn before the tutor's first audio",
-                extra={"text": (new_message.text_content or "")[:80]},
+                extra={"chars": len(new_message.text_content or "")},
             )
             new_message.content = []
             raise StopResponse()
@@ -427,12 +440,22 @@ def _prewarm(proc: JobProcess) -> None:
     unmetered production worker) are already refused per job, loudly, in
     `TutorConfig.from_env`.
     """
+    # The error reporter, before anything that could need it. A no-op without
+    # SENTRY_DSN, and the ONE place the SDK is initialised (see
+    # `src/observability.py`).
+    try:
+        init_error_reporting()
+    except Exception:
+        logger.warning("error reporting could not be initialised", exc_info=True)
+
     try:
         logger.info("worker boot", extra=TutorConfig.from_env().log_fields())
     except Exception as exc:
         # The config itself is broken. This is the line that says so — every
-        # job this process takes is about to be refused for the same reason.
-        logger.error("worker boot: the configuration is unusable: %s", exc)
+        # job this process takes is about to be refused for the same reason,
+        # and each of those refusals now reaches the learner as `config_fault`
+        # rather than as an agent that never joins (A2).
+        report_error("config_fault", f"worker boot: the configuration is unusable: {exc}", exc)
 
     try:
         proc.userdata["vad"] = inference.VAD(model="silero")
@@ -479,7 +502,23 @@ def _prewarmed(ctx: JobContext, key: str, build: Callable[[], Any]) -> Any:
 
 @server.rtc_session(agent_name=AGENT_NAME)
 async def tutor(ctx: JobContext) -> None:
-    cfg = TutorConfig.from_env()
+    # Per job, because the environment is read per job: a bad OPENAI_API_KEY or
+    # TUTOR_ALLOW_UNMETERED on a production worker raises here, on every job,
+    # and used to take the whole entrypoint down before `ctx.connect()` — a
+    # room the agent never joined, indistinguishable from a dispatch that never
+    # landed (A2). Now the learner is told, in one code, and the job leaves.
+    try:
+        cfg = TutorConfig.from_env()
+    except Exception as exc:
+        report_error(
+            "config_fault",
+            f"refusing this job: the worker's configuration is unusable: {exc}",
+            exc,
+            room=ctx.room.name,
+            job_id=ctx.job.id,
+        )
+        await _say_and_leave(ctx, ERROR_CONFIG_FAULT)
+        return
     meta = JobMetadata.parse(ctx.job.metadata)
     cfg = cfg.with_session_language(meta.plan.target_language)
     state = SessionState()
@@ -501,6 +540,9 @@ async def tutor(ctx: JobContext) -> None:
             **meta.plan.log_fields(),
         },
     )
+    # The plan's prose — everything the learner typed into the cards — at DEBUG
+    # and nowhere else (A12, phase 8 decision (b)).
+    logger.debug("session plan", extra=meta.plan.debug_fields())
 
     # The ledger's client. The job id rides in every debit's ref, which is what
     # keeps a redispatch of this room from replaying the first job's refs.
@@ -592,6 +634,7 @@ async def tutor(ctx: JobContext) -> None:
     facts.set_goal(seeded_goal)
     if seeded_goal is not None:
         logger.info("goal pre-seeded from the plan", extra=seeded_goal.log_fields())
+        logger.debug("goal pre-seed text", extra=seeded_goal.debug_fields())
     goals = GoalKeeper(
         cfg,
         facts,
@@ -806,12 +849,16 @@ async def _open_ledger(
                 extra={"balance_s": meta.balance_s},
             )
             return meta.balance_s
-        logger.error(
+        report_error(
+            "no_learner",
             "refusing this job: no learner id on the dispatch. A web dispatch always "
             "carries one; set TUTOR_ALLOW_UNMETERED=1 to run a manual job locally.",
-            extra={"room": ctx.room.name, "job_id": ctx.job.id},
+            room=ctx.room.name,
+            job_id=ctx.job.id,
         )
-        ctx.shutdown(reason="no learner on the dispatch: refusing to run unmetered")
+        # Through `_say_and_leave`, like the ledger's own refusals: a refusal
+        # nobody is told about is a frozen stage (A2).
+        await _say_and_leave(ctx, ERROR_NO_LEARNER)
         return None
 
     if not billing.enabled:
@@ -839,9 +886,12 @@ async def _open_ledger(
                 "closed": ERROR_CLOSED,
                 "rate_limited": ERROR_RATE_LIMITED,
             }.get(opened.code, ERROR_OPEN_SESSION)
-            logger.warning(
+            report_error(
+                "ledger_refused",
                 "the ledger refused this room; leaving",
-                extra={"code": opened.code, "room": ctx.room.name, "job_id": ctx.job.id},
+                code=opened.code,
+                room=ctx.room.name,
+                job_id=ctx.job.id,
             )
             await _say_and_leave(ctx, code)
             return None
@@ -855,15 +905,16 @@ async def _open_ledger(
         )
         return meta.balance_s
 
-    logger.error(
-        "refusing this job: the learner is metered but the ledger is unreachable (%s). "
-        "Set CONVEX_SITE_URL and CLERK_WORKER_MACHINE_SECRET_KEY, or "
-        "TUTOR_ALLOW_UNMETERED=1 for "
-        "local development.",
-        reason,
-        extra={"user_id": meta.user_id, "room": ctx.room.name, "job_id": ctx.job.id},
+    report_error(
+        "ledger_unreachable",
+        "refusing this job: the learner is metered but the ledger is unreachable "
+        f"({reason}). Set CONVEX_SITE_URL and CLERK_WORKER_MACHINE_SECRET_KEY, or "
+        "TUTOR_ALLOW_UNMETERED=1 for local development.",
+        user_id=meta.user_id,
+        room=ctx.room.name,
+        job_id=ctx.job.id,
     )
-    ctx.shutdown(reason="ledger unreachable: refusing to run an unmetered paid session")
+    await _say_and_leave(ctx, ERROR_LEDGER_UNREACHABLE)
     return None
 
 
@@ -873,6 +924,10 @@ async def _say_and_leave(ctx: JobContext, code: str) -> None:
     Used before the session exists, so the room may not be connected yet:
     connecting is what lets the attribute reach the learner, and a short
     pause lets it land before the participant leaves with it.
+
+    Every fail-closed refusal goes through here (A2): the ledger's three, plus
+    `no_learner`, `ledger_unreachable` and `config_fault`. The code goes on the
+    wire as-is; `frontend/lib/session/protocol.ts` knows all of them.
     """
     try:
         await ctx.connect()
@@ -880,7 +935,7 @@ async def _say_and_leave(ctx: JobContext, code: str) -> None:
         logger.warning("could not connect to publish the refusal", exc_info=True)
     await _publish_error(ctx.room, code)
     await asyncio.sleep(0.5)
-    ctx.shutdown(reason=f"the ledger refused this room: {code}")
+    ctx.shutdown(reason=f"refused: {code}")
 
 
 async def _renew_lease(ctx: JobContext, billing: BillingClient) -> None:
@@ -902,9 +957,12 @@ async def _renew_lease(ctx: JobContext, billing: BillingClient) -> None:
             continue
         if result.ok:
             continue
-        logger.error(
+        report_error(
+            "lease_lost",
             "lease lost: the ledger refused the renewal; ending the session",
-            extra={"code": result.code, "room": ctx.room.name, "job_id": ctx.job.id},
+            code=result.code,
+            room=ctx.room.name,
+            job_id=ctx.job.id,
         )
         billing.set_end_reason("lease_lost")
         ctx.shutdown(reason=f"lease lost: {result.code}")
@@ -926,12 +984,20 @@ def _meter_from_first_tutor_audio(
     a reply is not the same event — the model can fail, the socket can die, and
     the audio can never arrive.
 
-    The watchdog does not end anything. It cannot: nothing has been billed (the
-    clock never started), so there is no money question — only an operational
-    one. It does now SAY so, to the learner as well as to the logs: a stage
-    that has been silent for twenty seconds is a failure the learner can act on
-    (reload), and until `tutor.error` existed they had no way to know that
-    (audit §4.2).
+    The watchdog both says so and ENDS the session (A1, 2026-09-14). Saying so
+    alone was not enough: the clock never started, so no clock path could ever
+    end this job, while `_renew_lease` went on holding the room's lease every
+    60 s. The learner saw `tutor_silent`, could not start another conversation
+    (the ledger refuses a second `open` while one is leased), and had to close
+    the tab and wait out the three-minute TTL. Ending through `_end_session`
+    runs the ordinary teardown: `tutor.session_over`, `ctx.shutdown`, the
+    shutdown callback cancels the renewal, and the final debit — for zero
+    seconds, because nothing was billed — closes the row immediately.
+
+    `_end_session` rather than starting the clock at session start: the smaller
+    and safer change. Gating accrual on first audio inside the clock would put
+    a second "has the tutor spoken" condition in the one component that decides
+    what a learner is charged, for a case that must bill nothing at all.
     """
 
     requested_at = time.monotonic()
@@ -957,17 +1023,27 @@ def _meter_from_first_tutor_audio(
         await asyncio.sleep(FIRST_AUDIO_TIMEOUT_S)
         if clock.started:
             return
-        logger.error(
-            "the tutor has not spoken %.0fs after the session started; nothing is being "
-            "metered and the learner is looking at a silent stage",
-            FIRST_AUDIO_TIMEOUT_S,
+        report_error(
+            "tutor_silent",
+            "the tutor has not spoken "
+            f"{FIRST_AUDIO_TIMEOUT_S:.0f}s after the session started; nothing was "
+            "metered and the learner was looking at a silent stage",
+            room=ctx.room.name,
         )
+        # The code first, so the learner has the reason before the stage goes
+        # away: `tutor.session_over` follows a moment later from `_end_session`
+        # and the frontend latches the failure it already has.
         await _publish_error(ctx.room, ERROR_TUTOR_SILENT)
-        # Weak: this does not end anything (nothing was billed — the clock
-        # never started), but if the session ends without a better reason,
-        # "the tutor never spoke" is the honest one for History.
-        if billing is not None:
-            billing.set_end_reason("tutor_silent", weak=True)
+        # Not weak any more: this IS the ending, and `tutor_silent` is what the
+        # final debit reports. Nothing was billed, so the debit is for zero
+        # seconds and its only job is to close the row.
+        await _end_session(
+            ctx,
+            session,
+            reason="the tutor never spoke: no first audio",
+            code="tutor_silent",
+            billing=billing,
+        )
 
     _spawn(_watchdog(), "tutor-first-audio-watchdog")
 
@@ -1042,7 +1118,12 @@ def _watch_session_errors(
         if failed:
             return
         failed = True
-        logger.error("ending the session: %s", why, extra={"seconds_billed": clock.seconds_billed})
+        report_error(
+            "model_error",
+            f"ending the session: {why}",
+            seconds_billed=clock.seconds_billed,
+            room=ctx.room.name,
+        )
         _spawn(_fail(), "tutor-model-error")
 
     def _on_error(ev: ErrorEvent) -> None:
@@ -1241,6 +1322,14 @@ def _build_clock(
         path; the last minutes go unbilled and Convex's cron closes the row.
         """
         state.ledger_failed = True
+        report_error(
+            "ledger_ceiling",
+            "the debits stopped landing: the meter is held and the session is ending; "
+            "the last minutes will not bill",
+            room=ctx.room.name,
+            job_id=ctx.job.id,
+            seconds_billed=clock.seconds_billed,
+        )
         try:
             await clock.notify_hold_changed()
         except Exception:
@@ -1254,6 +1343,41 @@ def _build_clock(
         )
 
     billing.set_ceiling_handler(_ledger_ceiling)
+
+    async def _ledger_closed() -> None:
+        """The ledger refused a periodic debit: the row is already closed.
+
+        The cron swept this room while the worker was away (a lost network,
+        a long stall) and the learner may already be in another conversation
+        on the same balance. This job is metering a room it no longer owns,
+        so it ends the way a lost lease ends (A3, 2026-09-14).
+
+        Through `_end_session`, the same as the ceiling above: a bare
+        `ctx.shutdown()` never published `session_over` or closed the agent
+        session, so the frontend was left to its disconnect fallback
+        (CodeRabbit, PR #12). The teardown's final debit is skipped by the
+        client — the row is closed — which is the accepted outcome here.
+        """
+        state.ledger_failed = True
+        report_error(
+            "lease_lost",
+            "the ledger closed this room while the worker was away; ending the session",
+            room=ctx.room.name,
+            job_id=ctx.job.id,
+        )
+        try:
+            await clock.notify_hold_changed()
+        except Exception:
+            logger.warning("clock republish on ledger close failed", exc_info=True)
+        await _end_session(
+            ctx,
+            session,
+            reason="ledger closed the room",
+            code="lease_lost",
+            billing=billing,
+        )
+
+    billing.set_closed_handler(_ledger_closed)
 
     clock = SessionClock(
         budget_s,

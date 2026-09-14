@@ -52,6 +52,15 @@ export default defineSchema({
      * Signed SECONDS: grants are positive, debits negative. Seconds, not
      * minutes, because the meter bills the seconds actually spoken — see
      * `lib/billing.ts`.
+     *
+     * **The invariant: `sum(seconds)` for a learner is never negative.**
+     * Enforced by the one writer that can push it down — `sessions.debit`
+     * clamps its row so the sum lands at exactly zero rather than below it,
+     * and reports the shortfall as `balance_floor` (launch checklist C1). The
+     * seconds the worker actually consumed are still recorded, on the session
+     * row's `secondsBilled`; the ledger records what was CHARGED, and what was
+     * charged can never exceed what the learner had. So a later grant is
+     * minutes the learner really has, never a deficit being quietly repaid.
      */
     seconds: v.number(),
     /**
@@ -67,6 +76,49 @@ export default defineSchema({
   })
     .index("by_ref", ["ref"])
     .index("by_user", ["userId"]),
+
+  /**
+   * A running total of `creditLedger`, so reading a balance does not mean
+   * reading a lifetime of rows (launch checklist C2, audit L9).
+   *
+   * `users.secondsFor` used to `.collect()` the whole ledger, on every balance
+   * read and three times per debit. One row per active minute means a heavy
+   * learner eventually crosses Convex's per-query document limit — and when
+   * they do, their dashboard, their token route and every future debit break
+   * at the same moment.
+   *
+   * So: a checkpoint is the sum of every ledger row up to and including
+   * `throughCreationTime`, and a balance is that number plus the rows after
+   * it. Append-only, like the ledger itself — a checkpoint is never edited,
+   * the newest one wins, and an older one stays exactly as true as it was.
+   * Writing one is idempotent: a second call with nothing new to fold in
+   * writes nothing.
+   *
+   * **Deliberately NOT a `creditLedger` row with `kind: "checkpoint"`.** It
+   * would have to be summed with the rows it summarises (double counting) or
+   * excluded by kind everywhere, and it would appear in `users.ledger` — the
+   * Billing dialog's "Recent activity" — as a mystery entry the learner never
+   * did. Its own table keeps `sum(creditLedger.seconds)` meaning exactly what
+   * it has always meant.
+   */
+  ledgerCheckpoints: defineTable({
+    userId: v.id("users"),
+    /** `sum(creditLedger.seconds)` for this learner through
+     * `throughCreationTime`. Signed, like the rows it folds in. */
+    seconds: v.number(),
+    /**
+     * The `_creationTime` of the newest ledger row inside this checkpoint.
+     * The balance read resumes strictly after it (`gt`), which is exact
+     * because `_creationTime` is unique within a table.
+     */
+    throughCreationTime: v.number(),
+    /** How many ledger rows are folded in. Not used to compute anything — it
+     * is how an operator answers "is the checkpoint keeping up". */
+    rows: v.number(),
+    createdAt: v.number(),
+    // Newest-first per learner is the only read: `by_user` plus the
+    // `_creationTime` Convex appends is exactly that.
+  }).index("by_user", ["userId"]),
 
   sessions: defineTable({
     userId: v.id("users"),

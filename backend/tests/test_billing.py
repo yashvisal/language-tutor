@@ -290,6 +290,61 @@ async def test_junk_answers_are_not_balances() -> None:
 # --- failure, retry, and the zero hold ------------------------------------
 
 
+async def test_a_closed_row_ends_the_session_and_stops_the_reports() -> None:
+    # A3 (2026-09-14): the ledger answers a periodic debit with `closed: true`
+    # when the cron already swept the row. The client latches, fires its
+    # handler once, and reports nothing more for this room — including the
+    # teardown's final debit.
+    ledger = FakeLedger([{"balanceSeconds": 100, "closed": True}])
+    client = make(ledger)
+    fired: list[int] = []
+
+    async def on_closed() -> None:
+        fired.append(1)
+
+    client.set_closed_handler(on_closed)
+    assert await client.debit(30) == 100
+    assert client.closed is True
+    assert fired == [1]
+    assert await client.debit(60) is None
+    assert await client.debit(60, final=True) is None
+    assert len(ledger.debits) == 1
+
+
+async def test_two_reports_in_flight_fire_the_closed_handler_once() -> None:
+    # Two debits can pass the pre-lock check together (the periodic report
+    # and a zero hold's). The second must not post to a row the first just
+    # learned is closed, and the handler must fire once (CodeRabbit, PR #12).
+    ledger = FakeLedger(
+        [{"balanceSeconds": 100, "closed": True}, {"balanceSeconds": 100, "closed": True}]
+    )
+    client = make(ledger)
+    fired: list[int] = []
+
+    async def on_closed() -> None:
+        fired.append(1)
+
+    client.set_closed_handler(on_closed)
+    results = await asyncio.gather(client.debit(30), client.debit(45))
+    assert sorted(results, key=lambda r: (r is None, r or 0)) == [100, None]
+    assert fired == [1]
+    assert len(ledger.debits) == 1
+
+
+async def test_a_final_report_that_closes_the_row_is_not_a_refusal() -> None:
+    ledger = FakeLedger([{"balanceSeconds": 40, "closed": True}])
+    client = make(ledger)
+    fired: list[int] = []
+
+    async def on_closed() -> None:
+        fired.append(1)
+
+    client.set_closed_handler(on_closed)
+    assert await client.debit(30, final=True) == 40
+    assert client.closed is False
+    assert fired == []
+
+
 async def test_a_failed_debit_returns_none_and_never_raises() -> None:
     ledger = FakeLedger([None])
     client = make(ledger)

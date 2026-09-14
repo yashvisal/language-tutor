@@ -50,12 +50,7 @@ import {
   useRef,
   useState,
 } from "react"
-import {
-  ConnectionState,
-  RoomEvent,
-  Track,
-  type Room,
-} from "livekit-client"
+import { ConnectionState, RoomEvent, Track, type Room } from "livekit-client"
 import { useMutation } from "convex/react"
 import {
   useAgent,
@@ -104,6 +99,9 @@ import {
   TUTOR_ERROR_CLOSED,
   TUTOR_ERROR_OPEN_SESSION,
   TUTOR_ERROR_RATE_LIMITED,
+  TUTOR_ERROR_NO_LEARNER,
+  TUTOR_ERROR_LEDGER_UNREACHABLE,
+  TUTOR_ERROR_CONFIG_FAULT,
   TUTOR_ERROR_SILENT,
 } from "./protocol"
 import type {
@@ -346,6 +344,9 @@ export type TutorFailure =
   | "open_session"
   | "closed"
   | "rate_limited"
+  | "no_learner"
+  | "ledger_unreachable"
+  | "config_fault"
 
 export interface LiveSession {
   state: SessionState
@@ -410,6 +411,12 @@ function failureFromError(code: string | undefined): TutorFailure | null {
       return "closed"
     case TUTOR_ERROR_RATE_LIMITED:
       return "rate_limited"
+    case TUTOR_ERROR_NO_LEARNER:
+      return "no_learner"
+    case TUTOR_ERROR_LEDGER_UNREACHABLE:
+      return "ledger_unreachable"
+    case TUTOR_ERROR_CONFIG_FAULT:
+      return "config_fault"
     default:
       return null
   }

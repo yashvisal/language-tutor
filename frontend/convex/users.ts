@@ -10,6 +10,7 @@ import {
 } from "./_generated/server"
 import { internal } from "./_generated/api"
 import type { Doc } from "./_generated/dataModel"
+import { CodedError, ERROR_CODES } from "./errors"
 import { ledgerKindValidator } from "./validators"
 import { minutesFromSeconds, SIGNUP_GRANT_SECONDS } from "../lib/billing"
 
@@ -25,16 +26,103 @@ export async function userByClerkId(
     .unique()
 }
 
-/** Balance is always summed from the ledger, never read off a field. */
+/**
+ * How many ledger rows accumulate before they are folded into a checkpoint.
+ *
+ * Small enough that the tail read is trivial at any account age; large enough
+ * that a checkpoint is written roughly once an hour of conversation rather
+ * than on every debit. The number is not load-bearing: any value gives the
+ * same balance, because the checkpoint is a cache of a sum and never a source
+ * of truth on its own.
+ */
+const CHECKPOINT_EVERY = 50
+
+/**
+ * The newest checkpoint and every ledger row written after it — the two halves
+ * of a balance.
+ *
+ * `null` checkpoint means a fresh account, and then the tail is the whole
+ * ledger, which is the same read this used to do for everyone.
+ */
+async function ledgerTail(
+  ctx: QueryCtx | MutationCtx,
+  userId: Doc<"users">["_id"]
+): Promise<{
+  checkpoint: Doc<"ledgerCheckpoints"> | null
+  tail: Doc<"creditLedger">[]
+}> {
+  const checkpoint = await ctx.db
+    .query("ledgerCheckpoints")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    // Newest first: an older checkpoint is still true, it is just further
+    // behind, and folding the wrong one in would mean reading more rows than
+    // necessary — never a wrong answer.
+    .order("desc")
+    .first()
+  const tail = await ctx.db
+    .query("creditLedger")
+    .withIndex("by_user", (q) =>
+      checkpoint === null
+        ? q.eq("userId", userId)
+        : // Strictly after the newest row the checkpoint folded in.
+          // `_creationTime` is unique within a table, so `gt` cannot skip a
+          // row or count one twice.
+          q.eq("userId", userId).gt("_creationTime", checkpoint.throughCreationTime)
+    )
+    .collect()
+  return { checkpoint, tail }
+}
+
+/**
+ * Balance is always summed from the ledger, never read off a field — but it is
+ * summed from the newest checkpoint forward rather than from the beginning of
+ * time (launch checklist C2).
+ *
+ * Exactly equal to `sum(creditLedger.seconds)` by construction: the checkpoint
+ * IS that sum through a cut, and the tail is every row after the cut.
+ */
 export async function secondsFor(
   ctx: QueryCtx | MutationCtx,
   userId: Doc<"users">["_id"]
 ): Promise<number> {
-  const entries = await ctx.db
-    .query("creditLedger")
-    .withIndex("by_user", (q) => q.eq("userId", userId))
-    .collect()
-  return entries.reduce((sum, entry) => sum + entry.seconds, 0)
+  const { checkpoint, tail } = await ledgerTail(ctx, userId)
+  return tail.reduce(
+    (sum, entry) => sum + entry.seconds,
+    checkpoint?.seconds ?? 0
+  )
+}
+
+/**
+ * Fold the tail into a new checkpoint, if it has grown enough to be worth one.
+ *
+ * Called at the end of `sessions.debit` — the one writer that runs on a
+ * schedule for as long as a learner keeps talking, and therefore the one that
+ * would otherwise let the tail grow without bound.
+ *
+ * **Idempotent, and safe to call at any moment.** A call with fewer than
+ * `CHECKPOINT_EVERY` new rows writes nothing; a call immediately after another
+ * has an empty tail and writes nothing. Two that somehow land together write
+ * two checkpoints — and the newest wins, both are correct, and the balance is
+ * the same either way. Nothing here can change a balance; it can only change
+ * how many rows the next read has to add up.
+ */
+export async function checkpointLedger(
+  ctx: MutationCtx,
+  userId: Doc<"users">["_id"]
+): Promise<void> {
+  const { checkpoint, tail } = await ledgerTail(ctx, userId)
+  if (tail.length < CHECKPOINT_EVERY) return
+  const newest = tail[tail.length - 1]
+  await ctx.db.insert("ledgerCheckpoints", {
+    userId,
+    seconds: tail.reduce(
+      (sum, entry) => sum + entry.seconds,
+      checkpoint?.seconds ?? 0
+    ),
+    throughCreationTime: newest._creationTime,
+    rows: (checkpoint?.rows ?? 0) + tail.length,
+    createdAt: Date.now(),
+  })
 }
 
 /**
@@ -141,7 +229,8 @@ export const ensureUser = mutation({
   returns: v.null(),
   handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity()
-    if (identity === null) throw new Error("Not signed in")
+    if (identity === null)
+      throw new CodedError(ERROR_CODES.notSignedIn, "Not signed in")
 
     const clerkId = identity.subject
     const existing = await userByClerkId(ctx, clerkId)
@@ -217,13 +306,18 @@ export const setBalance = internalMutation({
   returns: v.object({ before: v.number(), after: v.number() }),
   handler: async (ctx, args) => {
     const user = await userByClerkId(ctx, args.clerkId)
-    if (user === null) throw new Error("No such user")
+    if (user === null)
+      throw new CodedError(ERROR_CODES.noAccount, "No such user")
     const ref = args.ref ?? `adjustment:${args.clerkId}:${crypto.randomUUID()}`
     const used = await ctx.db
       .query("creditLedger")
       .withIndex("by_ref", (q) => q.eq("ref", ref))
       .first()
-    if (used !== null) throw new Error(`Ledger ref already used: ${ref}`)
+    if (used !== null)
+      throw new CodedError(
+        ERROR_CODES.refUsed,
+        `Ledger ref already used: ${ref}`
+      )
     const before = await secondsFor(ctx, user._id)
     const target = Math.max(0, Math.round(args.seconds))
     const delta = target - before
@@ -304,7 +398,20 @@ export const deleteByClerkId = internalMutation({
       .take(DELETE_BATCH)
     for (const session of sessions) await ctx.db.delete(session._id)
 
-    if (ledger.length === DELETE_BATCH || sessions.length === DELETE_BATCH) {
+    // The checkpoints go with the ledger they summarise (C2). They hold no
+    // learner text, but they are a balance, and "nothing of that learner is
+    // left" has to stay literally true.
+    const checkpoints = await ctx.db
+      .query("ledgerCheckpoints")
+      .withIndex("by_user", (q) => q.eq("userId", user._id))
+      .take(DELETE_BATCH)
+    for (const checkpoint of checkpoints) await ctx.db.delete(checkpoint._id)
+
+    if (
+      ledger.length === DELETE_BATCH ||
+      sessions.length === DELETE_BATCH ||
+      checkpoints.length === DELETE_BATCH
+    ) {
       // A full batch means there may be more. `runAfter(0, ...)` is scheduled
       // inside this transaction, so it is committed with the deletions or not
       // at all — there is no window where the batch lands and the follow-up

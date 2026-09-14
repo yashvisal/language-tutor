@@ -1,3 +1,4 @@
+import type { Metadata } from "next"
 import { redirect } from "next/navigation"
 
 import { ensureViewerOnServer } from "@/lib/viewer-server"
@@ -17,6 +18,12 @@ import { ensureViewerOnServer } from "@/lib/viewer-server"
  *
  * No chrome: the layout is the gate and nothing else.
  */
+// The page itself is a client component and cannot export metadata; this
+// layout is the nearest server file, so the tab name lives here.
+export const metadata: Metadata = {
+  title: "Session",
+}
+
 export default async function SessionLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {

@@ -365,6 +365,15 @@ export const TUTOR_ERROR_CLOSED = "closed"
 /** The ledger refused to open this room because the learner hit the hourly
  * start limit between the token's pre-check and the worker's join. */
 export const TUTOR_ERROR_RATE_LIMITED = "rate_limited"
+/**
+ * The worker's fail-closed refusals (A2, 2026-09-14): the dispatch carried no
+ * learner id; the ledger could not be reached to open the session; the
+ * worker's own configuration failed for this job. All three connect, publish
+ * the code, and leave; nothing is billed.
+ */
+export const TUTOR_ERROR_NO_LEARNER = "no_learner"
+export const TUTOR_ERROR_LEDGER_UNREACHABLE = "ledger_unreachable"
+export const TUTOR_ERROR_CONFIG_FAULT = "config_fault"
 
 /**
  * How long the surface waits for the tutor to JOIN before calling the session

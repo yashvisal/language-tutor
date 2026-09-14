@@ -1,12 +1,12 @@
 import type { Metadata } from "next"
 
 import { AmbientAura } from "@/components/marketing/ambient-aura"
+import { DemoConversation } from "@/components/marketing/demo-conversation"
 import {
-  AnswerFragment,
-  DemoConversation,
+  AskFragment,
   FixFragment,
-  SpeakFragment,
-} from "@/components/marketing/demo-conversation"
+  TranslateFragment,
+} from "@/components/marketing/feature-miniatures"
 import { LanguageFlag } from "@/components/marketing/language-flag"
 import { MarketingFooter } from "@/components/marketing/marketing-footer"
 import { MarketingHeader } from "@/components/marketing/marketing-header"
@@ -17,11 +17,10 @@ import { Button } from "@/components/ui/button"
 import { SIGNUP_GRANT_MINUTES } from "@/lib/billing"
 import { LANGUAGE_NAMES, TARGET_LANGUAGES } from "@/lib/session/plan"
 
-export const metadata: Metadata = {
-  title: "lengua — practice languages, uninterrupted",
-  description:
-    "A live language tutor that keeps the conversation going. Your words appear as you speak them, and after your turn settles you see what you should have said.",
-}
+// The title and description live on the root layout (its `default` is this
+// page's), so the home page inherits them and the `%s · lengua` template does
+// not double the wordmark.
+export const metadata: Metadata = {}
 
 const LANGUAGES = TARGET_LANGUAGES.map(({ code, native }) => ({
   code,
@@ -50,7 +49,7 @@ export default function LandingPage() {
             rather than piled above them: a tight stack centred in a tall box
             reads as cramped copy floating in emptiness (Yash, 2026-09-11).
             Hence the fixed start under the header and the growing gaps. */}
-        <section className="relative mx-auto flex min-h-[calc(100svh-3.5rem)] w-full max-w-6xl flex-col items-center px-6 pt-16 pb-16 text-center sm:pt-20">
+        <section className="relative mx-auto flex min-h-[calc(100svh-3.5rem)] w-full max-w-6xl flex-col items-center overflow-x-clip px-6 pt-16 pb-16 text-center sm:pt-20">
           {/* The wide wash behind the whole hero, at the strength Yash
               settled on with the lab's tuner (2026-09-13). */}
           <div
@@ -80,8 +79,17 @@ export default function LandingPage() {
               hero: a quiet way down to the explanation for whoever wants it
               before the demo. Tried as a ghost with the grant as a caption;
               the outline and the full label read better (Yash, 2026-09-13). */}
-          <div className="mt-7 flex items-center gap-2">
-            <PrimaryCta />
+          {/* Below sm the row stacks and the primary takes the bare verb: the
+              full label is 44 characters and runs off a 360px screen, so the
+              grant moves to a caption under the buttons (checklist A5). At sm
+              and up this is the row Yash settled on, unchanged. */}
+          <div className="mt-7 flex w-full flex-col items-center gap-2 sm:w-auto sm:flex-row">
+            <div className="sm:hidden">
+              <PrimaryCta label="Start speaking" />
+            </div>
+            <div className="hidden sm:block">
+              <PrimaryCta />
+            </div>
             <Button
               variant="outline"
               size="lg"
@@ -91,6 +99,9 @@ export default function LandingPage() {
               How it works
             </Button>
           </div>
+          <p className="mt-3 text-sm text-muted-foreground sm:hidden">
+            Your first {SIGNUP_GRANT_MINUTES} minutes are free.
+          </p>
 
           {/* The orb at the Paper boards' 200px. The override has to name the
               sm breakpoint too, or the demo's own sm:h-56 wins above 640px. */}
@@ -101,7 +112,10 @@ export default function LandingPage() {
           />
         </section>
 
-        {/* How it works — the same stage, three moments. */}
+        {/* How it works — three things the product does, each one running.
+            The numerals went with the sequence they belonged to: these are
+            features a visitor can pick from, not steps in an order (Yash,
+            2026-09-14). */}
         <section
           id="how"
           aria-labelledby="how-heading"
@@ -109,63 +123,58 @@ export default function LandingPage() {
         >
           <div className="mx-auto w-full max-w-6xl px-6 py-20">
             <Reveal>
-              <h2
-                id="how-heading"
-                className="text-xs font-medium tracking-[0.18em] text-muted-foreground uppercase"
-              >
+              {/* The sentence is the heading and the eyebrow is a label: a
+                  screen reader's heading list should read as sentences, not
+                  as three shouted words (checklist C10). Only the tags
+                  swapped — the type is the same on both. */}
+              <p className="text-xs font-medium tracking-[0.18em] text-muted-foreground uppercase">
                 How it works
-              </h2>
+              </p>
               {/* Section headings hold one line at desktop, all of them the
                   same (Yash, 2026-09-13). */}
-              <p className="mt-3 max-w-3xl text-2xl font-medium tracking-tight text-balance">
+              <h2
+                id="how-heading"
+                className="mt-3 max-w-3xl text-2xl font-medium tracking-tight text-balance"
+              >
                 A conversation, with the teaching around it instead of in it.
-              </p>
+              </h2>
             </Reveal>
 
-            <ol className="mt-10 grid gap-5 md:grid-cols-3">
+            <ul className="mt-10 grid gap-5 md:grid-cols-3">
               {[
                 {
-                  n: "1",
-                  title: "You speak",
-                  body: "Say it however it comes out. Your words appear as you say them, so you can follow without translating in your head.",
-                  stage: <SpeakFragment />,
-                },
-                {
-                  n: "2",
-                  title: "The tutor answers",
-                  body: "In your chosen language, at conversation speed — and it waits. Nobody stops you mid-sentence to fix a verb.",
-                  stage: <AnswerFragment />,
-                },
-                {
-                  n: "3",
                   title: "The fix appears",
                   body: "Once your turn settles, the better word steps in quietly, in place, with the reason if you want it.",
                   stage: <FixFragment />,
                 },
-              ].map((step, i) => (
-                <li key={step.n} className="flex h-full flex-col">
+                {
+                  title: "Highlight to translate",
+                  body: "Unsure what the tutor said? Select any part of it and the English appears right there. Selecting holds the session — no seconds spent reading.",
+                  stage: <TranslateFragment />,
+                },
+                {
+                  title: "Ask anything",
+                  body: "Pause and ask why. The tutor explains in English, with the conversation as context, then you pick up where you left off.",
+                  stage: <AskFragment />,
+                },
+              ].map((feature, i) => (
+                <li key={feature.title} className="flex h-full flex-col">
                   <Reveal delay={i * 0.08} className="flex h-full flex-col">
-                    <div className="h-56 rounded-2xl border border-border/60 bg-muted/50 px-6 shadow-xs dark:bg-card/40 dark:shadow-none">
-                      {step.stage}
+                    <div className="h-44 rounded-2xl border border-border/60 bg-muted/50 px-6 shadow-xs dark:bg-card/40 dark:shadow-none">
+                      {feature.stage}
                     </div>
                     <div className="px-1 pt-5">
-                      {/* The number at the title's own size: a 12px numeral
-                          on an 18px baseline read as floating (Yash,
-                          2026-09-11). */}
-                      <h3 className="flex items-center gap-3 text-lg font-medium tracking-tight">
-                        <span className="text-primary tabular-nums">
-                          {step.n}
-                        </span>
-                        {step.title}
+                      <h3 className="text-lg font-medium tracking-tight">
+                        {feature.title}
                       </h3>
                       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-                        {step.body}
+                        {feature.body}
                       </p>
                     </div>
                   </Reveal>
                 </li>
               ))}
-            </ol>
+            </ul>
           </div>
         </section>
 
@@ -176,15 +185,15 @@ export default function LandingPage() {
         >
           <div className="mx-auto w-full max-w-6xl px-6 py-20">
             <Reveal>
+              <p className="text-xs font-medium tracking-[0.18em] text-muted-foreground uppercase">
+                Languages
+              </p>
               <h2
                 id="languages-heading"
-                className="text-xs font-medium tracking-[0.18em] text-muted-foreground uppercase"
+                className="mt-3 max-w-3xl text-2xl font-medium tracking-tight text-balance"
               >
-                Languages
-              </h2>
-              <p className="mt-3 max-w-3xl text-2xl font-medium tracking-tight text-balance">
                 Practice speaking in these languages, with coaching in English.
-              </p>
+              </h2>
               {/* One strip, five cells, a hairline between them: the flag as
                   a small round badge, the name in its own spelling, the
                   English beneath. Five separate cards with a word each read
@@ -225,15 +234,15 @@ export default function LandingPage() {
         >
           <div className="mx-auto w-full max-w-6xl px-6 py-20">
             <Reveal>
+              <p className="text-xs font-medium tracking-[0.18em] text-muted-foreground uppercase">
+                Minutes
+              </p>
               <h2
                 id="pricing-heading"
-                className="text-xs font-medium tracking-[0.18em] text-muted-foreground uppercase"
+                className="mt-3 text-2xl font-medium tracking-tight"
               >
-                Minutes
-              </h2>
-              <p className="mt-3 text-2xl font-medium tracking-tight">
                 Your first {SIGNUP_GRANT_MINUTES} minutes are free.
-              </p>
+              </h2>
               <PricingPacks className="mt-8" />
             </Reveal>
           </div>
@@ -242,7 +251,9 @@ export default function LandingPage() {
         {/* Closing — the small orb above the line. The button is the bare
             verb: the minutes section just above has already made the
             promise (Yash, 2026-09-13). */}
-        <section className="border-t border-border/60">
+        {/* The orb's glow is 1.5× its box and overflows a phone: clipped here
+            rather than narrowed, so the light is unchanged (checklist A6). */}
+        <section className="overflow-x-clip border-t border-border/60">
           <div className="mx-auto flex w-full max-w-6xl flex-col items-center px-6 py-24 text-center">
             <Reveal className="flex flex-col items-center">
               <div className="relative h-20">

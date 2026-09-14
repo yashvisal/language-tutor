@@ -157,8 +157,13 @@ TUTOR_TRANSLATE_MODEL=gpt-5.6-luna
 TUTOR_HOLD_IDLE_S=600               # any hold this long ends the session
 TUTOR_ALLOW_UNMETERED=0             # local development ONLY — see below
 TUTOR_ENV=                          # set to `production` on the prod worker
+SENTRY_DSN=                         # error reporting; unset = off
 CLERK_API_URL=https://api.clerk.com # only for a Clerk instance on another host
 ```
+
+`SENTRY_DSN` is optional everywhere and unset by default: `sentry-sdk` is a
+dependency, but the init seam (`src/observability.py`) initialises nothing
+without a DSN, so a laptop run reports nothing anywhere.
 
 `TUTOR_ENV` is a free string and only `production` means anything. Set it on
 the production worker and nowhere else: with it set, `TUTOR_ALLOW_UNMETERED`
@@ -222,6 +227,61 @@ lk agent dev          # dev mode against the LiveKit Cloud project
 `lk agent dev` is what the deploy path and the LiveKit tooling assume.
 `console` has no `lk` equivalent, so keep that one for a terminal-only smoke
 test and nothing else.
+
+### Deploying to LiveKit Cloud
+
+The deploy artifact is checked in (launch checklist B4): `Dockerfile`,
+`.dockerignore` and `livekit.toml`, all in `backend/`.
+
+The image is a two-stage build on `ghcr.io/astral-sh/uv:python3.13-bookworm-slim`
+— 3.13 is the top of `requires-python` and what `.python-version` pins — that
+installs with `uv sync --frozen --no-dev` (exactly `uv.lock`, no ruff or
+pytest), copies `src/`, runs as an unprivileged `appuser`, and starts with
+`CMD ["python", "src/agent.py", "start"]`. That is the same `agents.cli`
+entrypoint `lk agent dev` runs, in production mode; LiveKit Cloud's health
+check watches that process, so there is no wrapper script and nothing
+backgrounded.
+
+Check it builds locally before the first deploy:
+
+```shell
+docker build -t tutor-worker backend/     # from the repo root
+```
+
+LiveKit Cloud builds the image itself on `create` / `deploy` — a local
+`docker build` is only a smoke test.
+
+**First deploy.** `lk agent create` refuses to run when a config file already
+exists and writes `livekit.toml` itself, so move the checked-in one aside (or
+pass `--config`), create, then commit the file the CLI generated — the `id` in
+it is what every later command resolves from.
+
+```shell
+cd backend
+mv livekit.toml livekit.toml.example   # `create` refuses to overwrite it
+lk agent create --region <region> --secrets-file ./secrets.env .
+lk agent deploy            # every version after the first
+lk agent update-secrets --secrets TUTOR_ENV=production
+lk agent logs              # deploy logs; --log-type build for the build
+lk agent rollback          # paid plans
+```
+
+**Secrets.** `LIVEKIT_URL`, `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` are
+injected by LiveKit Cloud and must **not** be set — the Dockerfile sets no
+environment variable that carries a secret, and `.env*` never enters the build
+context. Everything else is passed with `--secrets` / `--secrets-file`:
+
+| Secret | Notes |
+| ------ | ----- |
+| `OPENAI_API_KEY` | The production OpenAI project — verify model access there (B5) |
+| `CONVEX_SITE_URL` | The **production** `*.convex.site` host |
+| `CLERK_WORKER_MACHINE_SECRET_KEY` | Production instance's `tutor-worker` machine key |
+| `TUTOR_ENV=production` | Required. It is what makes `TUTOR_ALLOW_UNMETERED` refuse to boot |
+| `SENTRY_DSN` | Error reporting. Unset = off; the worker initialises nothing |
+| `TUTOR_REALTIME_MODEL`, `TUTOR_STT_MODEL`, `TUTOR_ANALYZER_MODEL`, `TUTOR_TRANSLATE_MODEL` | Pin dated snapshots rather than riding the floating aliases in `config.py` |
+
+Never set `TUTOR_ALLOW_UNMETERED` on this agent. Rollout order for any schema
+change is Convex → worker → frontend.
 
 Tests:
 
@@ -289,7 +349,7 @@ refused for the same reason.
 | `tutor.review_version` (participant attribute) | An integer as a string, `"0"` at session start and bumped on every new Review snapshot — the tab refetches `tutor.review` when it rises |
 | `tutor.goal` (participant attribute) | The one line the learner agreed this session is for. Absent until the goal is captured |
 | `tutor.session_over` (participant attribute) | `"true"` immediately before the worker disconnects |
-| `tutor.error` (participant attribute) | `""` (nothing wrong, published at start), `"model"` (the realtime model died unrecoverably — the session is ending), or `"tutor_silent"` (no tutor audio 20s after the session started; nothing was billed) |
+| `tutor.error` (participant attribute) | `""` (nothing wrong, published at start), `"model"` (the realtime model died unrecoverably — the session is ending), or `"tutor_silent"` (no tutor audio 20s after the session started; nothing was billed and the session ends) |
 | `lk.agent.state` (participant attribute) | Agent state, published by the SDK                               |
 | RPC `tutor.pause` / `tutor.resume`       | Frontend → worker, one logical call per state change (retries are idempotent) |
 | RPC `tutor.translate`                    | Frontend → worker, one selected span → its anchor translation   |
@@ -550,7 +610,7 @@ displays its numbers and never computes its own.
 
 | Moment                          | What happens                                                |
 | ------------------------------- | ----------------------------------------------------------- |
-| first tutor audio frame          | The clock starts; `tutor.elapsed_s` / `tutor.remaining_s` published. **Not** when the greeting is *requested*: a session where the model never speaks must be billed nothing. The frame is `agent_state_changed` → `"speaking"`, which the framework flips from the playout task's first-frame callback. No tutor audio within 20s is logged at **error** level and published as `tutor.error` = `"tutor_silent"` — nothing has been billed, so this is an alarm the learner can act on (reload), not an ending |
+| first tutor audio frame          | The clock starts; `tutor.elapsed_s` / `tutor.remaining_s` published. **Not** when the greeting is *requested*: a session where the model never speaks must be billed nothing. The frame is `agent_state_changed` → `"speaking"`, which the framework flips from the playout task's first-frame callback. No tutor audio within 20s is logged at **error** level and published as `tutor.error` = `"tutor_silent"` — nothing has been billed, and the session ends with `tutor_silent` so the lease frees at once (2026-09-14) |
 | every 60 **active** seconds      | A debit for the seconds so far. Cumulative, so the ledger takes only the delta; a worker killed at minute 45 has lost at most a minute of revenue (audit §4.1) |
 | every 5s while unheld           | Both republished — a stopwatch counting up, not a countdown |
 | every pause and resume          | Republished immediately, so the stopwatch visibly stops and starts with the hold |
@@ -685,7 +745,7 @@ also carries `"reason"`, one of:
 | `learner_left` | The learner's participant left the room and did not come back inside the 60s grace. |
 | `model_error` | The realtime model died unrecoverably (`tutor.error="model"`). |
 | `ledger_failure` | Five consecutive failed debits: the clock is held and the session ends. (This debit does not go out either — the accepted under-bill.) |
-| `tutor_silent` | The first-audio watchdog fired and nothing better was ever recorded. Set *weakly*: any real ending overwrites it. |
+| `tutor_silent` | The first-audio watchdog fired: no tutor audio within 20 s. The session ends here (2026-09-14); nothing was billed. |
 
 Only the final debit carries it; a periodic or zero-hold debit has nothing to
 report, because nothing has ended. Before this, History could not tell a crash

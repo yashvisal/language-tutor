@@ -44,6 +44,19 @@ MAX_LIST_ITEMS = 8
 MAX_ITEM_CHARS = 60
 MAX_TEXT_CHARS = 200
 
+# The levels the frontend offers (`LEVEL_VALUES` in `lib/session/plan.ts`).
+# `from_raw` still accepts any short string — the prompt reads it as prose —
+# but only one of these may appear in an INFO log: a hand-built dispatch can
+# put anything in `level`, and anything is learner text (A12; CodeRabbit,
+# PR #12).
+KNOWN_LEVELS = frozenset(
+    {
+        "beginner",
+        "understands more than they can say",
+        "comfortable, wants polish",
+    }
+)
+
 
 def _text(value: object, *, limit: int = MAX_TEXT_CHARS) -> str | None:
     if not isinstance(value, str):
@@ -151,15 +164,40 @@ class SessionPlan:
         }
 
     def log_fields(self) -> dict[str, object]:
-        # Prefixed: these land in a LogRecord's namespace alongside the
-        # worker's own fields.
+        """The plan's SHAPE, for the session's opening INFO line.
+
+        Prefixed: these land in a LogRecord's namespace alongside the worker's
+        own fields. No learner-typed prose (A12, phase 8 decision (b)): the
+        topic, the scenario, the focus note and the free-text note are all
+        things a learner typed, and none of them belong in a log an operator
+        reads. What is left is what an operator actually triages on — was a
+        plan sent at all, how much of it, and at what level.
+        `debug_fields()` has the prose for a laptop.
+        """
+        return {
+            "plan_present": not self.is_empty,
+            "plan_has_topic": bool(self.topic),
+            "plan_has_scenario": bool(self.scenario),
+            "plan_has_focus_note": bool(self.focus_note),
+            "plan_has_note": bool(self.note),
+            "plan_tenses": len(self.tenses),
+            "plan_vocab": len(self.vocab),
+            # The level only when it is one of ours; anything else is text a
+            # learner (or a hand-built dispatch) wrote, and says so.
+            "plan_level": (
+                self.level if self.level in KNOWN_LEVELS else ("other" if self.level else None)
+            ),
+        }
+
+    def debug_fields(self) -> dict[str, object]:
+        """The plan's prose, for DEBUG only. Never log this at INFO."""
         return {
             "plan_topic": self.topic,
             "plan_scenario": self.scenario,
-            "plan_tenses": self.tenses,
+            "plan_tenses": list(self.tenses),
             "plan_focus_note": self.focus_note,
             "plan_note": self.note,
-            "plan_vocab": self.vocab,
+            "plan_vocab": list(self.vocab),
             "plan_level": self.level,
         }
 
