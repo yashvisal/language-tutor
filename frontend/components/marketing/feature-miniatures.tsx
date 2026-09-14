@@ -91,7 +91,7 @@ export function TranslateFragment() {
       // height (Yash, 2026-09-14).
       className="flex h-full flex-col items-center justify-start pt-[29px] text-center"
     >
-      <div className="mb-1.5 text-[10px] font-medium tracking-[0.22em] text-muted-foreground/60 uppercase">
+      <div className="mb-6 text-[10px] font-medium tracking-[0.22em] text-muted-foreground/60 uppercase">
         Tutor
       </div>
       <p lang="es" className="text-lg leading-snug tracking-tight text-balance">
@@ -105,7 +105,7 @@ export function TranslateFragment() {
         animate={{ opacity: answered ? 1 : 0, y: answered ? 0 : -4 }}
         transition={{ duration: 0.2, ease: "easeOut" }}
         aria-hidden={!answered}
-        className="mt-4 w-full max-w-[16rem] rounded-lg bg-popover p-3 text-left text-sm text-popover-foreground shadow-md ring-1 ring-foreground/10"
+        className="mt-7 w-full max-w-[16rem] rounded-lg bg-popover p-3 text-left text-sm text-popover-foreground shadow-md ring-1 ring-foreground/10"
       >
         <div lang="es" className="text-xs text-muted-foreground/70 italic">
           cómo estás
@@ -133,7 +133,7 @@ export function AskFragment() {
       // The same top as the other two tiles; see `TranslateFragment`.
       className="flex h-full flex-col justify-start pt-[29px]"
     >
-      <div className="mb-3 text-center text-[10px] font-medium tracking-[0.22em] text-muted-foreground/60 uppercase">
+      <div className="mb-7 text-center text-[10px] font-medium tracking-[0.22em] text-muted-foreground/60 uppercase">
         Ask
       </div>
       <motion.div
@@ -151,7 +151,7 @@ export function AskFragment() {
         animate={{ opacity: answered ? 1 : 0, y: answered ? 0 : 6 }}
         transition={{ duration: 0.35, ease: "easeOut" }}
         aria-hidden={!answered}
-        className="mt-3 pr-8 text-sm leading-6 text-pretty text-foreground"
+        className="mt-6 pr-8 text-sm leading-6 text-pretty text-foreground"
       >
         Estar is for how you feel right now; ser is for what you are.
       </motion.p>
