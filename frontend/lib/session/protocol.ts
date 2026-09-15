@@ -380,8 +380,15 @@ export const TUTOR_ERROR_CONFIG_FAULT = "config_fault"
  * failed. Generous next to a healthy dispatch (a second or two) and short
  * enough that a learner never sits in front of a silent stage wondering
  * whether they are supposed to speak first. Audit B6.
+ *
+ * 45 seconds, up from 12 (2026-09-15): on LiveKit Cloud's Build plan the
+ * worker scales to zero when idle and a cold start adds 10–20 seconds before
+ * the agent joins (docs, "Cold start"); the first production session ever
+ * started hit exactly that and was told the tutor didn't join. The stage
+ * says "Connecting…" the whole time, so the extra wait is not a silent one.
+ * On a plan that keeps the worker warm this number never matters.
  */
-export const AGENT_JOIN_TIMEOUT_MS = 12_000
+export const AGENT_JOIN_TIMEOUT_MS = 45_000
 
 /** Value convention for boolean participant attributes. */
 export const ATTRIBUTE_TRUE = "true"
