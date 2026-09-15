@@ -37,8 +37,14 @@ export function formatClock(seconds: number): string {
 export const LOW_BALANCE_SECONDS = 300
 
 /**
- * The packs, minutes first and price second — never credits. Sold in fives and
- * cheaper per minute at the top (plans/phases/phase-6-metered-conversation.md).
+ * The packs, minutes first and price second — never credits. Cheaper per
+ * minute at the top (plans/phases/phase-6-metered-conversation.md).
+ *
+ * Re-priced 2026-09-14 (Yash; plans/costs.md): a card charge costs a flat
+ * $0.30 plus 2.9%, so a $1.99 pack lost a fifth of itself to the fee before a
+ * minute was served. The floor is now $4.99, and the sizes step up to reward
+ * the bigger purchase. No per-minute line: the number on the tile is what the
+ * learner pays, and the rate is theirs to work out if they care.
  *
  * Here rather than in the marketing constants because two surfaces now quote
  * them: the pricing section on the landing page and the Billing dialog in the
@@ -46,9 +52,9 @@ export const LOW_BALANCE_SECONDS = 300
  * with exactly one home.
  */
 export const MINUTE_PACKS = [
-  { minutes: 5, price: "$1.99", per: "$0.40 per minute" },
-  { minutes: 20, price: "$5.99", per: "$0.30 per minute" },
-  { minutes: 60, price: "$16.99", per: "$0.28 per minute" },
+  { minutes: 15, price: "$4.99" },
+  { minutes: 40, price: "$9.99" },
+  { minutes: 100, price: "$19.99" },
 ] as const
 
 /* -------------------------------------------------------------------------- */

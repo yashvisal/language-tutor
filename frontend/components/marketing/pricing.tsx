@@ -4,7 +4,8 @@ import { cn } from "@/lib/utils"
 
 /**
  * Pricing as three tiles. Minutes are the big number — it is what the learner
- * is buying — price second, per-minute small. The middle pack is the one
+ * is buying — and the price under it, nothing else: the per-minute line went
+ * with the 2026-09-14 re-pricing (Yash). The middle pack is the one
  * most people should pick, so it is the one with the accent border; nothing
  * else competes for attention. No buttons: payments are not live yet, and a
  * tile that pretends to sell is worse than one that simply informs.
@@ -34,7 +35,6 @@ export function PricingPacks({ className }: { className?: string }) {
               </span>
             </div>
             <div className="mt-4 text-xl tabular-nums">{pack.price}</div>
-            <div className="mt-1 text-xs text-muted-foreground">{pack.per}</div>
           </div>
         )
       })}
