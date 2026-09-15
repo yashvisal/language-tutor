@@ -22,6 +22,7 @@ import { MINUTE_PACKS, SIGNUP_GRANT_MINUTES } from "@/lib/billing"
  * signing them off is one edit there and then dropping `draft` here.
  */
 export const metadata: Metadata = {
+  title: "Terms",
   description: "The terms you agree to when you use lengua.",
 }
 

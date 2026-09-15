@@ -1,3 +1,4 @@
+import type { Metadata } from "next"
 import { currentUser } from "@clerk/nextjs/server"
 import { History } from "@/components/home/history"
 import { StartSession } from "@/components/home/start-session"
@@ -15,6 +16,10 @@ import { StartSession } from "@/components/home/start-session"
  * Under the panel: History — the conversations already had, each one a door
  * into what was said and what the tutor caught.
  */
+
+export const metadata: Metadata = {
+  title: "Home",
+}
 
 export default async function HomePage() {
   const user = await currentUser()

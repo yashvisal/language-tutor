@@ -26,16 +26,21 @@ const DESCRIPTION =
  * the generated `opengraph-image`) resolve to the real host rather than
  * `localhost` in a preview build.
  *
- * The tab says "lengua" on every page, nothing more: no "Home · lengua", no
- * tagline on the landing (Yash, 2026-09-14, first look at the live domain).
- * So there is no title template and no page sets a title of its own. The
+ * The tab is "Lengua" on the landing (capital L, like the sign-in modal —
+ * Yash) and just the page's own name everywhere
+ * else: "Home", "Session", "Sign in" — not "Home · lengua", and not the
+ * tagline (Yash, 2026-09-14, first look at the live domain). The template is
+ * therefore the bare page title, and the default is the wordmark. The
  * descriptive line stays on the Open Graph and Twitter cards, where it is the
  * text a pasted link shows, not a tab.
  */
 export const metadata: Metadata = {
   metadataBase: new URL("https://lengua.chat"),
   applicationName: "lengua",
-  title: "lengua",
+  title: {
+    default: "Lengua",
+    template: "%s",
+  },
   description: DESCRIPTION,
   openGraph: {
     siteName: "lengua",

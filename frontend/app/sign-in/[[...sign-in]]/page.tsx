@@ -1,3 +1,4 @@
+import type { Metadata } from "next"
 import { SignIn } from "@clerk/nextjs"
 
 import { Spinner } from "@/components/spinner"
@@ -13,6 +14,10 @@ import { Spinner } from "@/components/spinner"
  * actually has (`min-h-screen` is the one it claims to have, under the
  * browser chrome).
  */
+
+export const metadata: Metadata = {
+  title: "Sign in",
+}
 
 export default function SignInPage() {
   return (
