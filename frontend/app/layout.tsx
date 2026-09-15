@@ -24,20 +24,18 @@ const DESCRIPTION =
  *
  * `metadataBase` is what makes every relative URL below (the canonical `/`,
  * the generated `opengraph-image`) resolve to the real host rather than
- * `localhost` in a preview build. The template gives every inner page its
- * name and the product's: "Sign in · lengua". The default is the landing's
- * own title, so the home page needs no title of its own — a page that sets a
- * plain string title goes *through* the template, which is why `app/page.tsx`'s
- * `title` should be removed rather than kept in step (see the note in the
- * launch checklist, A8).
+ * `localhost` in a preview build.
+ *
+ * The tab says "lengua" on every page, nothing more: no "Home · lengua", no
+ * tagline on the landing (Yash, 2026-09-14, first look at the live domain).
+ * So there is no title template and no page sets a title of its own. The
+ * descriptive line stays on the Open Graph and Twitter cards, where it is the
+ * text a pasted link shows, not a tab.
  */
 export const metadata: Metadata = {
   metadataBase: new URL("https://lengua.chat"),
   applicationName: "lengua",
-  title: {
-    default: "lengua — practice languages, uninterrupted",
-    template: "%s · lengua",
-  },
+  title: "lengua",
   description: DESCRIPTION,
   openGraph: {
     siteName: "lengua",
