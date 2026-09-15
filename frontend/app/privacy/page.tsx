@@ -34,7 +34,6 @@ import { LegalPage } from "@/components/marketing/legal-page"
  * `components/marketing/brand.ts` (`MINIMUM_AGE`).
  */
 export const metadata: Metadata = {
-  title: "Privacy",
   description:
     "What lengua collects, what it keeps, and what it never records.",
 }
