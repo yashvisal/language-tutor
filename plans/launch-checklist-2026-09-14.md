@@ -339,3 +339,42 @@ Run in order once A and B are done. Steps 5 and 6 only apply to a paid launch.
 - (d) Legal values: support address, governing law, minimum age, refund
   window.
 - (e) Portugal's flag for Portuguese: keep, or swap for Brazil's.
+
+---
+
+## H. Live, 2026-09-15 — what the first production session taught
+
+Deployed 2026-09-14/15: Vercel (`lengua`, root `frontend`), Convex prod
+`glad-chickadee-174`, Clerk prod on `clerk.lengua.chat`, worker
+`CA_NjsVnot5V4MF` in `us-east`, Sentry `personal-3it` (`javascript-nextjs`,
+`python`). First real session: 117 s billed over two debits, 5 corrections,
+1 Ask, summary and goal written, `ended`, est. $0.15. Nothing in Sentry.
+
+Two things went wrong before it worked, both now fixed:
+
+- **`CLERK_JWT_KEY` on Convex prod was one line.** Set from Git Bash, the PEM
+  was cut at the first newline, so every worker token failed verification
+  and the worker refused every job (`ledger_unreachable`). Set it from a
+  Node argument array; verified equal to the live JWKS. Rule: never set a
+  multi-line secret through a shell.
+- **The worker sleeps on the free LiveKit plan** and takes 10–20 s to wake;
+  the surface waited 12 s. Now 45 s (PR #17). Ship would keep it warm; see H2.
+
+Follow-ups:
+
+- [ ] **H1. A refused start shows the wrong card.** The worker published
+      `ledger_unreachable` and left within a second; the surface latched
+      `no_show` first and said "The tutor didn't join." Read `tutor.error`
+      off the room event before latching no-show, or hold the no-show latch
+      a beat when an agent participant was seen joining.
+- [x] **H2. LiveKit plan — decided: stay on Build (free).** Ship keeps the
+      worker warm but is $50/month, not worth it for a beta (Yash,
+      2026-09-15). The cold start stays; the surface says so instead: after
+      a few seconds without a tutor, "Connecting…" becomes a line that says
+      the tutor is waking up and may take up to twenty seconds.
+- [ ] **H3. Account deletion on production** not yet exercised: the Clerk
+      webhook endpoint exists and its secret is set, but no `user.deleted`
+      has fired. Delete a throwaway account and confirm the rows go.
+- [ ] **H4. Google brand verification**, so the consent screen says Lengua
+      instead of the domain.
+
