@@ -17,7 +17,7 @@
 # everything else is passed with `--secrets` / `--secrets-file`.
 
 [project]
-  subdomain = "<livekit-cloud-project-subdomain>"
+  subdomain = "language-tutor-yz8cms29"
 
 [agent]
-  id = "<written by lk agent create>"
+  id = "CA_NjsVnot5V4MF"
