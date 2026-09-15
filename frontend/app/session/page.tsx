@@ -32,6 +32,35 @@ import { STAGE_AURA_CLASS, TutorAura } from "@/components/session/tutor-aura"
 import { startRequested, takeStartRequest } from "@/lib/session/handoff"
 import { useLiveSession } from "@/lib/session/live-producer"
 
+/**
+ * How long "Tutor joining…" holds before it becomes "Waking the tutor…".
+ * A healthy dispatch joins in a second or two; past this the worker is almost
+ * certainly cold-starting (10–20 s on LiveKit's free plan), and the line
+ * should say so rather than let the learner think nothing is happening.
+ */
+const WAKING_AFTER_MS = 5_000
+
+/**
+ * True once `joining` has been continuously true for `ms`; false the moment
+ * it stops, so a quick join never shows the waking line. The reset happens
+ * during render (React's "adjusting state when a prop changes" pattern)
+ * rather than in the effect, which only ever arms the timer.
+ */
+function useJoiningLongerThan(joining: boolean, ms: number): boolean {
+  const [long, setLong] = useState(false)
+  const [seenJoining, setSeenJoining] = useState(joining)
+  if (joining !== seenJoining) {
+    setSeenJoining(joining)
+    setLong(false)
+  }
+  useEffect(() => {
+    if (!joining) return
+    const timer = setTimeout(() => setLong(true), ms)
+    return () => clearTimeout(timer)
+  }, [joining, ms])
+  return joining && long
+}
+
 export default function SessionPage() {
   const live = useLiveSession()
   const { connect } = live
@@ -44,6 +73,15 @@ export default function SessionPage() {
    * effect below spends it, once.
    */
   const [handoff, setHandoff] = useState(startRequested)
+
+  // Derived before any early return, because the waking timer is a hook and
+  // hooks must run on every render. The tutor counts as joined once it has a
+  // track for the Aura or has reported a state — both arrive only once it is
+  // in the room.
+  const tutorJoined =
+    live.agentAudioTrack !== undefined || live.state.agentState !== "idle"
+  const joining = !handoff && live.connection === "live" && !tutorJoined
+  const wakingLong = useJoiningLongerThan(joining, WAKING_AFTER_MS)
 
   /**
    * The hand-off from `/home`, fired once and then erased. The ref makes it
@@ -144,17 +182,16 @@ export default function SessionPage() {
   // the tutor: the learner chose to start, so the only honest screen is the
   // stage itself, warming up in place. One stage from the first paint to the
   // first word, with a quiet status line in the corner, so nothing jumps
-  // when the conversation arrives (Yash, 2026-09-10). The tutor counts as
-  // joined once it has a track for the Aura or has reported a state — both
-  // arrive only once it is in the room.
-  const tutorJoined =
-    live.agentAudioTrack !== undefined || live.state.agentState !== "idle"
+  // when the conversation arrives (Yash, 2026-09-10). `tutorJoined` and the
+  // waking timer are derived at the top of the component, above the returns.
   const status =
     handoff || live.connection !== "live"
       ? "connecting"
       : tutorJoined
         ? "live"
-        : "joining"
+        : wakingLong
+          ? "waking"
+          : "joining"
 
   return (
     <SessionLanguageProvider language={live.plan?.targetLanguage}>
