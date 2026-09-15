@@ -20,3 +20,25 @@ Read: at $0.11/min of model spend against $0.28–0.40/min of pack price, the
 model leaves margin; the rest of the stack is not yet measured. Study holds
 are free to the learner but not to us (Ask, Review and translate all bill
 model tokens) — a learner who pauses a lot is the case to watch.
+
+## Re-pricing, 2026-09-14
+
+Measured on the six dev sessions with a cost record (16.8 minutes): $0.079 per
+active minute on average, $0.07–0.11 across sessions, realtime + STT only. The
+analyzer, Ask, translate and Review calls are not in that figure; the working
+all-in assumption is $0.10–0.14 per minute. OpenAI's sheet still prices
+gpt-realtime-2.1 at $32/M audio-in and $64/M audio-out (checked 2026-09-14).
+GPT-Live-1 at $0.05/min is a voice layer over a separately billed reasoning
+model, not a like-for-like replacement.
+
+The deciding cost is the card fee: $0.30 flat plus 2.9% per charge, on every
+processor worth using. A $1.99 pack lost $0.36 of itself before a minute was
+served. Decision (Yash): three packs at **15 min / $4.99, 40 min / $9.99,
+100 min / $19.99**, no per-minute line on the tiles, the free 5 minutes kept as
+the trial, and a monthly plan to revisit once real purchase behaviour exists.
+
+| Pack | Fee | Serve @ $0.08 | Kept | Serve @ $0.12 | Kept |
+| --- | --- | --- | --- | --- | --- |
+| 15 / $4.99 | $0.44 | $1.20 | $3.35 (67%) | $1.80 | $2.75 (55%) |
+| 40 / $9.99 | $0.59 | $3.20 | $6.20 (62%) | $4.80 | $4.60 (46%) |
+| 100 / $19.99 | $0.88 | $8.00 | $11.11 (56%) | $12.00 | $7.11 (36%) |
