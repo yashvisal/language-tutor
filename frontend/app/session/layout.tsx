@@ -20,6 +20,7 @@ import { ensureViewerOnServer } from "@/lib/viewer-server"
  */
 // The page itself is a client component and cannot export metadata; this
 // layout is the nearest server file, so the tab name lives here.
+
 export const metadata: Metadata = {
   title: "Session",
 }

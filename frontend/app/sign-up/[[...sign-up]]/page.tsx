@@ -4,6 +4,7 @@ import { SignUp } from "@clerk/nextjs"
 import { Spinner } from "@/components/spinner"
 
 /** The sign-in page's twin — see the note there. */
+
 export const metadata: Metadata = {
   title: "Create your account",
 }

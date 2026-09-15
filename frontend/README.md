@@ -69,6 +69,16 @@ build platform resolves the same versions this repo is developed against.
 `frontend/vercel.json` holds that build command, the install command and the
 framework preset, so they live in the repo rather than only in the dashboard.
 
+The build command is conditional on `CONVEX_DEPLOY_KEY`. Production has the
+key, so a production build deploys the Convex functions and then builds the
+site against them. **Preview builds have no key on purpose**: a branch must
+never push functions to the production deployment, and per-branch Convex
+previews are a paid feature this project does not use. So a preview build is a
+plain `pnpm build` against the Preview environment's own variables, which point
+at the _dev_ Convex deployment and the _dev_ Clerk instance (set once with
+`vercel env add … preview`). A preview is therefore a real, signed-in app on
+dev data, and Sentry is off there because the DSNs are production-only.
+
 **The Root Directory stays in the dashboard.** It is not a `vercel.json`
 property — it is not in Vercel's configuration table at all — and Vercel reads
 `vercel.json` *from* the Root Directory. That is why the file is
