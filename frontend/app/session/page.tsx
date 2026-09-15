@@ -75,11 +75,12 @@ export default function SessionPage() {
   const [handoff, setHandoff] = useState(startRequested)
 
   // Derived before any early return, because the waking timer is a hook and
-  // hooks must run on every render. The tutor counts as joined once it has a
-  // track for the Aura or has reported a state — both arrive only once it is
-  // in the room.
-  const tutorJoined =
-    live.agentAudioTrack !== undefined || live.state.agentState !== "idle"
+  // hooks must run on every render. The tutor counts as joined once an agent
+  // participant is in the room or its audio track has arrived. NOT the
+  // reducer's agentState: LiveKit reports the agent as "connecting" while a
+  // dispatch is pending, which read as joined and blanked the way-in line
+  // during the cold start it exists for (live, 2026-09-15).
+  const tutorJoined = live.tutorPresent || live.agentAudioTrack !== undefined
   const joining = !handoff && live.connection === "live" && !tutorJoined
   const wakingLong = useJoiningLongerThan(joining, WAKING_AFTER_MS)
 

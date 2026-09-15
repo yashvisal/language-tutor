@@ -386,6 +386,15 @@ export interface LiveSession {
   toggleMute: () => void
   /** The agent's audio track, for the Aura. Undefined until the tutor joins. */
   agentAudioTrack: TrackReference | undefined
+  /**
+   * Whether an agent participant is actually in the room. The only honest
+   * "the tutor has joined": the reducer's `agentState` is fed from LiveKit's
+   * agent state, which reads "connecting" while a dispatch is still pending
+   * — a worker waking from a cold start — and a surface that took that as
+   * joined blanked its way-in line for the very case it was written for
+   * (live, 2026-09-15).
+   */
+  tutorPresent: boolean
   /** The room, for `RoomAudioRenderer` and anything else that needs it. */
   room: Room
   /** Select-to-translate's back end. Session-cached; see `translations`. */
@@ -1417,6 +1426,7 @@ export function useLiveSession(): LiveSession {
     muted,
     toggleMute: toggleMuteLocal,
     agentAudioTrack: agent.microphoneTrack,
+    tutorPresent,
     room,
   }
 }
