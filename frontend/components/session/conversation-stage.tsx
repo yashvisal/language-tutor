@@ -134,13 +134,23 @@ export interface ConversationStageProps {
    * gestures do nothing, and a quiet line in the corner says what is
    * happening. Absent (replay) means live.
    */
-  status?: "connecting" | "joining" | "live"
+  status?: "connecting" | "joining" | "waking" | "live"
 }
 
-/** What the corner says on the way in. Nothing once the tutor is here. */
+/**
+ * What the corner says on the way in. Nothing once the tutor is here.
+ *
+ * `waking` is `joining` that has gone on for a few seconds: on LiveKit's free
+ * plan the worker sleeps when idle and takes 10–20 s to wake, and a learner
+ * staring at "Tutor joining…" for that long assumes it is broken. Saying why,
+ * and how long, is the whole fix — the plan that keeps it warm is $50/month
+ * and not worth it for a beta (Yash, 2026-09-15).
+ */
 const STATUS_LINE = {
   connecting: "Connecting…",
   joining: "Tutor joining…",
+  waking:
+    "Waking the tutor — the first start of the day can take up to twenty seconds…",
   live: "",
 } as const
 
