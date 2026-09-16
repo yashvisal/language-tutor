@@ -121,6 +121,8 @@ class FakeSession:
         self.interrupted = 0
         self.closed = 0
         self.replies: list[str] = []
+        self._input = FakeAudioIO()
+        self._output = FakeAudioIO()
 
     def on(self, event: str, fn: Any) -> None:
         self.handlers[event] = fn
@@ -133,6 +135,26 @@ class FakeSession:
 
     def generate_reply(self, instructions: str = "") -> None:
         self.replies.append(instructions)
+
+    @property
+    def input(self) -> FakeAudioIO:
+        return self._input
+
+    @property
+    def output(self) -> FakeAudioIO:
+        return self._output
+
+
+class FakeAudioIO:
+    """`session.input` / `session.output`: only the one switch the worker flips."""
+
+    def __init__(self) -> None:
+        self.audio_enabled: bool | None = None
+        self.history: list[bool] = []
+
+    def set_audio_enabled(self, enabled: bool) -> None:
+        self.audio_enabled = enabled
+        self.history.append(enabled)
 
 
 class FakeOpenResult:
@@ -263,6 +285,121 @@ def test_a_silent_tutor_ends_the_session_and_stops_the_lease() -> None:
     assert billing.end_reason_weak is False
     # The lease was live before the watchdog fired, and stopped after.
     assert renewed > 0
+
+
+def test_a_hold_does_not_count_against_the_silent_tutor_budget() -> None:
+    """A learner who pauses during a cold start is not evidence of a dead tutor.
+
+    The watchdog spends a budget of UNHELD seconds: held time does not count
+    (live, 2026-09-15 — a 20 s wall clock ended a session that was held for
+    part of it and whose tutor was still connecting).
+    """
+
+    async def scenario() -> tuple[FakeCtx, FakeSession]:
+        ctx = FakeCtx()
+        session = FakeSession()
+        state = SessionState()
+        clock = SessionClock(
+            600,
+            publish=lambda *_a: asyncio.sleep(0),
+            on_nudge=lambda: asyncio.sleep(0),
+            on_zero=lambda: asyncio.sleep(0),
+            on_idle_end=lambda: asyncio.sleep(0),
+            is_paused=lambda: state.clock_held,
+        )
+        _meter_from_first_tutor_audio(ctx, session, clock, state, None)  # type: ignore[arg-type]
+        # Held for longer than the whole budget: nothing must end.
+        state.paused = True
+        await asyncio.sleep(0.3)
+        assert ctx.shutdowns == 0, "the watchdog counted held time"
+        # Released: the budget resumes, and only now runs out.
+        state.paused = False
+        await asyncio.sleep(0.3)
+        return ctx, session
+
+    original = agent_module.FIRST_AUDIO_TIMEOUT_S
+    agent_module.FIRST_AUDIO_TIMEOUT_S = 0.1
+    try:
+        ctx, session = run(scenario())
+    finally:
+        agent_module.FIRST_AUDIO_TIMEOUT_S = original
+
+    assert ctx.published_error == ERROR_TUTOR_SILENT
+    assert ctx.shutdowns == 1
+
+
+def test_a_permanent_hold_releases_the_watchdog() -> None:
+    """A model that died is an ending with its own teardown, not a silent
+    tutor: the watchdog steps aside instead of waiting behind a hold that
+    never releases (CodeRabbit, 2026-09-15)."""
+
+    async def scenario() -> tuple[FakeCtx, bool]:
+        ctx = FakeCtx()
+        session = FakeSession()
+        state = SessionState()
+        clock = SessionClock(
+            600,
+            publish=lambda *_a: asyncio.sleep(0),
+            on_nudge=lambda: asyncio.sleep(0),
+            on_zero=lambda: asyncio.sleep(0),
+            on_idle_end=lambda: asyncio.sleep(0),
+            is_paused=lambda: state.clock_held,
+        )
+        _meter_from_first_tutor_audio(ctx, session, clock, state, None)  # type: ignore[arg-type]
+        state.model_failed = True
+        await asyncio.sleep(0.2)
+        pending = [t for t in asyncio.all_tasks() if t.get_name() == "tutor-first-audio-watchdog"]
+        return ctx, len(pending) == 0
+
+    original = agent_module.FIRST_AUDIO_TIMEOUT_S
+    agent_module.FIRST_AUDIO_TIMEOUT_S = 0.1
+    try:
+        ctx, released = run(scenario())
+    finally:
+        agent_module.FIRST_AUDIO_TIMEOUT_S = original
+
+    assert released, "the watchdog is still waiting behind a permanent hold"
+    assert ctx.shutdowns == 0
+    assert ctx.published_error is None
+
+
+def test_the_mic_is_closed_until_the_tutor_has_spoken() -> None:
+    """Nothing the learner says before the first tutor audio is a turn.
+
+    The input is closed at the start and opened on the first "speaking"
+    state — the same event that starts the clock — so the transcriber cannot
+    make a turn out of room noise ahead of the greeting (live, 2026-09-15).
+    """
+    ctx = FakeCtx()
+    session = FakeSession()
+    state = SessionState()
+    clock = SessionClock(
+        600,
+        publish=lambda *_a: asyncio.sleep(0),
+        on_nudge=lambda: asyncio.sleep(0),
+        on_zero=lambda: asyncio.sleep(0),
+        on_idle_end=lambda: asyncio.sleep(0),
+        is_paused=lambda: False,
+    )
+
+    async def scenario() -> None:
+        _meter_from_first_tutor_audio(ctx, session, clock, state, None)  # type: ignore[arg-type]
+        assert session.input.audio_enabled is False
+        # Model ready, still nothing said: still closed.
+        session.handlers["agent_state_changed"](type("Ev", (), {"new_state": "listening"})())
+        assert session.input.audio_enabled is False
+        # The first word: open.
+        session.handlers["agent_state_changed"](type("Ev", (), {"new_state": "speaking"})())
+        await asyncio.sleep(0)
+        assert session.input.audio_enabled is True
+        assert state.tutor_spoken is True
+
+    original = agent_module.FIRST_AUDIO_TIMEOUT_S
+    agent_module.FIRST_AUDIO_TIMEOUT_S = 5.0
+    try:
+        run(scenario())
+    finally:
+        agent_module.FIRST_AUDIO_TIMEOUT_S = original
 
 
 def test_first_audio_cancels_the_watchdog() -> None:

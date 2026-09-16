@@ -136,7 +136,7 @@ DISCONNECT_GRACE_S = 60.0
 # the clock does not start until that frame plays — so this is an alarm, not a
 # timeout: it is the "the tutor never spoke" case, and it is invisible without
 # it (audit B4b, B6).
-FIRST_AUDIO_TIMEOUT_S = 20.0
+FIRST_AUDIO_TIMEOUT_S = 30.0
 
 # How many of a hold's questions ride back on the resume payload, and how long
 # each may be. Mirrors `MAX_RESUME_ASKS` in the frontend's protocol module; the
@@ -1001,9 +1001,30 @@ def _meter_from_first_tutor_audio(
     """
 
     requested_at = time.monotonic()
+    model_ready_logged = False
+
+    # The learner's microphone stays closed until the tutor has spoken. Before
+    # the first tutor audio nothing the learner says is a turn — the greeting
+    # has not been asked yet — but the transcriber was live from the first
+    # second, so room noise became a 16-character "turn" that the stage showed
+    # and that competed with the greeting during a cold start (live,
+    # 2026-09-15). A closed input starves the STT, so no turn can exist. The
+    # hold code keeps it closed on a resume that lands before the first word.
+    _set_input_enabled(session, False)
 
     def _on_agent_state(ev: object) -> None:
-        if getattr(ev, "new_state", None) != "speaking":
+        nonlocal model_ready_logged
+        new_state = getattr(ev, "new_state", None)
+        # The first state after "initializing" is the model session being
+        # ready. Logged so a slow cold start has a number: how long the
+        # handshake took, separately from how long the first reply took.
+        if not model_ready_logged and new_state in ("listening", "thinking", "speaking"):
+            model_ready_logged = True
+            logger.info(
+                "model session ready",
+                extra={"after_s": round(time.monotonic() - requested_at, 2)},
+            )
+        if new_state != "speaking":
             return
         state.tutor_spoken = True
         if clock.started:
@@ -1015,14 +1036,33 @@ def _meter_from_first_tutor_audio(
             "first tutor audio",
             extra={"after_s": round(time.monotonic() - requested_at, 2)},
         )
+        # The tutor has spoken: the learner may now be heard — unless a hold
+        # is open, in which case the resume opens the mic.
+        if not state.paused:
+            _set_input_enabled(session, True)
         _spawn(clock.start(), "tutor-clock-start")
 
     session.on("agent_state_changed", _on_agent_state)
 
     async def _watchdog() -> None:
-        await asyncio.sleep(FIRST_AUDIO_TIMEOUT_S)
-        if clock.started:
-            return
+        # A budget of unheld seconds, not a wall clock. Time the session spends
+        # held does not count: a learner who pauses during a cold start is not
+        # evidence of a dead tutor, and the 20 s wall clock ended exactly such
+        # a session (live, 2026-09-15). The tick is small next to the budget so
+        # the tests' millisecond budgets still work.
+        budget = FIRST_AUDIO_TIMEOUT_S
+        tick = min(1.0, FIRST_AUDIO_TIMEOUT_S / 4)
+        while budget > 0:
+            await asyncio.sleep(tick)
+            if clock.started:
+                return
+            # The two holds that never release are endings in their own
+            # right, with their own teardown: this watchdog must not sit
+            # behind them forever (CodeRabbit, 2026-09-15).
+            if state.model_failed or state.ledger_failed:
+                return
+            if not state.clock_held:
+                budget -= tick
         report_error(
             "tutor_silent",
             "the tutor has not spoken "
@@ -1045,7 +1085,26 @@ def _meter_from_first_tutor_audio(
             billing=billing,
         )
 
-    _spawn(_watchdog(), "tutor-first-audio-watchdog")
+    watchdog = _spawn(_watchdog(), "tutor-first-audio-watchdog")
+
+    # Whatever ends the session cancels the watchdog with it, so a held
+    # session that ends some other way never leaves the task waiting.
+    async def _cancel_watchdog() -> None:
+        watchdog.cancel()
+
+    ctx.add_shutdown_callback(_cancel_watchdog)
+
+
+def _set_input_enabled(session: AgentSession, enabled: bool) -> None:
+    """Open or close the learner's microphone at the session's input.
+
+    Guarded: a session without an input (tests' fakes, a session already torn
+    down) is not a reason to fail the caller.
+    """
+    try:
+        session.input.set_audio_enabled(enabled)
+    except Exception:
+        logger.debug("could not set input audio enabled=%s", enabled, exc_info=True)
 
 
 async def _publish_error(room: rtc.Room, code: str) -> None:
@@ -1836,7 +1895,10 @@ class SessionHold:
                 session.input.set_audio_enabled(False)
                 session.output.set_audio_enabled(False)
             else:
-                session.input.set_audio_enabled(True)
+                # The mic reopens only if the tutor has spoken: a resume that
+                # lands during a cold start must not undo the first-audio gate
+                # in `_meter_from_first_tutor_audio`.
+                session.input.set_audio_enabled(state.tutor_spoken)
                 session.output.set_audio_enabled(True)
         except Exception:
             # A transition that failed halfway must not look finished: the
