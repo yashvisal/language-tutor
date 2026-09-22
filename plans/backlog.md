@@ -64,3 +64,46 @@ Read `product-vision.md` first; nothing here reopens a settled decision.*
 - Allowlist model IDs before sending `reasoning.effort` — both realtime
   models accept it; the effort *value* is validated instead.
 - `es.py` TypedDict annotations — cosmetic.
+
+## From the first external session (2026-09-22)
+
+*The first learner who is not Yash ran a five-minute German session on
+2026-09-22 (room `lesson-learner-6652d16c-…`, worker logs in Sentry under
+`6652d16c`). The German was correct throughout, the target sentence was built
+and produced, the review saved cleanly, and every after-session field landed.
+These are the things it showed we still owe. Read before wrapping the project.*
+
+10. **The corrections list is mostly noise.** Of 10 saved corrections, 3 were
+    real German mistakes (`keinen Zeit`, `eine Meeting`, a dropped noun after
+    `mehrere`). 3 came from the transcriber mishearing her (`Zeit für Freunde`
+    became `twitter … keine seite verändern`), 2 corrected her *English*
+    sentences in English, and 2 were capitalization, which does not exist in
+    speech. The analyzer should skip turns whose `turn_language` is `anchor`,
+    drop capitalization-only diffs, and probably not correct a span the tutor's
+    own reply shows it understood differently from the transcript.
+    (`backend/src/analyzer.py`; the outcome's `corrections` array.)
+11. **A prompt instruction was spoken aloud.** The tutor said "Cue: very
+    basic." before simplifying. The word comes from the struggling-learner
+    paragraph in `backend/src/prompts.py` ("one cue … the word they were
+    reaching for"); either that wording or the nudge instructions
+    (`nudge_instructions`, `agent.py`) is being read as something to say.
+    Reword so the model cannot echo a label, and add "never say the word cue"
+    style guard only if rewording does not hold.
+12. **The opener does not scale to the chosen level.** Second tutor line was a
+    relative clause plus compound past ("Was war heute ein Satz, den du sagen
+    wolltest, aber die Wortstellung oder eine Präposition haben dich
+    gestoppt?"). She asked twice for "very, very basic". The frame should pick
+    the opening question's complexity from `plan.level`. (`prompts.py`.)
+13. **Not a bug, noted so it is not re-litigated:** the tutor praised turns
+    whose *transcript* was garbage ("Ich habe kannen seit freund"). The
+    realtime model hears the audio directly; the transcript comes from the
+    separate `gpt-live-transcribe` pass. The tutor's reply shows it understood
+    "keine Zeit für Freunde", so this was the transcriber failing, not the
+    tutor. Transcript text is evidence about the transcriber, not about what
+    the tutor heard. It does mean #10's transcription-driven corrections are
+    charged to the learner for something she likely said correctly.
+14. **Background speech reached the transcript.** Two learner turns were other
+    people in the room ("everybody's using AI… This is my five minutes",
+    "see you at five thirty-five… Let's go to sleep") and were analyzed and
+    corrected. Nothing to do at the model level without speaker separation,
+    but #10's anchor-turn skip removes most of the damage.
