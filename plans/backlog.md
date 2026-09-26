@@ -145,23 +145,31 @@ and assumed a failure; it was #16.*
 
 ## Exploratory (decide before building)
 
-19. **Contrastive model as a transcript sanity check.** Yash's idea from
-    2026-09-26: a recently released contrastive-learning / joint-embedding
-    model (he called it "Jeff"; confirm the exact name and whether it is
-    speech-text or text-text before anything else) might score whether a
-    transcript segment is plausible against the audio or against the tutor's
-    reply. Two uses, both unproven:
-    - **Detect transcription flaws in real time.** #13 established that a
+19. **Jev (or CLM-8B) as a transcript sanity check.** Yash's idea from
+    2026-09-26. Jev is TypeSafe AI's "System One" model, released 15 Sept 2026
+    in limited early access (docs.typesafe.ai): it does not generate text, it
+    takes a block of state (string or JSON) plus typed questions and returns
+    probabilities and confidence scores in 70–500 ms. CLM-8B (Contrastive-LM
+    with Hazy Research, 23 Sept 2026, Apache-2.0 on Hugging Face, frozen
+    Qwen3-8B encoder plus a 75 MB head) is the open equivalent: same
+    state-plus-candidates-in, probabilities-out shape, 16–80 ms in their
+    benchmarks, slightly behind Jev on accuracy. Both are text-only; neither
+    hears audio, so the check has to work from text the worker already has.
+    Two uses, both unproven:
+    - **Flag transcriber failures in real time.** #13 established that a
       garbled transcript with a sensible tutor reply means the transcriber
-      failed. A cheap embedding comparison between the learner's transcript
-      turn and what the tutor's reply shows it understood could flag those
-      turns, so #10 stops charging the learner for the transcriber's mistake.
+      failed. State = the learner's transcript turn, the tutor's reply and the
+      plan; question = "is this transcript what the learner most likely said,
+      given the reply?" A low probability marks the turn, so #10 stops
+      charging the learner for the transcriber's mistake, and the analyzer
+      can skip or soften it.
     - **Infer what was actually said.** For flagged turns, queue a fast text
-      model with the transcript, the tutor's reply and the plan, and have it
-      propose the phrase the learner most likely spoke. Show that in the
-      transcript bubble (marked as inferred) and analyze that instead.
-    The same check could gate the translation side-task, so a mistranslated
-    segment is retried rather than shown. Read the model card first, measure
-    latency on one session's audio, and only then decide whether it earns a
-    place in the worker. If it does not, #10's anchor-turn skip and the
-    tutor-reply cross-check are the fallback.
+      model to propose the phrase the learner most likely spoke, then let
+      Jev/CLM rank the candidates against the same state. Show the winner in
+      the bubble marked as inferred, and analyze that instead.
+    The same shape could gate the translation side-task (rank the translation
+    against the source and context, retry below a threshold). Before building:
+    get Jev access or pull CLM-8B, replay one saved session's transcript
+    through it, and measure whether it separates the known-bad turns from the
+    good ones in the 2026-09-22 and 2026-09-26 sessions. If it does not, the
+    fallback is #10's anchor-turn skip plus a plain tutor-reply cross-check.
