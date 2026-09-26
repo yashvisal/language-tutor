@@ -107,3 +107,61 @@ These are the things it showed we still owe. Read before wrapping the project.*
     "see you at five thirty-five… Let's go to sleep") and were analyzed and
     corrected. Nothing to do at the model level without speaker separation,
     but #10's anchor-turn skip removes most of the damage.
+
+## From the second external session (2026-09-26)
+
+*A second uninvited learner signed up at 12:36 UTC and ran a three-minute
+French self-introduction (room `lesson-learner-d8154fa8-…`, Sentry under
+`d8154fa8`). The tutor spoke first, held French throughout, saved 9
+corrections, a summary and a review sheet, and the learner ended it himself.
+Two organic users, two clean sessions, zero purchases — because there is
+nothing to purchase yet (#15). Yash woke to a Sentry email from this session
+and assumed a failure; it was #16.*
+
+15. **There is no way to buy minutes.** Both external learners spent, or could
+    have spent, the 300-second signup grant and then hit a wall with no
+    purchase path behind it. The `purchases` table and the out-of-minutes hold
+    exist; the checkout that fills the table does not. Until it does, every
+    session after the first is a lost learner, and conversion cannot be
+    measured. This is the last piece before the product is whole.
+16. **Filter the LiveKit Rust logger out of Sentry.** Issue PYTHON-7
+    ("publisher data channel '_reliable' closed unexpectedly", logger
+    `livekit`) fired one second before this session's `endedAt`. It is a
+    diagnostic in `rtc_session.rs` that fires during normal room teardown
+    when the learner leaves before the worker sets its closing flags; it only
+    logs. It reached Sentry because the default logging integration forwards
+    every ERROR-level record. Add a logger ignore (or raise the threshold) for
+    `livekit` in `backend/src/observability.py` so only `report_error` kinds
+    page anyone. Otherwise every End click can send an email.
+17. **Billed time versus wall time, eyeball only.** 180 seconds billed against
+    about 4:20 of wall clock, with per-minute debits stopping at 12:40:49.
+    Consistent with a pause or hold near the end, and the held-seconds fix in
+    41603be is believed to cover it. Not investigated; check it against the
+    next session that shows the same gap before spending time on it.
+18. **Reading prod sessions.** The dashboard's `about` column is wide enough
+    that a neighbouring row's summary reads as the same session (the German
+    line from 2026-09-22 was mistaken for part of this French one). Print
+    rows one at a time by `_id` when reading prod; nothing to build.
+
+## Exploratory (decide before building)
+
+19. **Contrastive model as a transcript sanity check.** Yash's idea from
+    2026-09-26: a recently released contrastive-learning / joint-embedding
+    model (he called it "Jeff"; confirm the exact name and whether it is
+    speech-text or text-text before anything else) might score whether a
+    transcript segment is plausible against the audio or against the tutor's
+    reply. Two uses, both unproven:
+    - **Detect transcription flaws in real time.** #13 established that a
+      garbled transcript with a sensible tutor reply means the transcriber
+      failed. A cheap embedding comparison between the learner's transcript
+      turn and what the tutor's reply shows it understood could flag those
+      turns, so #10 stops charging the learner for the transcriber's mistake.
+    - **Infer what was actually said.** For flagged turns, queue a fast text
+      model with the transcript, the tutor's reply and the plan, and have it
+      propose the phrase the learner most likely spoke. Show that in the
+      transcript bubble (marked as inferred) and analyze that instead.
+    The same check could gate the translation side-task, so a mistranslated
+    segment is retried rather than shown. Read the model card first, measure
+    latency on one session's audio, and only then decide whether it earns a
+    place in the worker. If it does not, #10's anchor-turn skip and the
+    tutor-reply cross-check are the fallback.
